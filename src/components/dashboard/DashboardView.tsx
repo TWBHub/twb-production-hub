@@ -39,7 +39,7 @@ export const DashboardView: React.FC = () => {
 
   // Financial Metrics
   const totalContractValue = filteredProjects.reduce((acc, p) => acc + p.total_amount, 0);
-  const totalReceived = filteredPayments.reduce((acc, p) => acc + p.amount, 0);
+  const totalReceived = filteredPayments.reduce((sum, pm) => sum + pm.amount, 0);
   const totalExpenses = filteredExpenses.reduce((acc, e) => acc + e.amount, 0);
   const pendingAmount = Math.max(0, totalContractValue - totalReceived);
   const netOperatingProfit = totalReceived - totalExpenses;
@@ -149,7 +149,7 @@ export const DashboardView: React.FC = () => {
               <DollarSign className="w-4 h-4 text-slate-400" />
             </div>
             <div className="text-xl sm:text-2xl font-bold text-slate-900 mt-2">
-              ${totalContractValue.toLocaleString()}
+              ₹{totalContractValue.toLocaleString()}
             </div>
             <div className="text-[11px] text-slate-400 mt-1">
               {filteredProjects.length} active weddings
@@ -162,7 +162,7 @@ export const DashboardView: React.FC = () => {
               <CheckCircle2 className="w-4 h-4 text-emerald-500" />
             </div>
             <div className="text-xl sm:text-2xl font-bold text-emerald-700 mt-2">
-              ${totalReceived.toLocaleString()}
+              ₹{totalReceived.toLocaleString()}
             </div>
             <div className="text-[11px] text-slate-400 mt-1">
               {filteredPayments.length} recorded payments
@@ -175,7 +175,7 @@ export const DashboardView: React.FC = () => {
               <Clock className="w-4 h-4 text-[#8c672b]" />
             </div>
             <div className="text-xl sm:text-2xl font-bold text-[#8c672b] mt-2">
-              ${pendingAmount.toLocaleString()}
+              ₹{pendingAmount.toLocaleString()}
             </div>
             <div className="text-[11px] text-[#8c672b] font-medium mt-1">
               Awaiting milestone payouts
@@ -188,7 +188,7 @@ export const DashboardView: React.FC = () => {
               <TrendingUp className="w-4 h-4 text-rose-400" />
             </div>
             <div className="text-xl sm:text-2xl font-bold text-rose-700 mt-2">
-              ${totalExpenses.toLocaleString()}
+              ₹{totalExpenses.toLocaleString()}
             </div>
             <div className="text-[11px] text-slate-400 mt-1">
               Crew, travel & gear rentals
@@ -201,7 +201,7 @@ export const DashboardView: React.FC = () => {
               <Sparkles className="w-4 h-4 text-[#F1D099]" />
             </div>
             <div className="text-xl sm:text-2xl font-bold text-[#F1D099] mt-2">
-              ${netOperatingProfit.toLocaleString()}
+              ₹{netOperatingProfit.toLocaleString()}
             </div>
             <div className="text-[11px] text-slate-300 mt-1">
               Net collected margin
@@ -294,7 +294,7 @@ export const DashboardView: React.FC = () => {
                                 key={ac.id}
                                 className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-medium border border-slate-200"
                               >
-                                {member?.name.split(' ')[0] || 'Crew'} ({ac.role.split(' ')[0]})
+                                {member?.name?.split(' ')[0] || 'Crew'} ({ac.role?.split(' ')[0] || 'Crew'})
                               </span>
                             );
                           })
@@ -306,7 +306,7 @@ export const DashboardView: React.FC = () => {
 
                     <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center border-t sm:border-t-0 pt-2 sm:pt-0 border-slate-100">
                       <div className="text-xs font-semibold text-slate-900">
-                        ${project.total_amount.toLocaleString()}
+                        ₹{project.total_amount.toLocaleString()}
                       </div>
                       <div className="text-[11px] text-slate-400">Contract Total</div>
                     </div>
@@ -351,7 +351,7 @@ export const DashboardView: React.FC = () => {
                       </div>
                     </div>
                     <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                      ${enq.estimated_budget.toLocaleString()}
+                      ₹{enq.estimated_budget.toLocaleString()}
                     </span>
                   </div>
                   <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-200/60">

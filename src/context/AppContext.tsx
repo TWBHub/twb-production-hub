@@ -93,23 +93,48 @@ interface AppContextType {
   refreshAllData: () => Promise<void>;
   createProject: (project: Omit<Project, 'id' | 'created_at'>) => Promise<Project>;
   updateProject: (project: Project) => Promise<Project>;
+  deleteProject: (id: string) => Promise<void>;
   createEnquiry: (enquiry: Omit<Enquiry, 'id' | 'created_at'>) => Promise<Enquiry>;
   updateEnquiry: (enquiry: Enquiry) => Promise<Enquiry>;
   createClient: (client: Omit<Client, 'id' | 'created_at'>) => Promise<Client>;
   updateClient: (client: Client) => Promise<Client>;
-  assignTeamMember: (
+  createTeamMember: (member: Omit<TeamMember, 'id'>) => Promise<TeamMember>;
+updateTeamMember: (member: TeamMember) => Promise<TeamMember>;
+deleteTeamMember: (id: string) => Promise<void>;
+assignTeamMember: (
     assignment: Omit<ProjectTeamAssignment, 'id'>,
     adminOverride?: boolean
   ) => Promise<{ success: boolean; conflictError?: string }>;
+  updateTeamAssignment: (
+    assignmentId: string,
+    assignment: {
+      project_id?: string;
+      team_member_id: string;
+      role: string;
+      assignment_date: string;
+      notes?: string;
+    }
+  ) => Promise<{ success: boolean; error?: string; assignment?: ProjectTeamAssignment }>;
   removeTeamAssignment: (assignmentId: string) => Promise<void>;
-  checkTeamConflict: (teamMemberId: string, date: string, excludeProjectId?: string) => Promise<{ hasConflict: boolean; conflictingProject?: Project; memberName?: string }>;
+  checkTeamConflict: (
+    teamMemberId: string,
+    date: string,
+    excludeProjectId?: string,
+    excludeAssignmentId?: string
+  ) => Promise<{ hasConflict: boolean; conflictingProject?: Project; memberName?: string }>;
   createProjectData: (data: Omit<ProjectData, 'id'>) => Promise<ProjectData>;
   updateProjectData: (data: ProjectData) => Promise<ProjectData>;
   deleteProjectData: (id: string) => Promise<void>;
   createDeliverable: (deliverable: Omit<Deliverable, 'id' | 'last_updated'>) => Promise<Deliverable>;
+  updateDeliverable: (deliverable: Deliverable) => Promise<Deliverable>;
+  deleteDeliverable: (id: string) => Promise<void>;
   updateDeliverableStatus: (deliverableId: string, status: DeliverableStatus) => Promise<void>;
   createPayment: (payment: Omit<Payment, 'id' | 'created_at'>) => Promise<Payment>;
   createExpense: (expense: Omit<Expense, 'id' | 'created_at'>) => Promise<Expense>;
+  updateExpense: (expense: Expense) => Promise<Expense>;
+  deleteExpense: (id: string) => Promise<void>;
+  updatePayment: (payment: Payment) => Promise<Payment>;
+  deletePayment: (id: string) => Promise<void>;
   createCalendarEvent: (event: Omit<CalendarEvent, 'id'>) => Promise<CalendarEvent>;
   deleteCalendarEvent: (id: string) => Promise<void>;
   markNotificationRead: (id: string) => Promise<void>;
@@ -122,11 +147,23 @@ interface AppContextType {
   canManageTeam: boolean;
   canCreateProject: boolean;
   isEditorOnly: boolean;
+  isAdmin: boolean;
+  isManager: boolean;
+  userRole: UserRole;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+  // Clean up any residual theme state
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('twbhub_theme');
+      document.documentElement.classList.remove('dark');
+      document.documentElement.removeAttribute('data-theme');
+    }
+  }, []);
+
   const [brandFilter, setBrandFilter] = useState<BrandId>(() => {
     return (localStorage.getItem('twbhub_brand_filter') as BrandId) || 'all';
   });
@@ -178,56 +215,84 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   }, []);
 
-  // Fetch all collections
-  const refreshAllData = useCallback(async () => {
-    try {
-      const [
-        comps,
-        clis,
-        enqs,
-        prjs,
-        tms,
-        eds,
-        ptm,
-        pdt,
-        dels,
-        pays,
-        exps,
-        evts,
-        notifs,
-      ] = await Promise.all([
-        apiService.getCompanies(),
-        apiService.getClients(),
-        apiService.getEnquiries(),
-        apiService.getProjects(),
-        apiService.getTeamMembers(),
-        apiService.getEditors(),
-        apiService.getProjectTeam(),
-        apiService.getProjectData(),
-        apiService.getDeliverables(),
-        apiService.getPayments(),
-        apiService.getExpenses(),
-        apiService.getCalendarEvents(),
-        apiService.getNotifications(),
-      ]);
+ // Fetch all collections
+const refreshAllData = useCallback(async () => {
+  try {
+    const results = await Promise.allSettled([
+      apiService.getCompanies(),
+      apiService.getClients(),
+      apiService.getEnquiries(),
+      apiService.getProjects(),
+      apiService.getTeamMembers(),
+      apiService.getEditors(),
+      apiService.getProjectTeam(),
+      apiService.getProjectData(),
+      apiService.getDeliverables(),
+      apiService.getPayments(),
+      apiService.getExpenses(),
+      apiService.getCalendarEvents(),
+      apiService.getNotifications(),
+    ]);
 
-      setCompanies(comps);
-      setClients(clis);
-      setEnquiries(enqs);
-      setProjects(prjs);
-      setTeamMembers(tms);
-      setEditors(eds);
-      setProjectTeam(ptm);
-      setProjectData(pdt);
-      setDeliverables(dels);
-      setPayments(pays);
-      setExpenses(exps);
-      setCalendarEvents(evts);
-      setNotifications(notifs);
-    } catch (err) {
-      console.error('Failed to load TWBHub data:', err);
-    }
-  }, []);
+    const names = [
+      'companies',
+      'clients',
+      'enquiries',
+      'projects',
+      'team members',
+      'editors',
+      'project team',
+      'project data',
+      'deliverables',
+      'payments',
+      'expenses',
+      'calendar events',
+      'notifications',
+    ];
+
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        console.error(
+          `Failed to load ${names[index]}:`,
+          result.reason
+        );
+      }
+    });
+
+    const [
+      comps,
+      clis,
+      enqs,
+      prjs,
+      tms,
+      eds,
+      ptm,
+      pdt,
+      dels,
+      pays,
+      exps,
+      evts,
+      notifs,
+    ] = results;
+
+    if (comps.status === 'fulfilled') setCompanies(comps.value);
+    if (clis.status === 'fulfilled') setClients(clis.value);
+    if (enqs.status === 'fulfilled') setEnquiries(enqs.value);
+    if (prjs.status === 'fulfilled') setProjects(prjs.value);
+    if (tms.status === 'fulfilled') setTeamMembers(tms.value);
+    if (eds.status === 'fulfilled') setEditors(eds.value);
+    if (ptm.status === 'fulfilled') setProjectTeam(ptm.value);
+    if (pdt.status === 'fulfilled') setProjectData(pdt.value);
+    if (dels.status === 'fulfilled') setDeliverables(dels.value);
+    if (pays.status === 'fulfilled') setPayments(pays.value);
+    if (exps.status === 'fulfilled') setExpenses(exps.value);
+    if (evts.status === 'fulfilled') setCalendarEvents(evts.value);
+    if (notifs.status === 'fulfilled') setNotifications(notifs.value);
+  } catch (err) {
+    console.error('Failed to load TWBHub data:', err);
+  }
+}, []);
+
 
   // Refresh profile from Supabase profiles table
   const refreshUserProfile = useCallback(async (): Promise<Profile | null> => {
@@ -433,10 +498,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   // Brand Filtering logic
-  const matchBrand = (companyId: 'twb' | 'golden_june') => {
-    if (brandFilter === 'all') return true;
-    return companyId === brandFilter;
-  };
+
+const matchBrand = (companyId: string) => {
+  if (brandFilter === 'all') return true;
+
+  const companyUuid =
+    brandFilter === 'golden_june'
+      ? '3a19bbe1-a2bc-46db-bbbc-44ef7f5036ec'
+      : '5736bf57-b1db-4896-a4df-4963ded1c4c6';
+
+  return companyId === brandFilter || companyId === companyUuid;
+};
 
   // Deliverables filter with Role enforcement
   const filteredDeliverables = deliverables.filter(d => {
@@ -489,9 +561,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const updateProject = async (project: Project) => {
+    setProjects(prev => prev.map(p => (p.id === project.id ? project : p)));
     const updated = await apiService.updateProject(project);
     await refreshAllData();
     return updated;
+  };
+
+  const deleteProject = async (id: string) => {
+    await apiService.deleteProject(id);
+    await refreshAllData();
   };
 
   const createEnquiry = async (enquiry: Omit<Enquiry, 'id' | 'created_at'>) => {
@@ -512,6 +590,23 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return created;
   };
 
+const createTeamMember = async (member: Omit<TeamMember, 'id'>) => {
+  const created = await apiService.createTeamMember(member);
+  await refreshAllData();
+  return created;
+};
+
+const updateTeamMember = async (member: TeamMember) => {
+  const updated = await apiService.updateTeamMember(member);
+  await refreshAllData();
+  return updated;
+};
+
+const deleteTeamMember = async (id: string) => {
+  await apiService.deleteTeamMember(id);
+  await refreshAllData();
+};
+
   const updateClient = async (client: Client) => {
     const updated = await apiService.updateClient(client);
     await refreshAllData();
@@ -529,45 +624,107 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return res;
   };
 
+  const updateTeamAssignment = async (
+    assignmentId: string,
+    assignment: {
+      project_id?: string;
+      team_member_id: string;
+      role: string;
+      assignment_date: string;
+      notes?: string;
+    }
+  ) => {
+    const res = await apiService.updateTeamAssignment(assignmentId, assignment);
+    if (res.success) {
+      if (res.assignment) {
+        setProjectTeam(prev => prev.map(a => (a.id === assignmentId ? res.assignment! : a)));
+      }
+      await refreshAllData();
+    }
+    return res;
+  };
+
   const removeTeamAssignment = async (assignmentId: string) => {
+    setProjectTeam(prev => prev.filter(a => a.id !== assignmentId));
     await apiService.removeTeamAssignment(assignmentId);
     await refreshAllData();
   };
 
-  const checkTeamConflict = async (teamMemberId: string, date: string, excludeProjectId?: string) => {
-    return apiService.checkTeamConflict(teamMemberId, date, excludeProjectId);
+  const checkTeamConflict = async (
+    teamMemberId: string,
+    date: string,
+    excludeProjectId?: string,
+    excludeAssignmentId?: string
+  ) => {
+    return apiService.checkTeamConflict(teamMemberId, date, excludeProjectId, excludeAssignmentId);
   };
 
   const createProjectData = async (data: Omit<ProjectData, 'id'>) => {
     const created = await apiService.createProjectData(data);
+    setProjectData(prev => [created, ...prev.filter(d => d.id !== created.id)]);
     await refreshAllData();
     return created;
   };
 
   const updateProjectData = async (data: ProjectData) => {
+    setProjectData(prev => prev.map(d => (d.id === data.id ? data : d)));
     const updated = await apiService.updateProjectData(data);
+    setProjectData(prev => prev.map(d => (d.id === data.id ? updated : d)));
     await refreshAllData();
     return updated;
   };
 
   const deleteProjectData = async (id: string) => {
+    setProjectData(prev => prev.filter(d => d.id !== id));
     await apiService.deleteProjectData(id);
     await refreshAllData();
   };
 
   const createDeliverable = async (deliverable: Omit<Deliverable, 'id' | 'last_updated'>) => {
     const created = await apiService.createDeliverable(deliverable);
+    setDeliverables(prev => [created, ...prev.filter(d => d.id !== created.id)]);
     await refreshAllData();
     return created;
   };
 
+  const updateDeliverable = async (deliverable: Deliverable) => {
+    setDeliverables(prev => prev.map(d => (d.id === deliverable.id ? deliverable : d)));
+    const updated = await apiService.updateDeliverable(deliverable);
+    setDeliverables(prev => prev.map(d => (d.id === deliverable.id ? updated : d)));
+    await refreshAllData();
+    return updated;
+  };
+
+  const deleteDeliverable = async (id: string) => {
+    await apiService.deleteDeliverable(id);
+    setDeliverables(prev => prev.filter(d => d.id !== id));
+    await refreshAllData();
+  };
+
   const updateDeliverableStatus = async (deliverableId: string, status: DeliverableStatus) => {
-    await apiService.updateDeliverableStatus(
+    // 1. Immediately update local state so UI and completion dot reflect change instantly
+    setDeliverables(prev =>
+      prev.map(d =>
+        d.id === deliverableId
+          ? { ...d, status, last_updated: new Date().toISOString() }
+          : d
+      )
+    );
+
+    // 2. Persist to Supabase deliverables table and local storage
+    const updated = await apiService.updateDeliverableStatus(
       deliverableId,
       status,
       currentUser?.role || 'Team Member',
       currentUser?.full_name || 'Studio Member'
     );
+
+    if (updated) {
+      setDeliverables(prev =>
+        prev.map(d => (d.id === deliverableId ? updated : d))
+      );
+    }
+
     await refreshAllData();
   };
 
@@ -581,6 +738,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     const created = await apiService.createExpense(expense);
     await refreshAllData();
     return created;
+  };
+
+const updateExpense = async (expense: Expense) => {
+  const updatedExpense = await apiService.updateExpense(expense);
+
+  setExpenses(prev =>
+    prev.map(e => e.id === updatedExpense.id ? updatedExpense : e)
+  );
+
+  return updatedExpense;
+};
+
+const deleteExpense = async (id: string) => {
+  await apiService.deleteExpense(id);
+
+  setExpenses(prev =>
+    prev.filter(e => e.id !== id)
+  );
+};
+
+  const updatePayment = async (payment: Payment) => {
+    const updatedPayment = await apiService.updatePayment(payment);
+    await refreshAllData();
+    return updatedPayment;
+  };
+
+  const deletePayment = async (id: string) => {
+    await apiService.deletePayment(id);
+    await refreshAllData();
   };
 
   const createCalendarEvent = async (event: Omit<CalendarEvent, 'id'>) => {
@@ -653,20 +839,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         refreshAllData,
         createProject,
         updateProject,
+        deleteProject,
         createEnquiry,
         updateEnquiry,
         createClient,
         updateClient,
-        assignTeamMember,
+        createTeamMember,
+updateTeamMember,
+deleteTeamMember,
+assignTeamMember,
+        updateTeamAssignment,
         removeTeamAssignment,
         checkTeamConflict,
         createProjectData,
         updateProjectData,
         deleteProjectData,
         createDeliverable,
+        updateDeliverable,
+        deleteDeliverable,
         updateDeliverableStatus,
         createPayment,
         createExpense,
+        updateExpense,
+        deleteExpense,
+        updatePayment,
+        deletePayment,
         createCalendarEvent,
         deleteCalendarEvent,
         markNotificationRead,
@@ -677,6 +874,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         canManageTeam,
         canCreateProject,
         isEditorOnly,
+        isAdmin,
+        isManager,
+        userRole,
       }}
     >
       {children}

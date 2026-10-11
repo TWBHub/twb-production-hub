@@ -1,8 +1,14 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 
 // Supabase environment configuration
-const envUrl = import.meta.env.VITE_SUPABASE_URL || '';
-const envKey = import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+const envUrl =
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_URL) ||
+  (typeof process !== 'undefined' && process.env?.VITE_SUPABASE_URL) ||
+  '';
+const envKey =
+  (typeof import.meta !== 'undefined' && import.meta.env?.VITE_SUPABASE_ANON_KEY) ||
+  (typeof process !== 'undefined' && process.env?.VITE_SUPABASE_ANON_KEY) ||
+  '';
 
 // Runtime local storage override support for user custom connections
 const getStoredConfig = () => {
@@ -126,6 +132,7 @@ create table if not exists clients (
   phone text not null,
   address text,
   instagram text,
+  instagram_2 text,
   notes text,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
@@ -209,20 +216,16 @@ create table if not exists project_team (
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
--- 8. PROJECT DATA (METADATA & EXTERNAL STORAGE LINKS)
+-- 8. PROJECT DATA (METADATA & EXTERNAL STORAGE RECORDS)
 create table if not exists project_data (
   id uuid default uuid_generate_v4() primary key,
   project_id uuid references projects(id) on delete cascade,
-  company_id text references companies(id) on delete cascade,
-  category text check (category in ('Raw Footage', 'Photos', 'Audio', 'Project Files', 'Client References', 'Music', 'Documents')) not null,
-  storage_location text not null,
-  folder_link text not null,
-  description text,
-  status text check (status in ('Pending', 'Received', 'Backed Up', 'Archived')) default 'Pending',
-  responsible_person text,
-  date_recorded date default current_date,
+  name text not null,
+  data_type text default 'SSD',
+  status text default 'Active',
   notes text,
-  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
 -- 9. DELIVERABLES

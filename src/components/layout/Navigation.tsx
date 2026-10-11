@@ -67,7 +67,16 @@ export const Sidebar: React.FC<{ mobileOpen: boolean; setMobileOpen: (open: bool
     { id: 'enquiries', label: 'Enquiries / Leads', icon: UserPlus },
     { id: 'clients', label: 'Clients', icon: Users },
     { id: 'calendar', label: 'Calendar', icon: CalendarIcon },
-    { id: 'team-availability', label: 'Team Availability', icon: UserCheck },
+    {
+  id: 'team-availability',
+  label: 'Team Availability',
+  icon: UserCheck
+},
+{
+  id: 'team-members',
+  label: 'Team Members',
+  icon: Users
+},
     { id: 'editors', label: 'Editors & Workload', icon: Film },
     { id: 'finance', label: 'Finance', icon: DollarSign },
     { id: 'data', label: 'Project Data', icon: HardDrive },
@@ -206,7 +215,7 @@ export const Sidebar: React.FC<{ mobileOpen: boolean; setMobileOpen: (open: bool
           })}
         </nav>
 
-        {/* Active Authenticated Profile & Logout */}
+        {/* User Profile */}
         <div className="p-3 border-t border-slate-800 bg-slate-900/70">
           <div className="flex items-center justify-between p-2 rounded-lg bg-slate-950 border border-slate-800/80">
             <div className="flex items-center gap-2.5 min-w-0">

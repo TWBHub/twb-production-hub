@@ -16,7 +16,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { PaymentMode, ExpenseCategory } from '../../types';
+import { Payment, PaymentMode, ExpenseCategory, Expense } from '../../types';
 import { generateReceiptPDF } from '../../utils/pdfGenerator';
 
 export const FinanceView: React.FC = () => {
@@ -28,6 +28,10 @@ export const FinanceView: React.FC = () => {
     clients,
     createPayment,
     createExpense,
+    updatePayment,
+    deletePayment,
+    updateExpense,
+    deleteExpense,
     canManageFinance,
     brandFilter,
   } = useApp();
@@ -36,6 +40,10 @@ export const FinanceView: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showExpenseModal, setShowExpenseModal] = useState(false);
+  const [editingPayment, setEditingPayment] = useState<Payment | null>(null);
+  const [deletingPaymentId, setDeletingPaymentId] = useState<string | null>(null);
+  const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
+  const [deletingExpenseId, setDeletingExpenseId] = useState<string | null>(null);
 
   // New Payment Form
   const [payProjectId, setPayProjectId] = useState(filteredProjects[0]?.id || '');
@@ -43,6 +51,7 @@ export const FinanceView: React.FC = () => {
   const [payMode, setPayMode] = useState<PaymentMode>('Bank Transfer');
   const [payDesc, setPayDesc] = useState('Milestone Retainer Payment');
   const [payDate, setPayDate] = useState(new Date().toISOString().split('T')[0]);
+  const [isSavingPayment, setIsSavingPayment] = useState(false);
 
   // New Expense Form
   const [expProjectId, setExpProjectId] = useState(filteredProjects[0]?.id || '');
@@ -66,19 +75,16 @@ export const FinanceView: React.FC = () => {
     );
   }
 
-  // Financial calculations
-  const totalPipeline = filteredProjects.reduce((sum, p) => sum + p.total_amount, 0);
-  const totalReceived = filteredPayments.reduce((sum, p) => sum + p.amount, 0);
-  const totalExpenses = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
-  const pendingReceivables = Math.max(0, totalPipeline - totalReceived);
-  const netMargin = totalReceived - totalExpenses;
-  const marginPercentage = totalReceived > 0 ? Math.round((netMargin / totalReceived) * 100) : 0;
+  // Helper to calculate total received for a project directly from payments
+  const calculateProjectReceived = (_p: (typeof filteredProjects)[0], pPayments: typeof filteredPayments) => {
+    return pPayments.reduce((s, pm) => s + pm.amount, 0);
+  };
 
   // Project by Project Profit Breakdown
   const projectProfits = filteredProjects.map(p => {
     const pPayments = filteredPayments.filter(pm => pm.project_id === p.id);
     const pExpenses = filteredExpenses.filter(pe => pe.project_id === p.id);
-    const received = pPayments.reduce((s, pm) => s + pm.amount, 0);
+    const received = calculateProjectReceived(p, pPayments);
     const cost = pExpenses.reduce((s, pe) => s + pe.amount, 0);
     const profit = received - cost;
     const balance = Math.max(0, p.total_amount - received);
@@ -93,6 +99,14 @@ export const FinanceView: React.FC = () => {
     };
   });
 
+  // Financial calculations
+  const totalPipeline = filteredProjects.reduce((sum, p) => sum + p.total_amount, 0);
+  const totalReceived = projectProfits.reduce((sum, pp) => sum + pp.received, 0);
+  const totalExpenses = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
+  const pendingReceivables = Math.max(0, totalPipeline - totalReceived);
+  const netMargin = totalReceived - totalExpenses;
+  const marginPercentage = totalReceived > 0 ? Math.round((netMargin / totalReceived) * 100) : 0;
+
   const handleDownloadReceipt = (payment: any) => {
     const project = filteredProjects.find(p => p.id === payment.project_id);
     const client = clients.find(c => c.id === project?.client_id);
@@ -104,42 +118,137 @@ export const FinanceView: React.FC = () => {
 
   const handleAddPayment = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSavingPayment) return;
+    if (!payProjectId || payAmount <= 0) return;
+
     const proj = filteredProjects.find(p => p.id === payProjectId);
     if (!proj) return;
 
-    await createPayment({
-      project_id: proj.id,
-      company_id: proj.company_id,
-      amount: payAmount,
-      payment_mode: payMode,
-      description: payDesc,
-      payment_date: payDate,
-      receipt_number: `REC-${proj.company_id.toUpperCase()}-${Date.now().toString().slice(-4)}`,
-    });
+    try {
+      setIsSavingPayment(true);
+      if (editingPayment) {
+        await updatePayment({
+          ...editingPayment,
+          project_id: proj.id,
+          company_id: proj.company_id,
+          amount: payAmount,
+          payment_mode: payMode,
+          description: payDesc,
+          payment_date: payDate,
+        });
+      } else {
+        await createPayment({
+          project_id: proj.id,
+          company_id: proj.company_id,
+          amount: payAmount,
+          payment_mode: payMode,
+          description: payDesc,
+          payment_date: payDate,
+          receipt_number: `REC-${proj.company_id.toUpperCase()}-${Date.now().toString().slice(-4)}`,
+        });
+      }
 
-    setShowPaymentModal(false);
+      setEditingPayment(null);
+      setShowPaymentModal(false);
+    } catch (err: any) {
+      console.error('Failed to record payment:', err);
+      alert(`Could not record payment: ${err?.message || String(err)}`);
+    } finally {
+      setIsSavingPayment(false);
+    }
   };
+
+const handleEditPayment = (payment: Payment) => {
+  setEditingPayment(payment);
+  setPayProjectId(payment.project_id);
+  setPayAmount(payment.amount);
+  setPayMode(payment.payment_mode);
+  setPayDesc(payment.description);
+  setPayDate(payment.payment_date);
+  setShowPaymentModal(true);
+};
+
+const handleDeletePayment = (id: string) => {
+  setDeletingPaymentId(id);
+};
+
+const confirmDeletePayment = async () => {
+  if (!deletingPaymentId) return;
+
+  try {
+    await deletePayment(deletingPaymentId);
+    setDeletingPaymentId(null);
+  } catch (error) {
+    console.error('Failed to delete payment:', error);
+    alert(
+      `Could not delete this payment: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+};
 
   const handleAddExpense = async (e: React.FormEvent) => {
     e.preventDefault();
     const proj = filteredProjects.find(p => p.id === expProjectId);
     if (!proj) return;
 
-    await createExpense({
-      project_id: proj.id,
-      company_id: proj.company_id,
-      amount: expAmount,
-      category: expCat,
-      description: expDesc,
-      paid_to: expPaidTo,
-      expense_date: expDate,
-    });
+   if (editingExpense) {
+      await updateExpense({
+        ...editingExpense,
+        project_id: proj.id,
+        company_id: proj.company_id,
+        amount: expAmount,
+        category: expCat,
+        description: expDesc,
+        paid_to: expPaidTo,
+        expense_date: expDate,
+      });
+    } else {
+      await createExpense({
+        project_id: proj.id,
+        company_id: proj.company_id,
+        amount: expAmount,
+        category: expCat,
+        description: expDesc,
+        paid_to: expPaidTo,
+        expense_date: expDate,
+      });
+    }
 
+    setEditingExpense(null);
     setShowExpenseModal(false);
   };
 
-  return (
-    <div className="space-y-6 pb-12">
+    const handleEditExpense = (expense: Expense) => {
+    setEditingExpense(expense);
+    setExpProjectId(expense.project_id);
+    setExpAmount(expense.amount);
+    setExpCat(expense.category);
+    setExpDesc(expense.description);
+    setExpPaidTo(expense.paid_to);
+    setExpDate(expense.expense_date);
+    setShowExpenseModal(true);
+  };
+
+const handleDeleteExpense = (id: string) => {
+  setDeletingExpenseId(id);
+};
+
+const confirmDeleteExpense = async () => {
+  if (!deletingExpenseId) return;
+
+  try {
+    await deleteExpense(deletingExpenseId);
+    setDeletingExpenseId(null);
+  } catch (error) {
+    console.error('Failed to delete expense:', error);
+    alert(`Could not delete this expense: ${error instanceof Error ? error.message : String(error)}`);
+  }
+};
+
+return (
+  <div className="space-y-6 pb-12">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
@@ -174,7 +283,7 @@ export const FinanceView: React.FC = () => {
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
           <div className="text-xs font-medium text-slate-500">Gross Contract Pipeline</div>
           <div className="text-xl sm:text-2xl font-bold text-slate-900 mt-2">
-            ${totalPipeline.toLocaleString()}
+            ₹{totalPipeline.toLocaleString()}
           </div>
           <div className="text-[11px] text-slate-400 mt-1">{filteredProjects.length} weddings committed</div>
         </div>
@@ -182,7 +291,7 @@ export const FinanceView: React.FC = () => {
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
           <div className="text-xs font-medium text-slate-500">Cleared Inflow (Collected)</div>
           <div className="text-xl sm:text-2xl font-bold text-emerald-700 mt-2">
-            ${totalReceived.toLocaleString()}
+            ₹{totalReceived.toLocaleString()}
           </div>
           <div className="text-[11px] text-emerald-600 font-medium mt-1">
             {totalPipeline > 0 ? Math.round((totalReceived / totalPipeline) * 100) : 0}% collected
@@ -192,7 +301,7 @@ export const FinanceView: React.FC = () => {
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
           <div className="text-xs font-medium text-slate-500">Awaiting Collection</div>
           <div className="text-xl sm:text-2xl font-bold text-[#8c672b] mt-2">
-            ${pendingReceivables.toLocaleString()}
+            ₹{pendingReceivables.toLocaleString()}
           </div>
           <div className="text-[11px] text-[#8c672b] mt-1">Scheduled installments</div>
         </div>
@@ -200,7 +309,7 @@ export const FinanceView: React.FC = () => {
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
           <div className="text-xs font-medium text-slate-500">Direct Cost of Production</div>
           <div className="text-xl sm:text-2xl font-bold text-rose-600 mt-2">
-            ${totalExpenses.toLocaleString()}
+            ₹{totalExpenses.toLocaleString()}
           </div>
           <div className="text-[11px] text-slate-400 mt-1">Crew, travel, gear, edit fees</div>
         </div>
@@ -211,7 +320,7 @@ export const FinanceView: React.FC = () => {
             <Sparkles className="w-4 h-4 text-[#F1D099]" />
           </div>
           <div className="text-xl sm:text-2xl font-bold text-[#F1D099] mt-2">
-            ${netMargin.toLocaleString()}
+            ₹{netMargin.toLocaleString()}
           </div>
           <div className="text-[11px] text-slate-300 mt-1">
             {marginPercentage}% operational margin
@@ -254,7 +363,7 @@ export const FinanceView: React.FC = () => {
           }`}
         >
           <CreditCard className="w-4 h-4" />
-          <span>Expense Log (${totalExpenses.toLocaleString()})</span>
+          <span>Expense Log (₹{totalExpenses.toLocaleString()})</span>
         </button>
       </div>
 
@@ -304,19 +413,19 @@ export const FinanceView: React.FC = () => {
                         </span>
                       </td>
                       <td className="p-3.5 text-right font-medium text-slate-800">
-                        ${contract.toLocaleString()}
+                        ₹{contract.toLocaleString()}
                       </td>
                       <td className="p-3.5 text-right font-semibold text-emerald-700">
-                        ${received.toLocaleString()}
+                        ₹{received.toLocaleString()}
                       </td>
                       <td className="p-3.5 text-right text-[#8c672b] font-medium">
-                        ${balance.toLocaleString()}
+                        ₹{balance.toLocaleString()}
                       </td>
                       <td className="p-3.5 text-right text-rose-600">
-                        ${cost.toLocaleString()}
+                        ₹{cost.toLocaleString()}
                       </td>
                       <td className="p-3.5 text-right font-bold text-blue-900">
-                        ${profit.toLocaleString()}
+                        ₹{profit.toLocaleString()}
                       </td>
                     </tr>
                   );
@@ -371,18 +480,34 @@ export const FinanceView: React.FC = () => {
                       </td>
                       <td className="p-3.5 text-slate-600">{p.description}</td>
                       <td className="p-3.5 text-right font-bold text-emerald-700 text-sm">
-                        +${p.amount.toLocaleString()}
+                        +₹{p.amount.toLocaleString()}
                       </td>
                       <td className="p-3.5 text-right">
-                        <button
-                          onClick={() => handleDownloadReceipt(p)}
-                          className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 text-[11px] font-semibold rounded-md border border-blue-200 transition-colors inline-flex items-center gap-1"
-                          title="Generate printable Receipt PDF"
-                        >
-                          <Download className="w-3 h-3" />
-                          <span>Receipt PDF</span>
-                        </button>
-                      </td>
+  <div className="flex items-center justify-end gap-1.5">
+    <button
+      onClick={() => handleDownloadReceipt(p)}
+      className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 text-[11px] font-semibold rounded-md border border-blue-200 transition-colors inline-flex items-center gap-1"
+      title="Generate printable Receipt PDF"
+    >
+      <Download className="w-3 h-3" />
+      <span>Receipt PDF</span>
+    </button>
+
+    <button
+      onClick={() => handleEditPayment(p)}
+      className="px-2.5 py-1 text-[11px] font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md border border-blue-200"
+    >
+      Edit
+    </button>
+
+    <button
+      onClick={() => handleDeletePayment(p.id)}
+      className="px-2.5 py-1 text-[11px] font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-md border border-rose-200"
+    >
+      Delete
+    </button>
+  </div>
+</td>
                     </tr>
                   );
                 })}
@@ -400,7 +525,7 @@ export const FinanceView: React.FC = () => {
               Itemized Production Expenses & Vendor Payouts
             </h3>
             <span className="text-xs text-slate-500">
-              Total Logged: ${totalExpenses.toLocaleString()}
+              Total Logged: ₹{totalExpenses.toLocaleString()}
             </span>
           </div>
 
@@ -414,6 +539,7 @@ export const FinanceView: React.FC = () => {
                   <th className="p-3.5">Vendor / Payee</th>
                   <th className="p-3.5">Expense Details</th>
                   <th className="p-3.5 text-right">Amount</th>
+                  <th className="p-3.5 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -433,8 +559,24 @@ export const FinanceView: React.FC = () => {
                       <td className="p-3.5 font-medium text-slate-800">{e.paid_to}</td>
                       <td className="p-3.5 text-slate-600">{e.description}</td>
                       <td className="p-3.5 text-right font-bold text-rose-600 text-sm">
-                        -${e.amount.toLocaleString()}
+                        -₹{e.amount.toLocaleString()}
                       </td>
+                      <td className="p-3.5 text-right">
+  <div className="flex items-center justify-end gap-1.5">
+    <button
+      onClick={() => handleEditExpense(e)}
+      className="px-2.5 py-1 text-[11px] font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-md border border-blue-200"
+    >
+      Edit
+    </button>
+    <button
+      onClick={() => handleDeleteExpense(e.id)}
+      className="px-2.5 py-1 text-[11px] font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 rounded-md border border-rose-200"
+    >
+      Delete
+    </button>
+  </div>
+</td>
                     </tr>
                   );
                 })}
@@ -448,7 +590,9 @@ export const FinanceView: React.FC = () => {
       {showPaymentModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6 border border-slate-200 my-8">
-            <h2 className="text-base font-bold text-slate-900 mb-4">Record Client Payment Receipt</h2>
+            <h2 className="text-base font-bold text-slate-900 mb-4">
+  {editingPayment ? 'Edit Client Payment Receipt' : 'Record Client Payment Receipt'}
+</h2>
             <form onSubmit={handleAddPayment} className="space-y-3 text-xs">
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">Target Wedding Project</label>
@@ -457,17 +601,22 @@ export const FinanceView: React.FC = () => {
                   onChange={e => setPayProjectId(e.target.value)}
                   className="w-full p-2 border border-slate-300 rounded-lg"
                 >
-                  {filteredProjects.map(p => (
-                    <option key={p.id} value={p.id}>
-                      {p.name} (Balance: ${(p.total_amount).toLocaleString()})
-                    </option>
-                  ))}
+                  {filteredProjects.map(p => {
+                    const pPayments = filteredPayments.filter(pm => pm.project_id === p.id);
+                    const pReceived = calculateProjectReceived(p, pPayments);
+                    const pBal = Math.max(0, p.total_amount - pReceived);
+                    return (
+                      <option key={p.id} value={p.id}>
+                        {p.name} (Balance: ₹{pBal.toLocaleString()})
+                      </option>
+                    );
+                  })}
                 </select>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Amount ($)</label>
+                  <label className="block font-semibold text-slate-700 mb-1">Amount (₹)</label>
                   <input
                     type="number"
                     required
@@ -518,16 +667,22 @@ export const FinanceView: React.FC = () => {
               <div className="flex justify-end gap-2 pt-3 border-t">
                 <button
                   type="button"
-                  onClick={() => setShowPaymentModal(false)}
+                  onClick={() => {
+  setEditingPayment(null);
+  setShowPaymentModal(false);
+}}
                   className="px-4 py-2 text-xs text-slate-600 hover:bg-slate-100 rounded-lg font-medium"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-xs font-semibold bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg shadow-xs"
+                  disabled={isSavingPayment}
+                  className={`px-5 py-2 text-xs font-semibold text-white rounded-lg shadow-xs ${
+                    isSavingPayment ? 'bg-emerald-400 cursor-not-allowed' : 'bg-emerald-700 hover:bg-emerald-800'
+                  }`}
                 >
-                  Confirm & Log Receipt
+                  {isSavingPayment ? 'Saving...' : editingPayment ? 'Save Changes' : 'Confirm & Log Receipt'}
                 </button>
               </div>
             </form>
@@ -539,7 +694,7 @@ export const FinanceView: React.FC = () => {
       {showExpenseModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6 border border-slate-200 my-8">
-            <h2 className="text-base font-bold text-slate-900 mb-4">Record Production Expense</h2>
+            <h2 className="text-base font-bold text-slate-900 mb-4">{editingExpense ? 'Edit Production Expense' : 'Record Production Expense'}</h2>
             <form onSubmit={handleAddExpense} className="space-y-3 text-xs">
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">Target Wedding Project</label>
@@ -558,7 +713,7 @@ export const FinanceView: React.FC = () => {
 
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Expense Amount ($)</label>
+                  <label className="block font-semibold text-slate-700 mb-1">Expense Amount (₹)</label>
                   <input
                     type="number"
                     required
@@ -639,6 +794,70 @@ export const FinanceView: React.FC = () => {
           </div>
         </div>
       )}
+      {deletingExpenseId && (
+  <div className="fixed inset-0 z-[60] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+    <div className="bg-white rounded-2xl shadow-xl max-w-sm w-full p-6 border border-slate-200">
+      <h2 className="text-base font-bold text-slate-900">
+        Delete Production Expense?
+      </h2>
+
+      <p className="text-xs text-slate-500 mt-2">
+        Are you sure you want to delete this expense? This action cannot be undone.
+      </p>
+
+      <div className="flex justify-end gap-2 pt-5">
+        <button
+          type="button"
+          onClick={() => setDeletingExpenseId(null)}
+          className="px-4 py-2 text-xs text-slate-600 hover:bg-slate-100 rounded-lg font-medium"
+        >
+          Cancel
+        </button>
+
+        <button
+          type="button"
+          onClick={confirmDeleteExpense}
+          className="px-4 py-2 text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white rounded-lg"
+        >
+          Delete Expense
+        </button>
+      </div>
     </div>
+  </div>
+)}
+
+    {deletingPaymentId && (
+      <div className="fixed inset-0 z-[60] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="bg-white rounded-2xl shadow-xl max-w-sm w-full p-6 border border-slate-200">
+          <h2 className="text-base font-bold text-slate-900">
+            Delete Client Payment?
+          </h2>
+
+          <p className="text-xs text-slate-500 mt-2">
+            Are you sure you want to delete this payment receipt? This action cannot be undone.
+          </p>
+
+          <div className="flex justify-end gap-2 pt-5">
+            <button
+              type="button"
+              onClick={() => setDeletingPaymentId(null)}
+              className="px-4 py-2 text-xs text-slate-600 hover:bg-slate-100 rounded-lg font-medium"
+            >
+              Cancel
+            </button>
+
+            <button
+              type="button"
+              onClick={confirmDeletePayment}
+              className="px-4 py-2 text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white rounded-lg"
+            >
+              Delete Payment
+            </button>
+          </div>
+        </div>
+      </div>
+    )}
+
+  </div>
   );
 };

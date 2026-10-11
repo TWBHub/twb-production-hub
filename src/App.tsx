@@ -8,6 +8,7 @@ import { EnquiriesView } from './components/enquiries/EnquiriesView';
 import { ClientsView } from './components/clients/ClientsView';
 import { CalendarView } from './components/calendar/CalendarView';
 import { TeamAvailabilityView } from './components/team/TeamAvailabilityView';
+import { TeamMembersView } from './components/team/TeamMembersView';
 import { FinanceView } from './components/finance/FinanceView';
 import { DeliverablesView } from './components/deliverables/DeliverablesView';
 import { DataManagementView } from './components/data/DataManagementView';
@@ -50,9 +51,12 @@ const AppContent: React.FC = () => {
         return <ClientsView />;
       case 'calendar':
         return <CalendarView />;
+      case 'team-availability':
       case 'team':
       case 'editors':
         return <TeamAvailabilityView />;
+      case 'team-members':
+        return <TeamMembersView />;
       case 'finance':
         return <FinanceView />;
       case 'deliverables':

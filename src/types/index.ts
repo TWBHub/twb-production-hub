@@ -29,8 +29,11 @@ export interface Client {
   partner_name?: string;
   email: string;
   phone: string;
+  alternate_phone?: string;
+  city?: string;
   address?: string;
   instagram?: string;
+  instagram_2?: string;
   notes?: string;
   created_at: string;
 }
@@ -70,6 +73,13 @@ export interface Profile {
 
 export type TeamRole = UserRole;
 
+export type TeamMemberCategory =
+  | 'Photo'
+  | 'Video'
+  | 'Editor'
+  | 'Drone'
+  | 'Other';
+
 export interface TeamMember {
   id: string;
   profile_id?: string;
@@ -77,7 +87,8 @@ export interface TeamMember {
   email: string;
   phone: string;
   role?: UserRole;
-  role_title: string; // e.g. Lead Photographer, Drone Operator, Cinematographer
+  role_title: string;
+  categories?: TeamMemberCategory[];
   skills?: string[];
   is_active?: boolean;
   daily_rate?: number;
@@ -101,20 +112,60 @@ export interface Editor {
   notes?: string;
 }
 
-export type ProjectStatus = 
-  | 'Lead' 
-  | 'Booked' 
-  | 'Pre-Production' 
-  | 'Shooting' 
-  | 'Editing' 
-  | 'Review' 
-  | 'Delivered' 
+export type ProjectStatus =
+  | 'Enquiry'
+  | 'Booked'
+  | 'Pre-Production'
+  | 'Shooting'
+  | 'Shoot Completed'
+  | 'Editing'
+  | 'Review'
+  | 'Delivered'
   | 'Archived';
+
+export const PROJECT_PRODUCTION_STAGES: ProjectStatus[] = [
+  'Enquiry',
+  'Booked',
+  'Shoot Completed',
+  'Editing',
+  'Review',
+  'Delivered',
+  'Archived',
+];
+
+export interface ProjectEvent {
+  id?: string;
+  project_id?: string;
+  event_name: string;
+  event_date: string;
+  event_time?: string;
+  event_address?: string;
+  team?: string;
+  event_notes?: string;
+  sort_order?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+export interface ProjectTCClause {
+  id: string;
+  title: string;
+  body: string;
+  enabled: boolean;
+}
+
+export type ClientHddStatus = 'Not Received' | 'Received' | 'Returned';
+
+export const CLIENT_HDD_STATUS_OPTIONS: ClientHddStatus[] = [
+  'Not Received',
+  'Received',
+  'Returned',
+];
 
 export interface Project {
   id: string;
   company_id: 'twb' | 'golden_june';
   client_id: string;
+  events?: ProjectEvent[];
   name: string;
   wedding_date_start: string;
   wedding_date_end: string;
@@ -130,6 +181,9 @@ export interface Project {
   booking_amount: number;
   total_amount: number;
   notes?: string;
+  client_hdd_status?: ClientHddStatus;
+  terms_clauses?: ProjectTCClause[];
+  booking_payment_error?: string;
   created_at: string;
 }
 
@@ -142,7 +196,9 @@ export interface ProjectTeamAssignment {
   notes?: string;
 }
 
-export type DataCategory = 
+export type StorageDriveCategory = 'SSD' | 'HDD' | 'Tower Drive';
+
+export type LegacyDataCategory = 
   | 'Raw Footage' 
   | 'Photos' 
   | 'Audio' 
@@ -151,20 +207,60 @@ export type DataCategory =
   | 'Music' 
   | 'Documents';
 
+export type StorageDropdownOption =
+  | "Client's"
+  | "TWB's"
+  | "GJ's"
+  | "Other's"
+  | "The Backup Drive";
+
+export type StorageTypeOption = 'SSD' | 'HDD' | 'Drive';
+
+export type StorageStatusOption = 'Active' | 'Archived' | 'Delivered' | 'Deleted';
+
+export const STORAGE_DROPDOWN_OPTIONS: StorageDropdownOption[] = [
+  "Client's",
+  "TWB's",
+  "GJ's",
+  "Other's",
+  "The Backup Drive",
+];
+
+export const STORAGE_TYPE_OPTIONS: StorageTypeOption[] = [
+  'SSD',
+  'HDD',
+  'Drive',
+];
+
+export const STORAGE_STATUS_OPTIONS: StorageStatusOption[] = [
+  'Active',
+  'Archived',
+  'Delivered',
+  'Deleted',
+];
+
+export type DataCategory = StorageDriveCategory | LegacyDataCategory | StorageTypeOption;
+
+export const STORAGE_DRIVE_CATEGORIES: StorageDriveCategory[] = ['SSD', 'HDD', 'Tower Drive'];
+
 export type DataStatus = 'Pending' | 'Received' | 'Ingested' | 'Backed Up' | 'Archived';
-export type ProjectDataStatus = DataStatus;
+export type ProjectDataStatus = DataStatus | StorageStatusOption;
 
 export interface ProjectData {
   id: string;
   project_id: string;
   company_id: 'twb' | 'golden_june';
+  storage?: StorageDropdownOption;
+  name?: string;
+  type?: StorageTypeOption;
+  location?: string;
   category: DataCategory;
-  storage_location: string; // e.g., 'Drive 04 / Box B', 'Synology NAS / 2026 / Weddings'
-  folder_link: string; // e.g. Google Drive / Dropbox / Frame.io
+  storage_location: string; // e.g., 'Drive 04 / Box B', 'Office'
+  folder_link?: string; // removed from UI, preserved for backward compatibility
   description: string;
-  status: DataStatus;
-  responsible_person: string;
-  date_recorded: string;
+  status: DataStatus | StorageStatusOption;
+  responsible_person?: string;
+  date_recorded?: string;
   notes?: string;
 }
 
@@ -186,7 +282,8 @@ export type DeliverableStatus =
   | 'Submitted' 
   | 'Changes Requested' 
   | 'Approved' 
-  | 'Delivered';
+  | 'Delivered'
+  | '';
 
 export type DeliverablePriority = 'Low' | 'Medium' | 'High' | 'Urgent';
 
@@ -201,6 +298,7 @@ export interface Deliverable {
   priority: DeliverablePriority;
   external_link?: string;
   notes?: string;
+  client_feedback?: string;
   review_status?: string;
   last_updated: string;
 }

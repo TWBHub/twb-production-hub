@@ -32,7 +32,8 @@ export const ClientsView: React.FC = () => {
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
-  const [showCreateModal, setShowCreateModal] = useState(false);
+const [showCreateModal, setShowCreateModal] = useState(false);
+const [editingClientId, setEditingClientId] = useState<string | null>(null);
 
   // Form State
   const [name, setName] = useState('');
@@ -44,6 +45,7 @@ export const ClientsView: React.FC = () => {
   const [phone, setPhone] = useState('');
   const [address, setAddress] = useState('');
   const [instagram, setInstagram] = useState('');
+  const [instagram2, setInstagram2] = useState('');
   const [notes, setNotes] = useState('');
 
   const filtered = filteredClients.filter(c => {
@@ -51,27 +53,74 @@ export const ClientsView: React.FC = () => {
     return (
       c.name.toLowerCase().includes(query) ||
       (c.partner_name && c.partner_name.toLowerCase().includes(query)) ||
-      c.email.toLowerCase().includes(query)
+      c.email.toLowerCase().includes(query) ||
+      (c.instagram && c.instagram.toLowerCase().includes(query)) ||
+      (c.instagram_2 && c.instagram_2.toLowerCase().includes(query))
     );
   });
 
+const openEditClient = (client: Client) => {
+  setEditingClientId(client.id);
+  setName(client.name || '');
+  setPartnerName(client.partner_name || '');
+  setCompanyId(client.company_id);
+  setEmail(client.email || '');
+  setPhone(client.phone || '');
+  setAddress(client.address || '');
+  setInstagram(client.instagram || '');
+  setInstagram2(client.instagram_2 || '');
+  setNotes(client.notes || '');
+  setSelectedClient(null);
+  setShowCreateModal(true);
+};
   const handleCreate = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!name || !email) return;
+  e.preventDefault();
 
-    await createClient({
-      company_id: companyId,
-      name,
-      partner_name: partnerName,
-      email,
-      phone,
-      address,
-      instagram,
-      notes,
-    });
+  if (!name || !email) return;
 
-    setShowCreateModal(false);
+  const clientData = {
+    company_id:
+  companyId === 'golden_june'
+    ? '3a19bbe1-a2bc-46db-bbbc-44ef7f5036ec'
+    : '5736bf57-b1db-4896-a4df-4963ded1c4c6',
+    name,
+    partner_name: partnerName,
+    email,
+    phone,
+    address,
+    instagram,
+    instagram_2: instagram2,
+    notes,
   };
+
+  if (editingClientId) {
+    const existingClient = filteredClients.find(
+      client => client.id === editingClientId
+    );
+
+    if (!existingClient) return;
+
+    await updateClient({
+      ...existingClient,
+      ...clientData,
+      id: editingClientId,
+    });
+  } else {
+    await createClient(clientData);
+  }
+
+  setName('');
+  setPartnerName('');
+  setCompanyId(brandFilter === 'golden_june' ? 'golden_june' : 'twb');
+  setEmail('');
+  setPhone('');
+  setAddress('');
+  setInstagram('');
+  setInstagram2('');
+  setNotes('');
+  setEditingClientId(null);
+  setShowCreateModal(false);
+};
 
   return (
     <div className="space-y-6 pb-12">
@@ -87,15 +136,18 @@ export const ClientsView: React.FC = () => {
 
         <button
           onClick={() => {
-            setName('');
-            setPartnerName('');
-            setEmail('');
-            setPhone('');
-            setAddress('');
-            setInstagram('');
-            setNotes('');
-            setShowCreateModal(true);
-          }}
+  setEditingClientId(null);
+  setName('');
+  setPartnerName('');
+  setCompanyId(brandFilter === 'golden_june' ? 'golden_june' : 'twb');
+  setEmail('');
+  setPhone('');
+  setAddress('');
+  setInstagram('');
+  setInstagram2('');
+  setNotes('');
+  setShowCreateModal(true);
+}}
           className="px-4 py-2 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg shadow-xs transition-colors flex items-center justify-center gap-2"
         >
           <Plus className="w-4 h-4" />
@@ -132,12 +184,16 @@ export const ClientsView: React.FC = () => {
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <span
-                    className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${
-                      client.company_id === 'twb' ? 'bg-blue-100 text-blue-800' : 'bg-[#F1D099]/25 text-[#5e430c] border border-[#F1D099]/40'
-                    }`}
-                  >
-                    {client.company_id === 'twb' ? 'TWB' : 'Golden June'}
-                  </span>
+  className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${
+    client.company_id === '5736bf57-b1db-4896-a4df-4963ded1c4c6'
+      ? 'bg-blue-100 text-blue-800'
+      : 'bg-[#F1D099]/25 text-[#5e430c] border border-[#F1D099]/40'
+  }`}
+>
+  {client.company_id === '5736bf57-b1db-4896-a4df-4963ded1c4c6'
+    ? 'TWB'
+    : 'Golden June'}
+</span>
                   <span className="text-[11px] text-slate-400 font-medium">
                     {clientProjects.length} Projects
                   </span>
@@ -171,18 +227,28 @@ export const ClientsView: React.FC = () => {
               <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
                 <div>
                   <div className="text-xs font-bold text-emerald-700">
-                    ${totalPaid.toLocaleString()}
+                    ₹{totalPaid.toLocaleString()}
                   </div>
                   <div className="text-[10px] text-slate-400">Total Billed Paid</div>
                 </div>
 
-                <button
-                  onClick={() => setSelectedClient(client)}
-                  className="text-xs font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1"
-                >
-                  View Profile
-                  <ExternalLink className="w-3 h-3" />
-                </button>
+               <div className="flex items-center gap-3">
+  <button
+    onClick={() => setSelectedClient(client)}
+    className="text-xs font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1"
+  >
+    View Profile
+    <ExternalLink className="w-3 h-3" />
+  </button>
+
+  <button
+    onClick={() => openEditClient(client)}
+    className="text-xs font-semibold text-slate-600 hover:text-slate-900 flex items-center gap-1"
+  >
+    <Edit2 className="w-3 h-3" />
+    Edit
+  </button>
+</div>
               </div>
             </div>
           );
@@ -238,7 +304,7 @@ export const ClientsView: React.FC = () => {
                         </div>
                       </div>
                       <div className="text-right">
-                        <div className="font-bold text-slate-900">${p.total_amount.toLocaleString()}</div>
+                        <div className="font-bold text-slate-900">₹{p.total_amount.toLocaleString()}</div>
                         <span className="text-[10px] text-blue-600 font-semibold">Open Project →</span>
                       </div>
                     </div>
@@ -263,7 +329,9 @@ export const ClientsView: React.FC = () => {
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6 border border-slate-200 my-8">
             <div className="flex items-center justify-between mb-4 border-b pb-3">
-              <h2 className="text-base font-bold text-slate-900">Add New Couple / Client</h2>
+             <h2 className="text-base font-bold text-slate-900">
+  {editingClientId ? 'Edit Client' : 'Add New Couple / Client'}
+</h2>
               <button onClick={() => setShowCreateModal(false)} className="text-slate-400 hover:text-slate-600">
                 <X className="w-5 h-5" />
               </button>
@@ -278,8 +346,8 @@ export const ClientsView: React.FC = () => {
                     onChange={e => setCompanyId(e.target.value as any)}
                     className="w-full p-2 border border-slate-300 rounded-lg"
                   >
-                    <option value="twb">TWB (The Wedding Book)</option>
-                    <option value="golden_june">Golden June Studios</option>
+                    <option value="twb">The Wedding Booth</option>
+                    <option value="golden_june">Golden June Films</option>
                   </select>
                 </div>
                 <div>
@@ -291,7 +359,16 @@ export const ClientsView: React.FC = () => {
                     placeholder="@sophia_and_liam"
                     className="w-full p-2 border border-slate-300 rounded-lg"
                   />
-                </div>
+                </div><div>
+  <label className="block font-semibold text-slate-700 mb-1">Instagram Handle 2</label>
+  <input
+    type="text"
+    value={instagram2}
+    onChange={e => setInstagram2(e.target.value)}
+    placeholder="@sophia_and_liam_2"
+    className="w-full p-2 border border-slate-300 rounded-lg"
+  />
+</div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -377,7 +454,7 @@ export const ClientsView: React.FC = () => {
                   type="submit"
                   className="px-5 py-2 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg shadow-xs"
                 >
-                  Create Client
+                  {editingClientId ? 'Update Client' : 'Create Client'}
                 </button>
               </div>
             </form>
