@@ -375,6 +375,43 @@ export const buildProjectDataSupabasePayload = (
   };
 };
 
+// Verified PostgreSQL check constraint values:
+// CHECK ((payment_mode = ANY (ARRAY['cash'::text, 'upi'::text, 'bank_transfer'::text, 'card'::text, 'cheque'::text, 'other'::text])))
+export type DbPaymentMode = 'cash' | 'upi' | 'bank_transfer' | 'card' | 'cheque' | 'other';
+
+export const mapPaymentModeToDb = (mode?: string | null): DbPaymentMode => {
+  if (!mode) return 'bank_transfer';
+  const clean = mode.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const mapping: Record<string, DbPaymentMode> = {
+    cash: 'cash',
+    upi: 'upi',
+    bank_transfer: 'bank_transfer',
+    card: 'card',
+    credit_card: 'card',
+    creditcard: 'card',
+    cheque: 'cheque',
+    check: 'cheque',
+    other: 'other',
+  };
+  return mapping[clean] || 'bank_transfer';
+};
+
+export const mapDbToPaymentMode = (mode?: string | null): PaymentMode => {
+  if (!mode) return 'Bank Transfer';
+  const clean = mode.trim().toLowerCase().replace(/[\s-]+/g, '_');
+  const mapping: Record<string, PaymentMode> = {
+    cash: 'Cash',
+    upi: 'UPI',
+    bank_transfer: 'Bank Transfer',
+    card: 'Credit Card',
+    credit_card: 'Credit Card',
+    creditcard: 'Credit Card',
+    cheque: 'Cheque',
+    check: 'Cheque',
+  };
+  return mapping[clean] || 'Bank Transfer';
+};
+
 export const apiService = {
   // Connection tester
   async testConnection(): Promise<{ connected: boolean; message: string; details?: any }> {
@@ -2295,27 +2332,11 @@ async assignTeamMember(
           }
           const isGJ = rawCompany === 'golden_june' || rawCompany === '3a19bbe1-a2bc-46db-bbbc-44ef7f5036ec';
 
-          const modeMap: Record<string, PaymentMode> = {
-            bank_transfer: 'Bank Transfer',
-            'bank transfer': 'Bank Transfer',
-            'Bank Transfer': 'Bank Transfer',
-            card: 'Credit Card',
-            credit_card: 'Credit Card',
-            'credit card': 'Credit Card',
-            'Credit Card': 'Credit Card',
-            upi: 'UPI',
-            UPI: 'UPI',
-            cash: 'Cash',
-            Cash: 'Cash',
-            cheque: 'Cheque',
-            Cheque: 'Cheque',
-          };
-
           return {
             ...row,
             company_id: isGJ ? 'golden_june' : 'twb',
             amount: Number(row.amount) || 0,
-            payment_mode: modeMap[row.payment_mode] || 'Bank Transfer',
+            payment_mode: mapDbToPaymentMode(row.payment_mode),
           } as Payment;
         });
 
@@ -2334,37 +2355,9 @@ async assignTeamMember(
     const isUuid = (val?: string | null) =>
       Boolean(val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val));
 
-    const ALLOWED_PAYMENT_MODES: PaymentMode[] = [
-      'Bank Transfer',
-      'Credit Card',
-      'UPI',
-      'Cash',
-      'Cheque',
-    ];
-
-    const normalizePaymentMode = (mode?: string | null): PaymentMode => {
-      if (!mode) return 'Bank Transfer';
-      const clean = mode.trim();
-      const directMatch = ALLOWED_PAYMENT_MODES.find(
-        m => m.toLowerCase() === clean.toLowerCase()
-      );
-      if (directMatch) return directMatch;
-
-      const normalized = clean.toLowerCase().replace(/[\s-]+/g, '_');
-      const modeMap: Record<string, PaymentMode> = {
-        bank_transfer: 'Bank Transfer',
-        card: 'Credit Card',
-        credit_card: 'Credit Card',
-        upi: 'UPI',
-        cash: 'Cash',
-        cheque: 'Cheque',
-      };
-
-      return modeMap[normalized] || 'Bank Transfer';
-    };
-
     const newId = crypto.randomUUID();
-    const safePaymentMode = normalizePaymentMode(payment.payment_mode);
+    const displayPaymentMode = mapDbToPaymentMode(payment.payment_mode);
+    const dbPaymentMode = mapPaymentModeToDb(payment.payment_mode);
     const resolvedCompanyId: 'twb' | 'golden_june' =
       payment.company_id === 'golden_june' ? 'golden_june' : 'twb';
 
@@ -2372,21 +2365,21 @@ async assignTeamMember(
       ...payment,
       id: newId,
       company_id: resolvedCompanyId,
-      payment_mode: safePaymentMode,
+      payment_mode: displayPaymentMode,
       created_at: new Date().toISOString(),
     };
 
     const supabase = getSupabaseClient();
     if (supabase) {
       const companyUuid = toCompanyUuid(resolvedCompanyId);
-      // PostgreSQL check constraint payments_payment_mode_check requires exact literal:
-      // ('Bank Transfer', 'Credit Card', 'UPI', 'Cash', 'Cheque')
+      // Verified PostgreSQL check constraint payments_payment_mode_check requires:
+      // ('cash', 'upi', 'bank_transfer', 'card', 'cheque', 'other')
       const basePayload: Record<string, any> = {
         id: newId,
         project_id: isUuid(payment.project_id) ? payment.project_id : null,
         amount: Number(payment.amount) || 0,
         payment_date: payment.payment_date || new Date().toISOString().split('T')[0],
-        payment_mode: safePaymentMode,
+        payment_mode: dbPaymentMode,
         description: payment.description || 'Payment',
         receipt_number: payment.receipt_number || `REC-${Date.now()}`,
       };
@@ -2462,38 +2455,11 @@ async assignTeamMember(
 
   async updatePayment(payment: Payment): Promise<Payment> {
     const supabase = getSupabaseClient();
-    const ALLOWED_PAYMENT_MODES: PaymentMode[] = [
-      'Bank Transfer',
-      'Credit Card',
-      'UPI',
-      'Cash',
-      'Cheque',
-    ];
-
-    const normalizePaymentMode = (mode?: string | null): PaymentMode => {
-      if (!mode) return 'Bank Transfer';
-      const clean = mode.trim();
-      const directMatch = ALLOWED_PAYMENT_MODES.find(
-        m => m.toLowerCase() === clean.toLowerCase()
-      );
-      if (directMatch) return directMatch;
-
-      const normalized = clean.toLowerCase().replace(/[\s-]+/g, '_');
-      const modeMap: Record<string, PaymentMode> = {
-        bank_transfer: 'Bank Transfer',
-        card: 'Credit Card',
-        credit_card: 'Credit Card',
-        upi: 'UPI',
-        cash: 'Cash',
-        cheque: 'Cheque',
-      };
-      return modeMap[normalized] || 'Bank Transfer';
-    };
-
-    const safePaymentMode = normalizePaymentMode(payment.payment_mode);
+    const displayPaymentMode = mapDbToPaymentMode(payment.payment_mode);
+    const dbPaymentMode = mapPaymentModeToDb(payment.payment_mode);
     const normalizedPayment = {
       ...payment,
-      payment_mode: safePaymentMode,
+      payment_mode: displayPaymentMode,
     };
 
     if (supabase) {
@@ -2502,7 +2468,7 @@ async assignTeamMember(
         .update({
           project_id: normalizedPayment.project_id,
           amount: Number(normalizedPayment.amount) || 0,
-          payment_mode: safePaymentMode,
+          payment_mode: dbPaymentMode,
           description: normalizedPayment.description,
           payment_date: normalizedPayment.payment_date,
           receipt_number: normalizedPayment.receipt_number,
@@ -2518,7 +2484,7 @@ async assignTeamMember(
 
       const updatedPayment = {
         ...(data as Payment),
-        payment_mode: safePaymentMode,
+        payment_mode: displayPaymentMode,
       };
 
       const current = getStoredOrInitial('payments', INITIAL_PAYMENTS);

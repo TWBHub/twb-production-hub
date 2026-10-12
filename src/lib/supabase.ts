@@ -251,7 +251,7 @@ create table if not exists payments (
   company_id text references companies(id) on delete cascade,
   payment_date date not null,
   amount numeric not null,
-  payment_mode text check (payment_mode in ('Bank Transfer', 'Credit Card', 'UPI', 'Cash', 'Cheque')) not null,
+  payment_mode text check (payment_mode in ('cash', 'upi', 'bank_transfer', 'card', 'cheque', 'other')) not null,
   description text,
   receipt_number text not null,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
