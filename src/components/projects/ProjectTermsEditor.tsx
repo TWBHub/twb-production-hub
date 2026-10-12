@@ -13,6 +13,7 @@ import {
   X,
   Download,
   AlertCircle,
+  Loader2,
 } from 'lucide-react';
 import { Project, ProjectTCClause, Company, Client, Deliverable, Payment } from '../../types';
 import {
@@ -48,6 +49,8 @@ export const ProjectTermsEditor: React.FC<ProjectTermsEditorProps> = ({
   const [showAddForm, setShowAddForm] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [newBody, setNewBody] = useState('');
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
 
   const saveClauses = async (newClauses: ProjectTCClause[]) => {
     saveProjectClausesToStorage(project.id, newClauses);
@@ -121,8 +124,19 @@ export const ProjectTermsEditor: React.FC<ProjectTermsEditorProps> = ({
   };
 
   const handleDownloadPDF = () => {
-    const doc = generateOrderFormPDF(project, client, company, deliverables, payments);
-    doc.save();
+    setPdfError(null);
+    setIsDownloadingPdf(true);
+    try {
+      const doc = generateOrderFormPDF(project, client, company, deliverables, payments);
+      doc.save();
+    } catch (err) {
+      console.error('Failed to generate or download Order Form PDF from Terms Editor:', err);
+      setPdfError(
+        `Failed to generate Order Form PDF: ${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      setIsDownloadingPdf(false);
+    }
   };
 
   const activeCount = clauses.filter(c => c.enabled).length;
@@ -166,14 +180,44 @@ export const ProjectTermsEditor: React.FC<ProjectTermsEditorProps> = ({
 
           <button
             type="button"
+            disabled={isDownloadingPdf}
             onClick={handleDownloadPDF}
-            className="px-3 py-1.5 text-xs font-semibold text-white bg-slate-900 hover:bg-black rounded-lg flex items-center gap-1.5 transition-colors shadow-xs"
+            className={`px-3 py-1.5 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors shadow-xs ${
+              isDownloadingPdf
+                ? 'bg-slate-700 text-white cursor-wait'
+                : 'text-white bg-slate-900 hover:bg-black'
+            }`}
           >
-            <Download className="w-3.5 h-3.5" />
-            <span>Preview Order PDF</span>
+            {isDownloadingPdf ? (
+              <>
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                <span>Generating...</span>
+              </>
+            ) : (
+              <>
+                <Download className="w-3.5 h-3.5" />
+                <span>Preview Order PDF</span>
+              </>
+            )}
           </button>
         </div>
       </div>
+
+      {pdfError && (
+        <div className="p-3 bg-red-50 border border-red-200 text-red-800 rounded-xl text-xs flex items-center justify-between gap-2 shadow-xs">
+          <div className="flex items-center gap-2">
+            <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+            <span>{pdfError}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setPdfError(null)}
+            className="text-red-500 hover:text-red-700 p-1"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Add Custom Clause Form */}
       {showAddForm && (

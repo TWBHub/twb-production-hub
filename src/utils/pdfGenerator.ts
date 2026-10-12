@@ -3,6 +3,53 @@ import { Company, Enquiry, Payment, Project, ProjectEvent, Client, Deliverable }
 import { getProjectClauses } from './termsLibrary';
 import { sortProjectEvents } from './eventUtils';
 
+/**
+ * Downloads a jsPDF document safely in both standard browser and sandboxed iFrame environments.
+ * Uses native doc.save() first, then seamlessly falls back to a Blob object URL click trigger.
+ */
+export const downloadPdfDoc = (doc: jsPDF, targetFilename: string): void => {
+  const filename = targetFilename.endsWith('.pdf') ? targetFilename : `${targetFilename}.pdf`;
+
+  // Try standard doc.save() if supported in this environment
+  try {
+    if (typeof (doc as any).save === 'function') {
+      // Direct call on proto or bound instance without recursion
+      const protoSave = Object.getPrototypeOf(doc)?.save;
+      if (typeof protoSave === 'function') {
+        protoSave.call(doc, filename);
+        return;
+      }
+    }
+  } catch (err) {
+    console.warn('Standard doc.save() encountered an issue; attempting Blob download fallback:', err);
+  }
+
+  // Robust browser Blob fallback
+  try {
+    const blob = doc.output('blob');
+    if (typeof window !== 'undefined' && window.document) {
+      const url = URL.createObjectURL(blob);
+      const link = window.document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.rel = 'noopener noreferrer';
+      link.style.display = 'none';
+      window.document.body.appendChild(link);
+      link.click();
+      window.document.body.removeChild(link);
+      setTimeout(() => {
+        URL.revokeObjectURL(url);
+      }, 1500);
+      return;
+    }
+  } catch (fallbackErr) {
+    console.error('Blob download fallback also failed:', fallbackErr);
+    throw new Error(
+      `Failed to download PDF "${filename}": ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`
+    );
+  }
+};
+
 export interface QuotationConfig {
   items: Array<{ description: string; quantity: number; rate: number; amount: number }>;
   discount: number;
@@ -1100,7 +1147,7 @@ export const generateOrderFormPDF = (
   const properFilename = getOrderFormFilename(project, client, company);
   const originalSave = doc.save.bind(doc);
   (doc as any).save = (filename?: string, options?: any) => {
-    return originalSave(properFilename, options);
+    return downloadPdfDoc(doc, filename || properFilename);
   };
   (doc as any).filename = properFilename;
 

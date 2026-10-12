@@ -20,6 +20,7 @@ import {
   Share2,
   Trash2,
   Pencil,
+  Loader2,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import {
@@ -136,6 +137,8 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
   }, [projectId, matchedProject]);
 
   const [activeTab, setActiveTab] = useState<'overview' | 'team' | 'finance' | 'data' | 'deliverables' | 'calendar' | 'notes'>('overview');
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+  const [pdfDownloadError, setPdfDownloadError] = useState<string | null>(null);
 
   // Project events state
   const [projectEventsList, setProjectEventsList] = useState<ProjectEvent[]>(
@@ -590,18 +593,29 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
   // Generate Order Form PDF
   const handleDownloadOrderForm = () => {
-    const projectWithEvents: Project = {
-      ...project,
-      events: projectEventsList.length > 0 ? projectEventsList : project.events,
-    };
-    const doc = generateOrderFormPDF(
-      projectWithEvents,
-      client,
-      company,
-      projectDeliverablesList,
-      projectPayments
-    );
-    doc.save();
+    setPdfDownloadError(null);
+    setIsDownloadingPdf(true);
+    try {
+      const projectWithEvents: Project = {
+        ...project,
+        events: projectEventsList.length > 0 ? projectEventsList : project.events,
+      };
+      const doc = generateOrderFormPDF(
+        projectWithEvents,
+        client,
+        company,
+        projectDeliverablesList,
+        projectPayments
+      );
+      doc.save();
+    } catch (err) {
+      console.error('Failed to generate or download Order Form PDF:', err);
+      setPdfDownloadError(
+        `Failed to download Order Form PDF: ${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      setIsDownloadingPdf(false);
+    }
   };
 
   // Storage Location Modal helpers
@@ -750,12 +764,26 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
 
           <div className="flex items-center gap-2">
             <button
+              disabled={isDownloadingPdf}
               onClick={handleDownloadOrderForm}
-              className="px-3 py-1.5 text-xs font-semibold bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors flex items-center gap-1.5 shadow-xs"
+              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs ${
+                isDownloadingPdf
+                  ? 'bg-blue-400 text-white cursor-wait'
+                  : 'bg-blue-600 hover:bg-blue-700 text-white'
+              }`}
               title="Generate printable Order Form PDF"
             >
-              <Download className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Download Order Form PDF</span>
+              {isDownloadingPdf ? (
+                <>
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  <span>Generating PDF...</span>
+                </>
+              ) : (
+                <>
+                  <Download className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Download Order Form PDF</span>
+                </>
+              )}
             </button>
             <button
               onClick={onClose}
@@ -798,6 +826,22 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
 
         {/* Tab Content Area */}
         <div className="p-4 sm:p-6 overflow-y-auto flex-1 bg-slate-50/50">
+          {/* PDF Download Error Alert */}
+          {pdfDownloadError && (
+            <div className="mb-4 p-3 bg-red-50 border border-red-200 text-red-800 rounded-xl text-xs flex items-center justify-between gap-2 shadow-xs">
+              <div className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+                <span>{pdfDownloadError}</span>
+              </div>
+              <button
+                onClick={() => setPdfDownloadError(null)}
+                className="text-red-500 hover:text-red-700 p-1"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+          )}
+
           {/* Confirmed Booking Retainer Insertion Error Alert */}
           {project.booking_payment_error && (
             <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">

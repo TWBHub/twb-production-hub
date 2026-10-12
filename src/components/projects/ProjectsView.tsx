@@ -13,6 +13,7 @@ import {
   X,
   UserPlus,
   ArrowUpDown,
+  Loader2,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Project, ProjectStatus, Client, ClientHddStatus, CLIENT_HDD_STATUS_OPTIONS } from '../../types';
@@ -49,6 +50,8 @@ export const ProjectsView: React.FC = () => {
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [openProjectMenuId, setOpenProjectMenuId] = useState<string | null>(null);
+  const [downloadingProjectId, setDownloadingProjectId] = useState<string | null>(null);
+  const [pdfDownloadError, setPdfDownloadError] = useState<string | null>(null);
 
   // New Project Form State
   const [newCompanyId, setNewCompanyId] = useState<'twb' | 'golden_june'>(
@@ -603,6 +606,21 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
         )}
       </div>
 
+      {pdfDownloadError && (
+        <div className="bg-red-50 border border-red-200 text-red-800 rounded-xl p-3 text-xs flex items-center justify-between gap-2 shadow-xs">
+          <div className="flex items-center gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
+            <span>{pdfDownloadError}</span>
+          </div>
+          <button
+            onClick={() => setPdfDownloadError(null)}
+            className="text-red-500 hover:text-red-700 p-1"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
+
       {/* Filter and Search Bar */}
       <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs flex flex-col md:flex-row items-center gap-3">
         <div className="relative flex-1 w-full">
@@ -830,29 +848,54 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
                 </button>
 
                 <button
+                  disabled={downloadingProjectId === project.id}
                   onClick={() => {
-                    const projectDeliverables = deliverables.filter(
-                      d => d.project_id === project.id
-                    );
-                    const projectPayments = payments.filter(
-                      p => p.project_id === project.id
-                    );
+                    setPdfDownloadError(null);
+                    setDownloadingProjectId(project.id);
+                    try {
+                      const projectDeliverables = deliverables.filter(
+                        d => d.project_id === project.id
+                      );
+                      const projectPayments = payments.filter(
+                        p => p.project_id === project.id
+                      );
 
-                    const doc = generateOrderFormPDF(
-                      project,
-                      client,
-                      company,
-                      projectDeliverables,
-                      projectPayments
-                    );
+                      const doc = generateOrderFormPDF(
+                        project,
+                        client,
+                        company,
+                        projectDeliverables,
+                        projectPayments
+                      );
 
-                    doc.save();
+                      doc.save();
+                    } catch (err) {
+                      console.error('Failed to generate or download Order Form PDF:', err);
+                      setPdfDownloadError(
+                        `Failed to download Order Form for "${project.name}": ${err instanceof Error ? err.message : String(err)}`
+                      );
+                    } finally {
+                      setDownloadingProjectId(null);
+                    }
                   }}
-                  className="text-xs text-slate-600 hover:text-slate-900 flex items-center gap-1 font-medium"
+                  className={`text-xs flex items-center gap-1 font-medium transition-colors ${
+                    downloadingProjectId === project.id
+                      ? 'text-blue-600 cursor-wait'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
                   title="Download printable Order Form PDF"
                 >
-                  <Download className="w-3.5 h-3.5" />
-                  <span>Order PDF</span>
+                  {downloadingProjectId === project.id ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Generating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Download className="w-3.5 h-3.5" />
+                      <span>Order PDF</span>
+                    </>
+                  )}
                 </button>
               </div>
             </div>
