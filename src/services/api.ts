@@ -155,6 +155,7 @@ export const mapSupabaseProjectToModel = (row: any): Project => {
       (meta.client_hdd_status as ClientHddStatus) ||
       (row.client_hdd_status as ClientHddStatus) ||
       'Not Received',
+    booking_payment_error: meta.booking_payment_error || undefined,
     created_at:
       row.created_at || new Date().toISOString(),
   };
@@ -179,6 +180,7 @@ export const mapModelToSupabaseProject = (prj: Project | Omit<Project, 'created_
       total_amount: prj.total_amount,
       client_contact: prj.client_contact,
       client_hdd_status: prj.client_hdd_status || 'Not Received',
+      booking_payment_error: prj.booking_payment_error || undefined,
     }),
   };
 };
@@ -649,8 +651,10 @@ export const apiService = {
         allEvents = eventsData;
       }
 
+      const cachedProjects = getStoredOrInitial('projects', INITIAL_PROJECTS);
       const projectsWithEvents = data.map((row: any) => {
         const matchedEvents = allEvents.filter((e: any) => e.project_id === row.id);
+        const cachedMatch = cachedProjects.find((p: Project) => p.id === row.id);
         const mapped = {
           ...mapSupabaseProjectToModel(row),
           company_id:
@@ -658,6 +662,9 @@ export const apiService = {
               ? 'golden_june'
               : 'twb',
         };
+        if (!mapped.booking_payment_error && cachedMatch?.booking_payment_error) {
+          mapped.booking_payment_error = cachedMatch.booking_payment_error;
+        }
         return {
           ...mapped,
           events: sortProjectEvents(matchedEvents),
@@ -1004,6 +1011,7 @@ export const apiService = {
         total_amount: project.total_amount,
         client_contact: project.client_contact,
         client_hdd_status: project.client_hdd_status || 'Not Received',
+        booking_payment_error: project.booking_payment_error || undefined,
       }),
       updated_at: new Date().toISOString(),
     };

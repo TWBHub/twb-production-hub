@@ -293,6 +293,26 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
     setShowPaymentModal(true);
   };
 
+  const handleOpenRetainerModal = () => {
+    // Check if a payment for this project already exists to prevent duplicate payments
+    const existingRetainer = projectPayments.find(
+      p => p.amount === project.booking_amount || /retainer|booking/i.test(p.description)
+    );
+    if (existingRetainer) {
+      alert(
+        `A payment record matching this retainer already exists (Receipt #${existingRetainer.receipt_number} for ₹${existingRetainer.amount.toLocaleString()}). To prevent duplicate payments, please verify existing receipts before recording another payment.`
+      );
+      return;
+    }
+
+    setEditingPayment(null);
+    setPayAmount(project.booking_amount);
+    setPayMode('Bank Transfer');
+    setPayDesc('Booking Retainer');
+    setPayDate(project.created_at ? project.created_at.split('T')[0] : new Date().toISOString().split('T')[0]);
+    setShowPaymentModal(true);
+  };
+
   const handleEditPayment = (payment: Payment) => {
     setEditingPayment(payment);
     setPayAmount(payment.amount);
@@ -574,7 +594,13 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
       ...project,
       events: projectEventsList.length > 0 ? projectEventsList : project.events,
     };
-    const doc = generateOrderFormPDF(projectWithEvents, client, company, projectDeliverablesList);
+    const doc = generateOrderFormPDF(
+      projectWithEvents,
+      client,
+      company,
+      projectDeliverablesList,
+      projectPayments
+    );
     doc.save();
   };
 
@@ -772,6 +798,35 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
 
         {/* Tab Content Area */}
         <div className="p-4 sm:p-6 overflow-y-auto flex-1 bg-slate-50/50">
+          {/* Confirmed Booking Retainer Insertion Error Alert */}
+          {project.booking_payment_error && (
+            <div className="mb-6 p-4 bg-amber-50 border border-amber-200 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-xs">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <h4 className="text-xs font-bold text-amber-900">
+                    Booking Retainer Recording Failed During Project Creation
+                  </h4>
+                  <p className="text-xs text-amber-800">
+                    The initial booking retainer payment of{' '}
+                    <strong className="font-semibold">₹{project.booking_amount.toLocaleString()}</strong> was not
+                    recorded in the payments ledger.
+                  </p>
+                  <div className="text-[11px] font-mono bg-amber-100/70 text-amber-900 px-2.5 py-1 rounded border border-amber-200 mt-1">
+                    Captured error: {project.booking_payment_error}
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={handleOpenRetainerModal}
+                className="px-3 py-1.5 text-xs font-semibold bg-amber-700 hover:bg-amber-800 text-white rounded-lg whitespace-nowrap cursor-pointer transition-colors shadow-xs shrink-0"
+              >
+                Record Retainer Manually
+              </button>
+            </div>
+          )}
+
           {/* TAB 1: OVERVIEW */}
           {activeTab === 'overview' && (
             <div className="space-y-6">
@@ -1655,6 +1710,12 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                                 payment_date: payDate,
                                 receipt_number: `REC-${company.code.toUpperCase()}-${Date.now().toString().slice(-4)}`,
                               });
+                              if (project.booking_payment_error) {
+                                await updateProject({
+                                  ...project,
+                                  booking_payment_error: undefined,
+                                });
+                              }
                             }
                             setEditingPayment(null);
                             setShowPaymentModal(false);
@@ -2533,6 +2594,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                 company={company}
                 client={client}
                 deliverables={projectDeliverablesList}
+                payments={projectPayments}
                 onUpdateProject={updateProject}
               />
             </div>

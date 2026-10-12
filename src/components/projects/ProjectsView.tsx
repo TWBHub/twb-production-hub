@@ -34,6 +34,7 @@ export const ProjectsView: React.FC = () => {
     brandFilter,
     canCreateProject,
     deliverables,
+    payments,
   } = useApp();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -833,12 +834,16 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
                     const projectDeliverables = deliverables.filter(
                       d => d.project_id === project.id
                     );
+                    const projectPayments = payments.filter(
+                      p => p.project_id === project.id
+                    );
 
                     const doc = generateOrderFormPDF(
                       project,
                       client,
                       company,
-                      projectDeliverables
+                      projectDeliverables,
+                      projectPayments
                     );
 
                     doc.save();

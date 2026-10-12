@@ -1043,7 +1043,8 @@ export const generateOrderFormPDF = (
   project: Project,
   client: Client | undefined,
   company: Company,
-  deliverables?: Deliverable[]
+  deliverables?: Deliverable[],
+  payments: Payment[] = []
 ) => {
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -1089,8 +1090,11 @@ export const generateOrderFormPDF = (
     : project.city || 'Venue to be finalized';
 
   const totalContractFee = Number(project.total_amount) || 0;
-  const bookingRetainer = Number(project.booking_amount) || 0;
-  const remainingBalance = Math.max(0, totalContractFee - bookingRetainer);
+  // Calculate verified payment receipts strictly from actual payment records
+  const amountReceived = (payments || [])
+    .filter(p => p.project_id === project.id)
+    .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+  const remainingBalance = Math.max(0, totalContractFee - amountReceived);
 
   // Preserve existing automatic filename logic
   const properFilename = getOrderFormFilename(project, client, company);
@@ -1473,7 +1477,7 @@ export const generateOrderFormPDF = (
   doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
   doc.text('ADVANCE / PAYMENT RECEIVED', 78, yCols);
 
-  renderRupeeAmount(doc, bookingRetainer, 78, yCols + 6.5, {
+  renderRupeeAmount(doc, amountReceived, 78, yCols + 6.5, {
     fontSize: 10,
     bold: true,
     color: colorBlack,
@@ -1482,7 +1486,7 @@ export const generateOrderFormPDF = (
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(6);
   doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
-  doc.text('Received to Lock Dates', 78, yCols + 10.5);
+  doc.text('Verified Payments Recorded', 78, yCols + 10.5);
 
   // Col 3: Balance Due
   doc.setFont('helvetica', 'bold');

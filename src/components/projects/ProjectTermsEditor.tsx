@@ -14,7 +14,7 @@ import {
   Download,
   AlertCircle,
 } from 'lucide-react';
-import { Project, ProjectTCClause, Company, Client, Deliverable } from '../../types';
+import { Project, ProjectTCClause, Company, Client, Deliverable, Payment } from '../../types';
 import {
   getProjectClauses,
   getDefaultProjectClauses,
@@ -27,6 +27,7 @@ interface ProjectTermsEditorProps {
   company: Company;
   client?: Client;
   deliverables?: Deliverable[];
+  payments?: Payment[];
   onUpdateProject: (updatedProject: Project) => Promise<any>;
 }
 
@@ -35,6 +36,7 @@ export const ProjectTermsEditor: React.FC<ProjectTermsEditorProps> = ({
   company,
   client,
   deliverables,
+  payments,
   onUpdateProject,
 }) => {
   const clauses: ProjectTCClause[] = getProjectClauses(project.id, project.terms_clauses);
@@ -119,7 +121,7 @@ export const ProjectTermsEditor: React.FC<ProjectTermsEditorProps> = ({
   };
 
   const handleDownloadPDF = () => {
-    const doc = generateOrderFormPDF(project, client, company, deliverables);
+    const doc = generateOrderFormPDF(project, client, company, deliverables, payments);
     doc.save();
   };
 
