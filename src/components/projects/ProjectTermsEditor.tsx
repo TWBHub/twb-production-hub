@@ -50,6 +50,7 @@ export const ProjectTermsEditor: React.FC<ProjectTermsEditorProps> = ({
   const [newTitle, setNewTitle] = useState('');
   const [newBody, setNewBody] = useState('');
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+  const [downloadSuccess, setDownloadSuccess] = useState(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
 
   const saveClauses = async (newClauses: ProjectTCClause[]) => {
@@ -123,12 +124,19 @@ export const ProjectTermsEditor: React.FC<ProjectTermsEditorProps> = ({
     await saveClauses(defaultClauses);
   };
 
-  const handleDownloadPDF = () => {
+  const handleDownloadPDF = async () => {
     setPdfError(null);
+    setDownloadSuccess(false);
     setIsDownloadingPdf(true);
+    // Yield to allow the browser and React to render the loading state
+    await new Promise(resolve => setTimeout(resolve, 50));
     try {
       const doc = generateOrderFormPDF(project, client, company, deliverables, payments);
       doc.save();
+      setDownloadSuccess(true);
+      setTimeout(() => {
+        setDownloadSuccess(false);
+      }, 2500);
     } catch (err) {
       console.error('Failed to generate or download Order Form PDF from Terms Editor:', err);
       setPdfError(
@@ -183,12 +191,19 @@ export const ProjectTermsEditor: React.FC<ProjectTermsEditorProps> = ({
             disabled={isDownloadingPdf}
             onClick={handleDownloadPDF}
             className={`px-3 py-1.5 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition-colors shadow-xs ${
-              isDownloadingPdf
+              downloadSuccess
+                ? 'bg-emerald-600 text-white'
+                : isDownloadingPdf
                 ? 'bg-slate-700 text-white cursor-wait'
                 : 'text-white bg-slate-900 hover:bg-black'
             }`}
           >
-            {isDownloadingPdf ? (
+            {downloadSuccess ? (
+              <>
+                <Check className="w-3.5 h-3.5" />
+                <span>Downloaded!</span>
+              </>
+            ) : isDownloadingPdf ? (
               <>
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 <span>Generating...</span>

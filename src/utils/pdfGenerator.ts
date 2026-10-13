@@ -1,4 +1,4 @@
-import jsPDF from 'jspdf';
+import { jsPDF } from 'jspdf';
 import { Company, Enquiry, Payment, Project, ProjectEvent, Client, Deliverable } from '../types';
 import { getProjectClauses } from './termsLibrary';
 import { sortProjectEvents } from './eventUtils';
@@ -7,24 +7,25 @@ import { sortProjectEvents } from './eventUtils';
  * Downloads a jsPDF document safely in both standard browser and sandboxed iFrame environments.
  * Uses native doc.save() first, then seamlessly falls back to a Blob object URL click trigger.
  */
-export const downloadPdfDoc = (doc: jsPDF, targetFilename: string): void => {
+export const downloadPdfDoc = (
+  doc: jsPDF,
+  targetFilename: string,
+  originalSaveFn?: (name: string, options?: any) => any
+): void => {
   const filename = targetFilename.endsWith('.pdf') ? targetFilename : `${targetFilename}.pdf`;
 
-  // Try standard doc.save() if supported in this environment
-  try {
-    if (typeof (doc as any).save === 'function') {
-      // Direct call on proto or bound instance without recursion
-      const protoSave = Object.getPrototypeOf(doc)?.save;
-      if (typeof protoSave === 'function') {
-        protoSave.call(doc, filename);
-        return;
-      }
+  // 1. Invoke native jsPDF save() without recursion
+  const nativeSave = originalSaveFn || (doc as any).__originalSave;
+  if (typeof nativeSave === 'function') {
+    try {
+      nativeSave(filename);
+      return;
+    } catch (err) {
+      console.warn('Native jsPDF save() encountered an error; attempting Blob download fallback:', err);
     }
-  } catch (err) {
-    console.warn('Standard doc.save() encountered an issue; attempting Blob download fallback:', err);
   }
 
-  // Robust browser Blob fallback
+  // 2. Fallback to direct Blob download with anchor element
   try {
     const blob = doc.output('blob');
     if (typeof window !== 'undefined' && window.document) {
@@ -39,7 +40,7 @@ export const downloadPdfDoc = (doc: jsPDF, targetFilename: string): void => {
       window.document.body.removeChild(link);
       setTimeout(() => {
         URL.revokeObjectURL(url);
-      }, 1500);
+      }, 3000);
       return;
     }
   } catch (fallbackErr) {
@@ -1146,8 +1147,9 @@ export const generateOrderFormPDF = (
   // Preserve existing automatic filename logic
   const properFilename = getOrderFormFilename(project, client, company);
   const originalSave = doc.save.bind(doc);
+  (doc as any).__originalSave = originalSave;
   (doc as any).save = (filename?: string, options?: any) => {
-    return downloadPdfDoc(doc, filename || properFilename);
+    return downloadPdfDoc(doc, filename || properFilename, (doc as any).__originalSave || originalSave);
   };
   (doc as any).filename = properFilename;
 

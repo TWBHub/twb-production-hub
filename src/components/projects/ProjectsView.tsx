@@ -14,6 +14,7 @@ import {
   UserPlus,
   ArrowUpDown,
   Loader2,
+  Check,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Project, ProjectStatus, Client, ClientHddStatus, CLIENT_HDD_STATUS_OPTIONS } from '../../types';
@@ -51,6 +52,7 @@ export const ProjectsView: React.FC = () => {
   const [editingProjectId, setEditingProjectId] = useState<string | null>(null);
   const [openProjectMenuId, setOpenProjectMenuId] = useState<string | null>(null);
   const [downloadingProjectId, setDownloadingProjectId] = useState<string | null>(null);
+  const [downloadSuccessProjectId, setDownloadSuccessProjectId] = useState<string | null>(null);
   const [pdfDownloadError, setPdfDownloadError] = useState<string | null>(null);
 
   // New Project Form State
@@ -849,9 +851,11 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
 
                 <button
                   disabled={downloadingProjectId === project.id}
-                  onClick={() => {
+                  onClick={async () => {
                     setPdfDownloadError(null);
                     setDownloadingProjectId(project.id);
+                    // Yield so the browser and React render the spinner
+                    await new Promise(resolve => setTimeout(resolve, 50));
                     try {
                       const projectDeliverables = deliverables.filter(
                         d => d.project_id === project.id
@@ -869,6 +873,10 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
                       );
 
                       doc.save();
+                      setDownloadSuccessProjectId(project.id);
+                      setTimeout(() => {
+                        setDownloadSuccessProjectId(null);
+                      }, 2500);
                     } catch (err) {
                       console.error('Failed to generate or download Order Form PDF:', err);
                       setPdfDownloadError(
@@ -879,13 +887,20 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
                     }
                   }}
                   className={`text-xs flex items-center gap-1 font-medium transition-colors ${
-                    downloadingProjectId === project.id
+                    downloadSuccessProjectId === project.id
+                      ? 'text-emerald-600'
+                      : downloadingProjectId === project.id
                       ? 'text-blue-600 cursor-wait'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                   title="Download printable Order Form PDF"
                 >
-                  {downloadingProjectId === project.id ? (
+                  {downloadSuccessProjectId === project.id ? (
+                    <>
+                      <Check className="w-3.5 h-3.5 text-emerald-600" />
+                      <span className="text-emerald-600 font-semibold">Downloaded!</span>
+                    </>
+                  ) : downloadingProjectId === project.id ? (
                     <>
                       <Loader2 className="w-3.5 h-3.5 animate-spin" />
                       <span>Generating...</span>

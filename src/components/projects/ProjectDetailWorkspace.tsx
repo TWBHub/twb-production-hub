@@ -21,6 +21,7 @@ import {
   Trash2,
   Pencil,
   Loader2,
+  Check,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import {
@@ -139,6 +140,7 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const [activeTab, setActiveTab] = useState<'overview' | 'team' | 'finance' | 'data' | 'deliverables' | 'calendar' | 'notes'>('overview');
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
   const [pdfDownloadError, setPdfDownloadError] = useState<string | null>(null);
+  const [pdfDownloadSuccess, setPdfDownloadSuccess] = useState(false);
 
   // Project events state
   const [projectEventsList, setProjectEventsList] = useState<ProjectEvent[]>(
@@ -592,9 +594,12 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
   };
 
   // Generate Order Form PDF
-  const handleDownloadOrderForm = () => {
+  const handleDownloadOrderForm = async () => {
     setPdfDownloadError(null);
+    setPdfDownloadSuccess(false);
     setIsDownloadingPdf(true);
+    // Yield to allow the browser and React to render the loading state
+    await new Promise(resolve => setTimeout(resolve, 50));
     try {
       const projectWithEvents: Project = {
         ...project,
@@ -608,6 +613,10 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
         projectPayments
       );
       doc.save();
+      setPdfDownloadSuccess(true);
+      setTimeout(() => {
+        setPdfDownloadSuccess(false);
+      }, 2500);
     } catch (err) {
       console.error('Failed to generate or download Order Form PDF:', err);
       setPdfDownloadError(
@@ -767,13 +776,20 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
               disabled={isDownloadingPdf}
               onClick={handleDownloadOrderForm}
               className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors flex items-center gap-1.5 shadow-xs ${
-                isDownloadingPdf
+                pdfDownloadSuccess
+                  ? 'bg-emerald-600 text-white'
+                  : isDownloadingPdf
                   ? 'bg-blue-400 text-white cursor-wait'
                   : 'bg-blue-600 hover:bg-blue-700 text-white'
               }`}
               title="Generate printable Order Form PDF"
             >
-              {isDownloadingPdf ? (
+              {pdfDownloadSuccess ? (
+                <>
+                  <Check className="w-3.5 h-3.5" />
+                  <span className="hidden sm:inline">Downloaded!</span>
+                </>
+              ) : isDownloadingPdf ? (
                 <>
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
                   <span>Generating PDF...</span>
