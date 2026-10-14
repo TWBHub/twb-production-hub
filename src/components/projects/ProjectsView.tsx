@@ -487,7 +487,7 @@ useEffect(() => {
 
       client_contact: {
         phone: newPhone || '+1 (415) 555-0199',
-        email: newEmail || 'client@wedding.com',
+        email: newEmail.trim() || '',
       },
 
       status: 'confirmed' as const,

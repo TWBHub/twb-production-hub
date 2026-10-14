@@ -5,7 +5,8 @@ import { sortProjectEvents } from './eventUtils';
 
 /**
  * Downloads a jsPDF document safely in both standard browser and sandboxed iFrame environments.
- * Uses native doc.save() first, then seamlessly falls back to a Blob object URL click trigger.
+ * Prefers direct Blob-based browser download via an attached anchor element clicked synchronously
+ * within the user's interaction event, ensuring reliability across preview runtimes and sandboxed iframes.
  */
 export const downloadPdfDoc = (
   doc: jsPDF,
@@ -14,41 +15,68 @@ export const downloadPdfDoc = (
 ): void => {
   const filename = targetFilename.endsWith('.pdf') ? targetFilename : `${targetFilename}.pdf`;
 
-  // 1. Invoke native jsPDF save() without recursion
+  // 1. In browser environments, prefer direct Blob-based download with an anchor attached to document.body.
+  // This is initiated synchronously within the user's click event.
+  // We do not rely on native jsPDF save() first because in sandboxed iframes it often returns without throwing
+  // while failing to trigger an actual browser download.
+  if (
+    typeof window !== 'undefined' &&
+    typeof document !== 'undefined' &&
+    typeof document.createElement === 'function' &&
+    document.body
+  ) {
+    try {
+      const blob = doc.output('blob');
+      if (blob && blob.size > 0) {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = filename;
+        link.rel = 'noopener noreferrer';
+        link.style.display = 'none';
+        document.body.appendChild(link);
+        link.click();
+
+        // Safely detach the anchor and delay revoking the object URL to allow the browser
+        // adequate time to start the download stream without corrupting or aborting it.
+        const detachTimer = setTimeout(() => {
+          if (link.parentNode) {
+            link.parentNode.removeChild(link);
+          }
+        }, 1500);
+        if (typeof detachTimer === 'object' && typeof (detachTimer as any).unref === 'function') {
+          (detachTimer as any).unref();
+        }
+
+        const revokeTimer = setTimeout(() => {
+          URL.revokeObjectURL(url);
+        }, 60000);
+        if (typeof revokeTimer === 'object' && typeof (revokeTimer as any).unref === 'function') {
+          (revokeTimer as any).unref();
+        }
+
+        return;
+      }
+    } catch (blobErr) {
+      console.warn('Direct Blob download failed; attempting native save fallback:', blobErr);
+    }
+  }
+
+  // 2. Fallback to native jsPDF save() without recursion if Blob mechanism is unavailable (e.g. Node tests)
   const nativeSave = originalSaveFn || (doc as any).__originalSave;
   if (typeof nativeSave === 'function') {
     try {
       nativeSave(filename);
       return;
     } catch (err) {
-      console.warn('Native jsPDF save() encountered an error; attempting Blob download fallback:', err);
+      console.error('Native jsPDF save() also failed:', err);
+      throw new Error(
+        `Failed to download PDF "${filename}": ${err instanceof Error ? err.message : String(err)}`
+      );
     }
   }
 
-  // 2. Fallback to direct Blob download with anchor element
-  try {
-    const blob = doc.output('blob');
-    if (typeof window !== 'undefined' && window.document) {
-      const url = URL.createObjectURL(blob);
-      const link = window.document.createElement('a');
-      link.href = url;
-      link.download = filename;
-      link.rel = 'noopener noreferrer';
-      link.style.display = 'none';
-      window.document.body.appendChild(link);
-      link.click();
-      window.document.body.removeChild(link);
-      setTimeout(() => {
-        URL.revokeObjectURL(url);
-      }, 3000);
-      return;
-    }
-  } catch (fallbackErr) {
-    console.error('Blob download fallback also failed:', fallbackErr);
-    throw new Error(
-      `Failed to download PDF "${filename}": ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`
-    );
-  }
+  throw new Error(`Failed to download PDF "${filename}": no download mechanism available.`);
 };
 
 export interface QuotationConfig {
@@ -261,198 +289,6 @@ export const generateQuotationPDF = (
   return doc;
 };
 
-export const generateReceiptPDF = (
-  payment: Payment,
-  project: Project,
-  client: Client | undefined,
-  company: Company
-) => generatePaymentReceiptPDF(payment, project, client, company);
-
-export const generatePaymentReceiptPDF = (
-  payment: Payment,
-  project: Project,
-  client: Client | undefined,
-  company: Company
-) => {
-  const doc = new jsPDF({
-    orientation: 'portrait',
-    unit: 'mm',
-    format: 'a4',
-  });
-
-  const isTWB = company.code === 'twb';
-  const primaryColor = isTWB ? [15, 23, 42] : [59, 34, 7];
-  const accentColor = isTWB ? [37, 99, 235] : [217, 119, 6];
-
-  // Header Banner
-  doc.setFillColor(primaryColor[0], primaryColor[1], primaryColor[2]);
-  doc.rect(0, 0, 210, 34, 'F');
-  doc.setFillColor(accentColor[0], accentColor[1], accentColor[2]);
-  doc.rect(0, 34, 210, 2, 'F');
-
-  // Brand Name
-  doc.setTextColor(255, 255, 255);
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(18);
-  doc.text(company.name.toUpperCase(), 15, 17);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.5);
-  doc.text(company.tagline, 15, 24);
-  doc.text(`${company.email}  |  ${company.phone}`, 15, 29);
-
-  // Title
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(22);
-  doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
-  doc.text('OFFICIAL PAYMENT RECEIPT', 15, 50);
-
-  // Status Badge
-  doc.setFillColor(34, 197, 94); // Green
-  doc.roundedRect(155, 42, 40, 10, 2, 2, 'F');
-  doc.setTextColor(255, 255, 255);
-  doc.setFontSize(9);
-  doc.setFont('helvetica', 'bold');
-  doc.text('PAID IN FULL', 162, 48.5);
-
-  // Receipt Meta
-  doc.setFontSize(9);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(100, 100, 100);
-  doc.text('RECEIPT NO:', 15, 62);
-  doc.text('PAYMENT DATE:', 15, 68);
-  doc.text('PAYMENT METHOD:', 15, 74);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(20, 20, 20);
-  doc.text(payment.receipt_number, 50, 62);
-  doc.text(payment.payment_date, 50, 68);
-  doc.text(payment.payment_mode, 50, 74);
-
-  // Client & Project Box
-  doc.setDrawColor(220, 225, 230);
-  doc.setFillColor(248, 250, 252);
-  doc.roundedRect(15, 84, 180, 36, 2, 2, 'FD');
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(9.5);
-  doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
-  doc.text('BILLED TO / CLIENT DETAILS:', 20, 91);
-  doc.text('PROJECT / WEDDING DETAILS:', 110, 91);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8.5);
-  doc.setTextColor(50, 50, 50);
-  const clientName = client ? (client.partner_name ? `${client.name} & ${client.partner_name}` : client.name) : project.name;
-  doc.setFont('helvetica', 'bold');
-  doc.text(clientName, 20, 97);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`Email: ${client?.email || project.client_contact.email}`, 20, 103);
-  doc.text(`Phone: ${client?.phone || project.client_contact.phone}`, 20, 109);
-
-  doc.setFont('helvetica', 'bold');
-  doc.text(project.name, 110, 97);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`Dates: ${project.wedding_date_start}`, 110, 103);
-  doc.text(`Location: ${project.venue}, ${project.city}`, 110, 109);
-
-  // Amount Paid Big Block
-  doc.setFillColor(primaryColor[0], primaryColor[1], primaryColor[2]);
-  doc.roundedRect(15, 128, 180, 24, 2, 2, 'F');
-  doc.setTextColor(255, 255, 255);
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(10);
-  doc.text('AMOUNT RECEIVED:', 22, 137);
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(18);
-  doc.text(`₹${payment.amount.toLocaleString('en-IN', { minimumFractionDigits: 2 })}`, 22, 146);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9);
-  doc.text(`Transaction Reference: ${payment.description}`, 105, 142);
-
-  // Project Balance Summary Table
-  let y = 162;
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(9.5);
-  doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
-  doc.text('ACCOUNT CONTRACT SUMMARY', 15, y);
-
-  y += 6;
-  doc.setDrawColor(220, 220, 220);
-  doc.line(15, y, 195, y);
-  y += 7;
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(9);
-  doc.setTextColor(60, 60, 60);
-
-  doc.text('Package Contract Value:', 15, y);
-  doc.text(`₹${project.total_amount.toLocaleString('en-IN')}`, 160, y);
-  y += 6;
-
-  doc.text('Amount Recorded This Receipt:', 15, y);
-  doc.text(`₹${payment.amount.toLocaleString('en-IN')}`, 160, y);
-  y += 6;
-
-  doc.text('Package Name:', 15, y);
-  doc.text(project.package_name, 110, y);
-  y += 10;
-
-  // Signatory & Stamp
-  y = 215;
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8.5);
-  doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
-  doc.text('AUTHORIZED SIGNATURE & STAMP:', 15, y);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
-  doc.setTextColor(100, 100, 100);
-  doc.text('Accounts & Operations Department', 15, y + 6);
-  doc.text(`${company.name}`, 15, y + 11);
-  doc.text(`Generated on ${new Date().toISOString().split('T')[0]}`, 15, y + 16);
-
-  // Official Seal outline
-  doc.setDrawColor(primaryColor[0], primaryColor[1], primaryColor[2]);
-  doc.setLineWidth(0.8);
-  doc.rect(145, y - 5, 45, 24);
-  doc.setFontSize(7.5);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
-  doc.text('OFFICIALLY VERIFIED', 150, y + 5);
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(6.5);
-  doc.text('TWBHub Finance Dept', 150, y + 11);
-  doc.text('Payment Recorded Clean', 150, y + 15);
-
-  // Footer
-  doc.setFontSize(7);
-  doc.setTextColor(150, 150, 150);
-  doc.text(`This is a computer generated receipt from TWBHub  •  ${company.name}  •  ${payment.receipt_number}`, 15, 285);
-
-  return doc;
-};
-
-export const COMPANY_AUTHORIZED_PERSON: Record<'twb' | 'golden_june', string> = {
-  twb: 'Authorized Signatory',
-  golden_june: 'Authorized Signatory',
-};
-
-export const COMPANY_SIGNATURE_ASSETS: Record<'twb' | 'golden_june', string | null> = {
-  twb: null,         // Real transparent PNG signature asset hook (e.g. data URL or asset path)
-  golden_june: null, // Real transparent PNG signature asset hook (e.g. data URL or asset path)
-};
-
-export const getStudioSignatureAsset = (companyCode: 'twb' | 'golden_june'): string | null => {
-  if (typeof window !== 'undefined') {
-    const custom = localStorage.getItem(`studio_signature_${companyCode}`);
-    if (custom) return custom;
-  }
-  return COMPANY_SIGNATURE_ASSETS[companyCode] || null;
-};
-
 export interface OfficialCompanyInfo {
   name: string;
   tagline: string;
@@ -463,8 +299,15 @@ export interface OfficialCompanyInfo {
   brandDisplayName: string;
 }
 
-export const getOfficialCompanyInfo = (company: Company): OfficialCompanyInfo => {
-  const isTWB = company.code === 'twb';
+export const getOfficialCompanyInfo = (
+  company?: Partial<Company> | { code?: string; id?: string; name?: string }
+): OfficialCompanyInfo => {
+  const code =
+    company?.code ||
+    (company?.id?.toLowerCase().includes('golden') || company?.name?.toLowerCase().includes('golden')
+      ? 'golden_june'
+      : 'twb');
+  const isTWB = code === 'twb';
   if (isTWB) {
     return {
       code: 'twb',
@@ -485,6 +328,410 @@ export const getOfficialCompanyInfo = (company: Company): OfficialCompanyInfo =>
     email: 'goldenjunefilms@gmail.com',
     website: 'www.goldenjunefilms.com',
   };
+};
+
+function convertLessThanThousand(n: number): string {
+  const units = [
+    '', 'One', 'Two', 'Three', 'Four', 'Five', 'Six', 'Seven', 'Eight', 'Nine',
+    'Ten', 'Eleven', 'Twelve', 'Thirteen', 'Fourteen', 'Fifteen', 'Sixteen',
+    'Seventeen', 'Eighteen', 'Nineteen'
+  ];
+  const tens = [
+    '', '', 'Twenty', 'Thirty', 'Forty', 'Fifty', 'Sixty', 'Seventy', 'Eighty', 'Ninety'
+  ];
+  let str = '';
+  if (n >= 100) {
+    str += units[Math.floor(n / 100)] + ' Hundred';
+    n %= 100;
+    if (n > 0) str += ' ';
+  }
+  if (n >= 20) {
+    const tenWord = tens[Math.floor(n / 10)];
+    const unitWord = units[n % 10];
+    str += unitWord ? `${tenWord}-${unitWord}` : tenWord;
+  } else if (n > 0) {
+    str += units[n];
+  }
+  return str.trim();
+}
+
+function convertIntegerToIndianWords(n: number): string {
+  if (n === 0) return 'Zero';
+  const crore = Math.floor(n / 10000000);
+  let rem = n % 10000000;
+  const lakh = Math.floor(rem / 100000);
+  rem %= 100000;
+  const thousand = Math.floor(rem / 1000);
+  rem %= 1000;
+  const hundred = rem;
+
+  const parts: string[] = [];
+  if (crore > 0) {
+    parts.push(convertIntegerToIndianWords(crore) + ' Crore');
+  }
+  if (lakh > 0) {
+    parts.push(convertLessThanThousand(lakh) + ' Lakh');
+  }
+  if (thousand > 0) {
+    parts.push(convertLessThanThousand(thousand) + ' Thousand');
+  }
+  if (hundred > 0) {
+    parts.push(convertLessThanThousand(hundred));
+  }
+  return parts.join(' ').trim();
+}
+
+export function formatAmountInIndianWords(amount: number): string {
+  if (typeof amount !== 'number' || isNaN(amount) || !isFinite(amount)) {
+    return '—';
+  }
+  const isNegative = amount < 0;
+  const abs = Math.abs(amount);
+  const rupees = Math.floor(abs);
+  const paise = Math.round((abs - rupees) * 100);
+
+  const prefix = isNegative ? 'Minus ' : '';
+  const rupeesWords = convertIntegerToIndianWords(rupees);
+
+  if (paise > 0) {
+    const paiseWords = convertLessThanThousand(paise);
+    if (rupees === 0) {
+      return `${prefix}${paiseWords} Paise Only`;
+    }
+    return `${prefix}Rupees ${rupeesWords} and ${paiseWords} Paise Only`;
+  }
+
+  return `${prefix}Rupees ${rupeesWords} Only`;
+}
+
+export const formatReceiptDateForDisplay = (dateStr?: string): string => {
+  if (!dateStr || !dateStr.trim()) return '—';
+  const d = new Date(dateStr + 'T00:00:00');
+  if (isNaN(d.getTime())) return dateStr.trim();
+  const day = d.getDate();
+  const month = d.toLocaleString('en-US', { month: 'short' });
+  const year = d.getFullYear();
+  return `${day} ${month} ${year}`;
+};
+
+export const formatReceiptDateForFilename = (dateStr?: string): string => {
+  if (!dateStr || !dateStr.trim()) return 'Date-TBD';
+  const d = new Date(dateStr + 'T00:00:00');
+  if (isNaN(d.getTime())) return dateStr.replace(/[/\\?%*:|"<>]/g, '').trim();
+  const day = d.getDate();
+  const month = d.toLocaleString('en-US', { month: 'short' });
+  const year = d.getFullYear();
+  return `${day} ${month} ${year}`;
+};
+
+export const getPaymentReceiptFilename = (
+  payment: Payment,
+  project?: Project,
+  client?: Client,
+  company?: Company,
+  siblingPayments?: Payment[]
+): string => {
+  const code = company?.code || (payment?.company_id === 'golden_june' ? 'golden_june' : 'twb');
+  const brandPrefix = code === 'golden_june' ? 'GJ' : 'TWB';
+
+  const dateStr = formatReceiptDateForFilename(payment?.payment_date);
+
+  let clientNameStr = '';
+  if (client?.name && client.name.trim()) {
+    clientNameStr = client.partner_name && client.partner_name.trim()
+      ? `${client.name.trim()} & ${client.partner_name.trim()}`
+      : client.name.trim();
+  } else if (project?.name && project.name.trim()) {
+    clientNameStr = project.name.split('•')[0].trim();
+  } else {
+    clientNameStr = 'Client';
+  }
+
+  const sanitize = (s: string) => s.replace(/[/\\?%*:|"<>]/g, '').trim();
+  const cleanClient = sanitize(clientNameStr) || 'Client';
+
+  // Only append a short unique suffix when the brand, payment date, and client names would otherwise produce the same filename
+  let collisionSuffix = '';
+  if (siblingPayments && siblingPayments.length > 1) {
+    const hasCollision = siblingPayments.some(
+      p => p.id !== payment.id && p.payment_date === payment.payment_date
+    );
+    if (hasCollision) {
+      const rawSuffix = payment.receipt_number || payment.id.slice(-4);
+      collisionSuffix = ` - ${sanitize(rawSuffix)}`;
+    }
+  }
+
+  return `${brandPrefix}-Receipt_${dateStr} - ${cleanClient}${collisionSuffix}.pdf`;
+};
+
+export const generateReceiptPDF = (
+  payment: Payment,
+  project?: Project,
+  client?: Client | undefined,
+  company?: Company,
+  siblingPayments?: Payment[]
+) => generatePaymentReceiptPDF(payment, project, client, company, siblingPayments);
+
+export const generatePaymentReceiptPDF = (
+  payment: Payment,
+  project?: Project,
+  client?: Client | undefined,
+  company?: Company,
+  siblingPayments?: Payment[]
+) => {
+  // Page Size: 8.5 x 4.25 inches landscape (215.9mm x 107.95mm)
+  const doc = new jsPDF({
+    orientation: 'landscape',
+    unit: 'mm',
+    format: [107.95, 215.9],
+  });
+
+  const officialCompany = getOfficialCompanyInfo(
+    company || (payment?.company_id ? ({ code: payment.company_id } as any) : undefined)
+  );
+
+  // Minimalist editorial monochrome palette matching Order Form
+  const colorBlack = [0, 0, 0];
+  const colorBody = [40, 40, 40];
+  const colorMuted = [100, 100, 100];
+  const colorLine = [215, 215, 215];
+
+  // Outer framing boundary
+  doc.setDrawColor(colorLine[0], colorLine[1], colorLine[2]);
+  doc.setLineWidth(0.3);
+  doc.rect(8, 7, 199.9, 93.95);
+
+  // Header Left (Brand Information)
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(13);
+  doc.setTextColor(colorBlack[0], colorBlack[1], colorBlack[2]);
+  doc.text(officialCompany.brandDisplayName, 13, 15);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.setTextColor(colorBody[0], colorBody[1], colorBody[2]);
+  doc.text(officialCompany.tagline, 13, 19.5);
+
+  doc.setFontSize(6.8);
+  doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
+  doc.text(
+    `${officialCompany.mobile}   |   ${officialCompany.email}   |   ${officialCompany.website}`,
+    13,
+    23.5
+  );
+
+  // Header Right (Document Title & Date)
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11.5);
+  doc.setTextColor(colorBlack[0], colorBlack[1], colorBlack[2]);
+  doc.text('OFFICIAL PAYMENT RECEIPT', 202.9, 15, { align: 'right' });
+
+  const dateDisplay = payment?.payment_date
+    ? `PAYMENT DATE: ${formatReceiptDateForDisplay(payment.payment_date)}`
+    : 'PAYMENT DATE: —';
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.setTextColor(colorBody[0], colorBody[1], colorBody[2]);
+  doc.text(dateDisplay, 202.9, 20, { align: 'right' });
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7);
+  doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
+  doc.text('PAYMENT ACKNOWLEDGMENT', 202.9, 24, { align: 'right' });
+
+  // Divider below Header
+  doc.setDrawColor(colorLine[0], colorLine[1], colorLine[2]);
+  doc.setLineWidth(0.25);
+  doc.line(13, 26.5, 202.9, 26.5);
+
+  // Resolve Client & Project text without inventing data
+  let clientTitle = '—';
+  if (client?.name && client.name.trim()) {
+    clientTitle = client.partner_name && client.partner_name.trim()
+      ? `${client.name.trim()} & ${client.partner_name.trim()}`
+      : client.name.trim();
+  } else if (project?.name && project.name.trim()) {
+    clientTitle = project.name.split('•')[0].trim() || '—';
+  }
+
+  let eventDatesDisplay = '—';
+  if (project?.events && project.events.length > 0) {
+    const summary = formatProjectEventsDateSummary(project.events);
+    if (summary && summary !== '—') eventDatesDisplay = summary;
+  } else if (project?.wedding_date_start) {
+    eventDatesDisplay = formatEventDatesForDisplay(
+      project.wedding_date_start,
+      project.wedding_date_end
+    );
+  }
+
+  let projectPackageDisplay = '—';
+  if (project?.name && project.package_name) {
+    projectPackageDisplay = `${project.name} • ${project.package_name}`;
+  } else if (project?.name) {
+    projectPackageDisplay = project.name;
+  } else if (project?.package_name) {
+    projectPackageDisplay = project.package_name;
+  }
+
+  const paymentMethodDisplay = payment?.payment_mode && payment.payment_mode.trim()
+    ? payment.payment_mode.trim()
+    : '—';
+
+  const purposeDisplay = payment?.description && payment.description.trim()
+    ? payment.description.trim()
+    : '—';
+
+  // Rebalanced Middle Section: Two intentional columns (Client/Event & Payment Particulars)
+  // Left Column: Client & Project Details (x: 13 to 103, width 90)
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.5);
+  doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
+  doc.text('RECEIVED WITH THANKS FROM', 13, 32);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9.5);
+  doc.setTextColor(colorBlack[0], colorBlack[1], colorBlack[2]);
+  const splitClient = doc.splitTextToSize(clientTitle, 88);
+  doc.text(splitClient.slice(0, 1), 13, 37);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.5);
+  doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
+  doc.text('WEDDING / EVENT DATE', 13, 43.5);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(colorBody[0], colorBody[1], colorBody[2]);
+  const splitEvent = doc.splitTextToSize(eventDatesDisplay, 88);
+  doc.text(splitEvent.slice(0, 1), 13, 48);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.5);
+  doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
+  doc.text('PROJECT / PACKAGE REFERENCE', 13, 54.5);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(colorBody[0], colorBody[1], colorBody[2]);
+  const splitPackage = doc.splitTextToSize(projectPackageDisplay, 88);
+  doc.text(splitPackage.slice(0, 1), 13, 59);
+
+  // Right Column: Payment Particulars (x: 112 to 202.9, width 90.9)
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.5);
+  doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
+  doc.text('PAYMENT METHOD', 112, 32);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(9);
+  doc.setTextColor(colorBody[0], colorBody[1], colorBody[2]);
+  doc.text(paymentMethodDisplay, 112, 37);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.5);
+  doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
+  doc.text('PAYMENT PURPOSE / TOWARDS', 112, 43.5);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(colorBody[0], colorBody[1], colorBody[2]);
+  const splitPurpose = doc.splitTextToSize(purposeDisplay, 88);
+  doc.text(splitPurpose.slice(0, 3), 112, 48);
+
+  // Divider above Amount Box
+  doc.setDrawColor(colorLine[0], colorLine[1], colorLine[2]);
+  doc.setLineWidth(0.25);
+  doc.line(13, 62.5, 202.9, 62.5);
+
+  // Amount Received Box (y: 65 to 88.5, height: 23.5)
+  const isAmountValid =
+    typeof payment?.amount === 'number' && !isNaN(payment.amount) && isFinite(payment.amount);
+  const amountInWordsDisplay = isAmountValid ? formatAmountInIndianWords(payment.amount) : '—';
+
+  doc.setDrawColor(190, 190, 190);
+  doc.setFillColor(248, 249, 250);
+  doc.setLineWidth(0.3);
+  doc.roundedRect(13, 65, 189.9, 23.5, 1.5, 1.5, 'FD');
+
+  // Amount Header
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.8);
+  doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
+  doc.text('AMOUNT RECEIVED', 18, 70);
+
+  // Prominent numeric amount rendered with refined vector Rupee glyph
+  if (isAmountValid) {
+    renderRupeeAmount(doc, payment.amount, 18, 77.5, {
+      fontSize: 15,
+      bold: true,
+      color: colorBlack,
+      includeDecimals: true,
+    });
+  } else {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(15);
+    doc.setTextColor(colorBlack[0], colorBlack[1], colorBlack[2]);
+    doc.text('—', 18, 77.5);
+  }
+
+  // Amount in Indian Currency Words directly beneath numeric amount in smaller font
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(6.5);
+  doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
+  doc.text('AMOUNT IN WORDS:', 18, 83.5);
+
+  const wordsLabelWidth = doc.getTextWidth('AMOUNT IN WORDS: ');
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.5);
+  doc.setTextColor(colorBody[0], colorBody[1], colorBody[2]);
+  const splitWords = doc.splitTextToSize(amountInWordsDisplay, 189.9 - 10 - wordsLabelWidth);
+  doc.text(splitWords.slice(0, 1), 18 + wordsLabelWidth + 1, 83.5);
+
+  // Footer Section
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(6.2);
+  doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
+  doc.text(
+    `This is an official computer-generated receipt issued by ${officialCompany.brandDisplayName}.`,
+    13,
+    93
+  );
+  doc.text(
+    'All payments are subject to realization and production terms agreed in the Order Form.',
+    13,
+    96.5
+  );
+
+  // Proper filename and download wiring
+  const properFilename = getPaymentReceiptFilename(payment, project, client, company, siblingPayments);
+  const originalSave = doc.save.bind(doc);
+  (doc as any).__originalSave = originalSave;
+  (doc as any).save = (filename?: string, options?: any) => {
+    return downloadPdfDoc(doc, filename || properFilename, (doc as any).__originalSave || originalSave);
+  };
+  (doc as any).filename = properFilename;
+
+  return doc;
+};
+
+export const COMPANY_AUTHORIZED_PERSON: Record<'twb' | 'golden_june', string> = {
+  twb: 'Authorized Signatory',
+  golden_june: 'Authorized Signatory',
+};
+
+export const COMPANY_SIGNATURE_ASSETS: Record<'twb' | 'golden_june', string | null> = {
+  twb: null,         // Real transparent PNG signature asset hook (e.g. data URL or asset path)
+  golden_june: null, // Real transparent PNG signature asset hook (e.g. data URL or asset path)
+};
+
+export const getStudioSignatureAsset = (companyCode: 'twb' | 'golden_june'): string | null => {
+  if (typeof window !== 'undefined') {
+    const custom = localStorage.getItem(`studio_signature_${companyCode}`);
+    if (custom) return custom;
+  }
+  return COMPANY_SIGNATURE_ASSETS[companyCode] || null;
 };
 
 export const formatProjectEventsForFilename = (events?: ProjectEvent[]): string => {
@@ -680,40 +927,43 @@ export const drawRupeeGlyph = (
   x: number,
   baselineY: number,
   fontSize: number,
-  color: number[]
+  color: number[],
+  isBold: boolean = true
 ): number => {
-  const h = fontSize * 0.32;
-  const w = h * 0.62;
-  const stroke = Math.max(0.18, fontSize * 0.024);
-  const topY = baselineY - h * 0.88;
-  const bar2Y = baselineY - h * 0.62;
-  const waistY = baselineY - h * 0.38;
-  const stemX = x + stroke * 0.5;
+  // Cap height of Helvetica numbers and uppercase letters in millimeters
+  const capH = fontSize * (25.4 / 72) * 0.718;
+  const S = capH / 18;
+  const stroke = isBold ? Math.max(0.24, capH * 0.12) : Math.max(0.18, capH * 0.085);
+  const topY = baselineY - capH;
+  const bar2Y = topY + 4.8 * S;
+  const waistY = topY + 9.8 * S;
+  const stemX = x + 2.8 * S;
 
   doc.saveGraphicsState();
   doc.setDrawColor(color[0], color[1], color[2]);
   doc.setLineWidth(stroke);
-  doc.setLineCap('butt');
+  doc.setLineCap('round');
+  doc.setLineJoin('round');
 
-  // Top horizontal bar
-  doc.line(x, topY, x + w, topY);
-  // Second horizontal bar
-  doc.line(x, bar2Y, x + w * 0.82, bar2Y);
-  // Vertical stem
-  doc.line(stemX, topY, stemX, waistY);
-  // Upper arc (P-loop)
-  const arcRight = x + w * 0.82;
-  const arcMidY = (topY + waistY) / 2;
-  doc.lines(
-    [[arcRight - stemX, (arcMidY - topY) * 0.5, arcRight - stemX, (arcMidY - topY) * 1.5, 0, waistY - topY]],
-    stemX,
-    topY
-  );
-  // Diagonal leg
-  doc.line(stemX, waistY, x + w * 0.95, baselineY);
+  // 1. Top horizontal bar (shirorekha)
+  doc.line(x, topY, x + 10.5 * S, topY);
+
+  // 2. Second horizontal bar
+  doc.line(x, bar2Y, x + 9.2 * S, bar2Y);
+
+  // 3. Waist connection bar
+  doc.line(x, waistY, stemX, waistY);
+
+  // 4. Upper curved bowl (smooth 180-degree semicircular arc)
+  doc.lines([[5.5 * S, 0, 5.5 * S, -9.8 * S, 0, -9.8 * S]], stemX, waistY);
+
+  // 5. Diagonal leg extending naturally down to the baseline
+  doc.line(stemX, waistY, x + 9.2 * S, baselineY);
 
   doc.restoreGraphicsState();
-  return w + stroke;
+
+  const glyphW = 10.5 * S;
+  return glyphW + stroke * 0.5;
 };
 
 export const renderRupeeAmount = (
@@ -721,28 +971,44 @@ export const renderRupeeAmount = (
   val: number,
   x: number,
   y: number,
-  options?: { fontSize?: number; bold?: boolean; color?: number[]; alignRight?: boolean }
+  options?: {
+    fontSize?: number;
+    bold?: boolean;
+    color?: number[];
+    alignRight?: boolean;
+    includeDecimals?: boolean;
+  }
 ): number => {
   const fontSize = options?.fontSize || 10;
   const isBold = options?.bold ?? true;
   const color = options?.color || [15, 23, 42];
-  const numStr = formatIndianNumber(val);
+  const hasDecimals = val % 1 !== 0;
+  const numStr = (options?.includeDecimals || hasDecimals)
+    ? val.toLocaleString('en-IN', {
+        minimumFractionDigits: hasDecimals ? 2 : 0,
+        maximumFractionDigits: 2,
+      })
+    : formatIndianNumber(val);
 
   doc.setFont('helvetica', isBold ? 'bold' : 'normal');
   doc.setFontSize(fontSize);
   doc.setTextColor(color[0], color[1], color[2]);
 
   const numWidth = doc.getTextWidth(numStr);
-  const glyphW = fontSize * 0.32 * 0.62 + 0.3;
-  const totalW = glyphW + 0.8 + numWidth;
+  const capH = fontSize * (25.4 / 72) * 0.718;
+  const S = capH / 18;
+  const stroke = isBold ? Math.max(0.24, capH * 0.12) : Math.max(0.18, capH * 0.085);
+  const glyphW = 10.5 * S + stroke * 0.5;
+  const spacing = Math.round((fontSize * 0.045 + 0.15) * 100) / 100;
+  const totalW = glyphW + spacing + numWidth;
 
   let startX = x;
   if (options?.alignRight) {
     startX = x - totalW;
   }
 
-  drawRupeeGlyph(doc, startX, y, fontSize, color);
-  doc.text(numStr, startX + glyphW + 0.8, y);
+  drawRupeeGlyph(doc, startX, y, fontSize, color, isBold);
+  doc.text(numStr, startX + glyphW + spacing, y);
   return totalW;
 };
 
@@ -761,14 +1027,20 @@ export const renderTextLineWithRupee = (
 
   const parts = text.split('₹');
   let currentX = x;
+  const capH = fontSize * (25.4 / 72) * 0.718;
+  const S = capH / 18;
+  const stroke = Math.max(0.18, capH * 0.085);
+  const glyphW = 10.5 * S + stroke * 0.5;
+  const spacing = Math.round((fontSize * 0.045 + 0.15) * 100) / 100;
+
   for (let i = 0; i < parts.length; i++) {
     if (parts[i].length > 0) {
       doc.text(parts[i], currentX, y);
       currentX += doc.getTextWidth(parts[i]);
     }
     if (i < parts.length - 1) {
-      const glyphWidth = drawRupeeGlyph(doc, currentX, y, fontSize, color);
-      currentX += glyphWidth + 0.3;
+      drawRupeeGlyph(doc, currentX, y, fontSize, color, false);
+      currentX += glyphW + spacing;
     }
   }
 };
@@ -1121,7 +1393,9 @@ export const generateOrderFormPDF = (
     : project.name.split('•')[0].trim();
 
   const clientPhone = client?.phone || project.client_contact?.phone || '—';
-  const clientEmail = client?.email || project.client_contact?.email || '—';
+  const rawEmail = (client?.email && client.email.trim()) || (project.client_contact?.email && project.client_contact.email.trim()) || '';
+  const isInventedEmail = rawEmail.toLowerCase() === 'client@wedding.com';
+  const clientEmail = (!rawEmail || isInventedEmail) ? '—' : rawEmail;
   const clientResidence = client?.address
     ? `${client.address}, ${project.city || ''}`.trim()
     : project.city || '—';
@@ -1260,7 +1534,15 @@ export const generateOrderFormPDF = (
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(7.5);
   doc.setTextColor(colorBody[0], colorBody[1], colorBody[2]);
-  const contactLines = doc.splitTextToSize(`${clientPhone}   |   ${clientEmail}`, leftColWidth);
+  let contactText = '—';
+  if (clientPhone !== '—' && clientEmail !== '—') {
+    contactText = `${clientPhone}   |   ${clientEmail}`;
+  } else if (clientPhone !== '—') {
+    contactText = clientPhone;
+  } else if (clientEmail !== '—') {
+    contactText = clientEmail;
+  }
+  const contactLines = doc.splitTextToSize(contactText, leftColWidth);
   doc.text(contactLines, leftX, leftY);
   leftY += contactLines.length * 3.4;
 

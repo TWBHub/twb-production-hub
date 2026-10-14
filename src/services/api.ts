@@ -2537,57 +2537,84 @@ async assignTeamMember(
     const supabase = getSupabaseClient();
     if (supabase) {
       const { data, error } = await supabase.from('expenses').select('*').order('expense_date', { ascending: false });
-      if (!error && data && data.length > 0) {
-        saveToStorage('expenses', data);
-        return data as Expense[];
+      if (!error && data) {
+        // Resolve company_id using stored or cached projects because public.expenses does not store company_id
+        const cachedProjects = getStoredOrInitial('projects', INITIAL_PROJECTS);
+        const mapped = data.map((row: any) => {
+          let rawCompany = row.company_id;
+          if (!rawCompany) {
+            const matchedProj = cachedProjects.find((p: Project) => p.id === row.project_id);
+            rawCompany = matchedProj?.company_id || 'twb';
+          }
+          const isGJ = rawCompany === 'golden_june' || rawCompany === '3a19bbe1-a2bc-46db-bbbc-44ef7f5036ec';
+
+          return {
+            ...row,
+            company_id: isGJ ? 'golden_june' : 'twb',
+            amount: Number(row.amount) || 0,
+          } as Expense;
+        });
+
+        saveToStorage('expenses', mapped);
+        return mapped;
       }
     }
     return getStoredOrInitial('expenses', INITIAL_EXPENSES);
-    },
+  },
 
   async createExpense(expense: Omit<Expense, 'id' | 'created_at'>): Promise<Expense> {
-  const supabase = getSupabaseClient();
+    const supabase = getSupabaseClient();
 
-  if (supabase) {
-    const { data, error } = await supabase
-      .from('expenses')
-      .insert({
-        project_id: expense.project_id,
-        amount: Number(expense.amount) || 0,
-        category: expense.category,
-        description: expense.description,
-        paid_to: expense.paid_to,
-        expense_date: expense.expense_date,
-      })
-      .select()
-      .single();
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('expenses')
+        .insert({
+          project_id: expense.project_id,
+          amount: Number(expense.amount) || 0,
+          category: expense.category,
+          description: expense.description,
+          paid_to: expense.paid_to,
+          expense_date: expense.expense_date,
+        })
+        .select()
+        .single();
 
-    if (error) {
-      console.error('Failed to create expense in Supabase:', error);
-      throw new Error(`Could not create expense: ${error.message}`);
+      if (error) {
+        console.error('Failed to create expense in Supabase:', error);
+        throw new Error(`Could not create expense: ${error.message}`);
+      }
+
+      const cachedProjects = getStoredOrInitial('projects', INITIAL_PROJECTS);
+      const matchedProj = cachedProjects.find((p: Project) => p.id === expense.project_id);
+      const resolvedCompanyId: 'twb' | 'golden_june' =
+        expense.company_id === 'golden_june' || matchedProj?.company_id === 'golden_june'
+          ? 'golden_june'
+          : 'twb';
+
+      const newExpense: Expense = {
+        ...(data as Expense),
+        company_id: resolvedCompanyId,
+      };
+
+      const current = await this.getExpenses();
+      const updated = [newExpense, ...current.filter(e => e.id !== newExpense.id)];
+      saveToStorage('expenses', updated);
+
+      return newExpense;
     }
 
-    const newExpense = data as Expense;
+    const newExpense: Expense = {
+      ...expense,
+      id: crypto.randomUUID(),
+      created_at: new Date().toISOString(),
+    };
 
     const current = await this.getExpenses();
-    const updated = [newExpense, ...current.filter(e => e.id !== newExpense.id)];
+    const updated = [newExpense, ...current];
     saveToStorage('expenses', updated);
 
     return newExpense;
-  }
-
-  const newExpense: Expense = {
-    ...expense,
-    id: crypto.randomUUID(),
-    created_at: new Date().toISOString(),
-  };
-
-  const current = await this.getExpenses();
-  const updated = [newExpense, ...current];
-  saveToStorage('expenses', updated);
-
-  return newExpense;
-},
+  },
 
   async updateExpense(expense: Expense): Promise<Expense> {
     const supabase = getSupabaseClient();
@@ -2613,7 +2640,18 @@ async assignTeamMember(
         throw new Error(`Could not update expense: ${error.message}`);
       }
 
-      const updatedExpense = data as Expense;
+      const cachedProjects = getStoredOrInitial('projects', INITIAL_PROJECTS);
+      const matchedProj = cachedProjects.find((p: Project) => p.id === expense.project_id);
+      const resolvedCompanyId: 'twb' | 'golden_june' =
+        expense.company_id === 'golden_june' || matchedProj?.company_id === 'golden_june'
+          ? 'golden_june'
+          : 'twb';
+
+      const updatedExpense: Expense = {
+        ...(data as Expense),
+        company_id: resolvedCompanyId,
+      };
+
       const current = await this.getExpenses();
       const updated = current.map(e =>
         e.id === updatedExpense.id ? updatedExpense : e

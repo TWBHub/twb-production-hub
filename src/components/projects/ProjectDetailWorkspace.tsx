@@ -141,6 +141,8 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
   const [pdfDownloadError, setPdfDownloadError] = useState<string | null>(null);
   const [pdfDownloadSuccess, setPdfDownloadSuccess] = useState(false);
+  const [receiptDownloadSuccessId, setReceiptDownloadSuccessId] = useState<string | null>(null);
+  const [downloadingReceiptId, setDownloadingReceiptId] = useState<string | null>(null);
 
   // Project events state
   const [projectEventsList, setProjectEventsList] = useState<ProjectEvent[]>(
@@ -316,6 +318,32 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
     setPayDesc('Booking Retainer');
     setPayDate(project.created_at ? project.created_at.split('T')[0] : new Date().toISOString().split('T')[0]);
     setShowPaymentModal(true);
+  };
+
+  const handleDownloadReceipt = async (p: Payment) => {
+    if (downloadingReceiptId) return;
+    setPdfDownloadError(null);
+    setReceiptDownloadSuccessId(null);
+    setDownloadingReceiptId(p.id);
+
+    // Yield to allow the browser and React to render the loading state, matching Order Form flow
+    await new Promise(resolve => setTimeout(resolve, 50));
+
+    try {
+      const doc = generateReceiptPDF(p, project, client, company, projectPayments);
+      doc.save();
+      setReceiptDownloadSuccessId(p.id);
+      setTimeout(() => {
+        setReceiptDownloadSuccessId(null);
+      }, 2500);
+    } catch (err: any) {
+      console.error('Failed to download payment receipt:', err);
+      setPdfDownloadError(
+        `Failed to download receipt for payment ${p.receipt_number || p.id}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    } finally {
+      setDownloadingReceiptId(null);
+    }
   };
 
   const handleEditPayment = (payment: Payment) => {
@@ -1577,6 +1605,22 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                   )}
                 </div>
 
+                {pdfDownloadError && (
+                  <div className="p-2.5 bg-red-50 border border-red-200 text-red-800 rounded-lg text-xs flex items-center justify-between gap-2 shadow-xs">
+                    <div className="flex items-center gap-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 text-red-600 shrink-0" />
+                      <span>{pdfDownloadError}</span>
+                    </div>
+                    <button
+                      onClick={() => setPdfDownloadError(null)}
+                      className="text-red-500 hover:text-red-700 p-0.5 cursor-pointer"
+                      title="Dismiss error"
+                    >
+                      <X className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                )}
+
                 <div className="divide-y divide-slate-100 text-xs">
                   {projectPayments.map(p => (
                     <div key={p.id} className="py-2.5 flex items-center justify-between gap-3">
@@ -1592,15 +1636,35 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                         </div>
                         <div className="flex items-center gap-1.5">
                           <button
-                            onClick={() => {
-                              const doc = generateReceiptPDF(p, project, client, company);
-                              doc.save(`Receipt-${p.receipt_number || p.id}.pdf`);
-                            }}
-                            className="px-2 py-1 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-md border border-slate-200 transition-colors flex items-center gap-1 cursor-pointer"
+                            disabled={Boolean(downloadingReceiptId)}
+                            onClick={() => handleDownloadReceipt(p)}
+                            className={`px-2 py-1 text-[11px] font-semibold rounded-md border transition-colors flex items-center gap-1 ${
+                              receiptDownloadSuccessId === p.id
+                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                : downloadingReceiptId === p.id
+                                ? 'bg-blue-50 text-blue-700 border-blue-200 cursor-wait'
+                                : downloadingReceiptId
+                                ? 'opacity-50 cursor-not-allowed bg-slate-100 text-slate-400 border-slate-200'
+                                : 'text-slate-700 bg-slate-100 hover:bg-slate-200 border-slate-200 cursor-pointer'
+                            }`}
                             title="Download Official Payment Receipt"
                           >
-                            <Download className="w-3 h-3" />
-                            Receipt
+                            {receiptDownloadSuccessId === p.id ? (
+                              <>
+                                <Check className="w-3 h-3 text-emerald-600" />
+                                <span className="text-emerald-700">Download Initiated</span>
+                              </>
+                            ) : downloadingReceiptId === p.id ? (
+                              <>
+                                <Loader2 className="w-3 h-3 animate-spin text-blue-600" />
+                                <span>Generating...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Download className="w-3 h-3" />
+                                <span>Receipt</span>
+                              </>
+                            )}
                           </button>
                           {canManageFinance && (
                             <>

@@ -544,12 +544,22 @@ const matchBrand = (companyId: string) => {
     return true;
   });
 
+  const resolveItemCompanyId = (projectId?: string, fallbackCompanyId?: string): string => {
+    if (projectId) {
+      const matched = projects.find(p => p.id === projectId);
+      if (matched?.company_id) {
+        return matched.company_id;
+      }
+    }
+    return fallbackCompanyId || '';
+  };
+
   const filteredEnquiries = enquiries.filter(e => matchBrand(e.company_id));
   const filteredClients = clients.filter(c => matchBrand(c.company_id));
   const filteredProjectData = projectData.filter(d => matchBrand(d.company_id));
   const filteredCalendarEvents = calendarEvents.filter(e => matchBrand(e.company_id));
-  const filteredPayments = payments.filter(p => matchBrand(p.company_id));
-  const filteredExpenses = expenses.filter(e => matchBrand(e.company_id));
+  const filteredPayments = payments.filter(p => matchBrand(resolveItemCompanyId(p.project_id, p.company_id)));
+  const filteredExpenses = expenses.filter(e => matchBrand(resolveItemCompanyId(e.project_id, e.company_id)));
 
   const unreadNotificationCount = notifications.filter(n => !n.read).length;
 
