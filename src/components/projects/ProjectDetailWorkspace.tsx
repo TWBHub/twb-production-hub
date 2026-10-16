@@ -54,6 +54,7 @@ import { apiService } from '../../services/api';
 import { generateOrderFormPDF, generateReceiptPDF } from '../../utils/pdfGenerator';
 import { ProjectTermsEditor } from './ProjectTermsEditor';
 import { sortProjectEvents } from '../../utils/eventUtils';
+import { formatDisplayDate } from '../../utils/dateUtils';
 
 interface ProjectWorkspaceProps {
   projectId: string;
@@ -199,9 +200,7 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
   // Helper to format date cleanly for options
   const formatEventDateOption = (dateStr: string) => {
-    const d = new Date(dateStr + 'T00:00:00');
-    if (isNaN(d.getTime())) return dateStr;
-    return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'long' });
+    return formatDisplayDate(dateStr);
   };
 
   // Extract project's actual event dates as selectable options
@@ -788,8 +787,10 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
               <span className="flex items-center gap-1">
                 <Calendar className="w-3.5 h-3.5" />
                 {projectEventsList.length > 0
-                  ? `${projectEventsList.length} ${projectEventsList.length === 1 ? 'Event' : 'Events'} (${projectEventsList[0].event_date}${projectEventsList.length > 1 ? ` to ${projectEventsList[projectEventsList.length - 1].event_date}` : ''})`
-                  : `${project.wedding_date_start} ${project.wedding_date_start !== project.wedding_date_end ? `to ${project.wedding_date_end}` : ''}`}
+                  ? `${projectEventsList.length} ${projectEventsList.length === 1 ? 'Event' : 'Events'} (${formatDisplayDate(projectEventsList[0].event_date)}${projectEventsList.length > 1 ? ` to ${formatDisplayDate(projectEventsList[projectEventsList.length - 1].event_date)}` : ''})`
+                  : (project.wedding_date_start !== project.wedding_date_end
+                      ? `${formatDisplayDate(project.wedding_date_start)} to ${formatDisplayDate(project.wedding_date_end)}`
+                      : formatDisplayDate(project.wedding_date_start))}
               </span>
               <span>•</span>
               <span className="flex items-center gap-1">
@@ -1023,7 +1024,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                             <span className="font-bold text-slate-900 text-sm">{evt.event_name}</span>
                           </div>
                           <span className="px-2 py-0.5 text-[11px] font-semibold bg-white border border-slate-300 rounded text-slate-700 shrink-0">
-                            {evt.event_date}
+                            {formatDisplayDate(evt.event_date)}
                           </span>
                         </div>
 
@@ -1141,7 +1142,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                                 <div className="flex items-center gap-1.5 text-slate-700">
                                   <Calendar className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                                   <span className="font-medium text-[11px]">
-                                    Date: <strong className="text-slate-900">{assignment.assignment_date}</strong>
+                                    Date: <strong className="text-slate-900">{formatDisplayDate(assignment.assignment_date)}</strong>
                                   </span>
                                   {/* If roles differ between dates, display role for this specific date */}
                                   {!group.hasSingleRole && assignment.role ? (
@@ -1157,7 +1158,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                                       type="button"
                                       onClick={() => handleOpenEditAssignment(assignment)}
                                       className="text-slate-500 hover:text-blue-600 hover:bg-blue-50 px-2 py-0.5 text-[11px] font-semibold transition-colors rounded cursor-pointer"
-                                      title={`Edit assignment for ${assignment.assignment_date}`}
+                                      title={`Edit assignment for ${formatDisplayDate(assignment.assignment_date)}`}
                                     >
                                       Edit
                                     </button>
@@ -1168,7 +1169,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                                         setDeletingAssignment(assignment);
                                       }}
                                       className="text-slate-400 hover:text-rose-600 hover:bg-rose-50 px-2 py-0.5 text-[11px] font-semibold transition-colors rounded cursor-pointer"
-                                      title={`Delete assignment for ${assignment.assignment_date}`}
+                                      title={`Delete assignment for ${formatDisplayDate(assignment.assignment_date)}`}
                                     >
                                       Delete
                                     </button>
@@ -1496,7 +1497,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
 
                     <p className="text-xs text-slate-600 leading-relaxed">
                       Are you sure you want to remove the assignment on{' '}
-                      <strong className="text-slate-900 font-semibold">{deletingAssignment.assignment_date}</strong>
+                      <strong className="text-slate-900 font-semibold">{formatDisplayDate(deletingAssignment.assignment_date)}</strong>
                       {deletingAssignment.role ? (
                         <>
                           {' '}as <strong className="text-slate-900 font-semibold">{deletingAssignment.role}</strong>
@@ -1627,7 +1628,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                       <div>
                         <div className="font-semibold text-slate-800">{p.description}</div>
                         <div className="text-[11px] text-slate-400">
-                          {p.payment_date} • {p.payment_mode} • Receipt: {p.receipt_number}
+                          {formatDisplayDate(p.payment_date)} • {p.payment_mode} • Receipt: {p.receipt_number}
                         </div>
                       </div>
                       <div className="flex items-center gap-3">
@@ -1715,7 +1716,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                       <div>
                         <div className="font-semibold text-slate-800">{exp.description}</div>
                         <div className="text-[11px] text-slate-400">
-                          {exp.expense_date} • Category: {exp.category} • Paid to: {exp.paid_to}
+                          {formatDisplayDate(exp.expense_date)} • Category: {exp.category} • Paid to: {exp.paid_to}
                         </div>
                       </div>
                       <div className="flex items-center gap-3">

@@ -10,6 +10,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { CalendarEvent, CalendarEventType } from '../../types';
 import { apiService } from '../../services/api';
+import { formatDisplayDate } from '../../utils/dateUtils';
 
 type DisplayCalendarEvent = CalendarEvent & {
   source?: 'calendar' | 'project';
@@ -356,7 +357,7 @@ export const CalendarView: React.FC = () => {
                   if (dayEvents.length > 0) {
                     setSelectedDayEvents(dayEvents);
                     setSelectedDayString(
-                      `${monthNames[month]} ${dayNum}, ${year}`
+                      formatDisplayDate(new Date(year, month, dayNum))
                     );
                   }
                 }}

@@ -20,6 +20,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { Enquiry, EnquiryStatus, QuotationStatus } from '../../types';
 import { generateQuotationPDF } from '../../utils/pdfGenerator';
+import { formatDisplayDate } from '../../utils/dateUtils';
 
 export const EnquiriesView: React.FC = () => {
   const {
@@ -231,7 +232,7 @@ export const EnquiriesView: React.FC = () => {
                   </h3>
                   <div className="text-xs text-slate-500 mt-1 flex items-center gap-1.5">
                     <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                    <span>{enquiry.event_date}</span>
+                    <span>{formatDisplayDate(enquiry.event_date)}</span>
                     <span className="text-slate-300">•</span>
                     <MapPin className="w-3.5 h-3.5 text-slate-400" />
                     <span className="truncate">{enquiry.venue}</span>

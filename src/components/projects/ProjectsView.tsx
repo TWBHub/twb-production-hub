@@ -21,6 +21,7 @@ import { Project, ProjectStatus, Client, ClientHddStatus, CLIENT_HDD_STATUS_OPTI
 import { ProjectDetailWorkspace, PROJECT_PRODUCTION_STAGES } from './ProjectDetailWorkspace';
 import { generateOrderFormPDF } from '../../utils/pdfGenerator';
 import { sortProjectEvents } from '../../utils/eventUtils';
+import { formatDisplayDate, formatDisplayDateRange } from '../../utils/dateUtils';
 
 export const ProjectsView: React.FC = () => {
   const {
@@ -781,7 +782,7 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
 
                   <div className="text-xs text-slate-500 mt-1 flex items-center gap-1.5">
                     <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                    <span>{project.wedding_date_start}</span>
+                    <span>{formatDisplayDate(project.wedding_date_start)}</span>
 
                     <span className="text-slate-300">•</span>
 

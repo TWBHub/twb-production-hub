@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Client } from '../../types';
+import { formatDisplayDate } from '../../utils/dateUtils';
 
 export const ClientsView: React.FC = () => {
   const {
@@ -300,7 +301,7 @@ const openEditClient = (client: Client) => {
                       <div>
                         <div className="font-semibold text-slate-800">{p.name}</div>
                         <div className="text-[11px] text-slate-500">
-                          {p.wedding_date_start} • {p.venue}
+                          {formatDisplayDate(p.wedding_date_start)} • {p.venue}
                         </div>
                       </div>
                       <div className="text-right">

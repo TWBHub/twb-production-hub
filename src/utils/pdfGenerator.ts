@@ -2,6 +2,7 @@ import { jsPDF } from 'jspdf';
 import { Company, Enquiry, Payment, Project, ProjectEvent, Client, Deliverable } from '../types';
 import { getProjectClauses } from './termsLibrary';
 import { sortProjectEvents } from './eventUtils';
+import { formatDisplayDate, formatDisplayDateRange } from './dateUtils';
 
 /**
  * Downloads a jsPDF document safely in both standard browser and sandboxed iFrame environments.
@@ -129,8 +130,10 @@ export const generateQuotationPDF = (
 
   // Metadata block right
   const quoteNumber = `QT-${company.code.toUpperCase()}-${enquiry.id.replace('enq-', '').slice(-4).toUpperCase()}`;
-  const quoteDate = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
-  const validUntil = config?.validUntilDate || new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const quoteDate = formatDisplayDate(new Date());
+  const validUntil = config?.validUntilDate
+    ? formatDisplayDate(config.validUntilDate)
+    : formatDisplayDate(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
 
   doc.setFontSize(9);
   doc.setFont('helvetica', 'bold');
@@ -163,7 +166,7 @@ export const generateQuotationPDF = (
   doc.text(clientTitle, 20, 81);
   doc.setFont('helvetica', 'normal');
   doc.text(`Email: ${enquiry.email}  |  Phone: ${enquiry.phone}`, 20, 87);
-  doc.text(`Event Date: ${enquiry.event_date}  |  Venue: ${enquiry.venue}`, 20, 93);
+  doc.text(`Event Date: ${formatDisplayDate(enquiry.event_date)}  |  Venue: ${enquiry.venue}`, 20, 93);
 
   // Table Header
   let y = 110;
@@ -405,13 +408,7 @@ export function formatAmountInIndianWords(amount: number): string {
 }
 
 export const formatReceiptDateForDisplay = (dateStr?: string): string => {
-  if (!dateStr || !dateStr.trim()) return '—';
-  const d = new Date(dateStr + 'T00:00:00');
-  if (isNaN(d.getTime())) return dateStr.trim();
-  const day = d.getDate();
-  const month = d.toLocaleString('en-US', { month: 'short' });
-  const year = d.getFullYear();
-  return `${day} ${month} ${year}`;
+  return formatDisplayDate(dateStr);
 };
 
 export const formatReceiptDateForFilename = (dateStr?: string): string => {
@@ -777,35 +774,15 @@ export const formatProjectEventsDateSummary = (events?: ProjectEvent[]): string 
   const validDates = sorted
     .map(e => e.event_date)
     .filter(Boolean)
-    .map(dStr => new Date(dStr + 'T00:00:00'))
-    .filter(d => !isNaN(d.getTime()));
+    .map(dStr => formatDisplayDate(dStr))
+    .filter(d => d !== '—');
 
   if (validDates.length === 0) return '—';
-  if (validDates.length === 1) {
-    const d = validDates[0];
-    return `${d.getDate()} ${d.toLocaleString('en-US', { month: 'long' })} ${d.getFullYear()}`;
+  const uniqueDates = Array.from(new Set(validDates));
+  if (uniqueDates.length === 1) {
+    return uniqueDates[0];
   }
-
-  const first = validDates[0];
-  const allSameMonthAndYear = validDates.every(
-    d => d.getMonth() === first.getMonth() && d.getFullYear() === first.getFullYear()
-  );
-
-  if (allSameMonthAndYear) {
-    const uniqueDays = Array.from(new Set(validDates.map(d => d.getDate()))).sort((a, b) => a - b);
-    const month = first.toLocaleString('en-US', { month: 'long' });
-    const year = first.getFullYear();
-    if (uniqueDays.length === 2) {
-      return `${uniqueDays[0]} & ${uniqueDays[1]} ${month} ${year}`;
-    }
-    const lastDay = uniqueDays[uniqueDays.length - 1];
-    const initialDays = uniqueDays.slice(0, -1).join(', ');
-    return `${initialDays} & ${lastDay} ${month} ${year}`;
-  }
-
-  return validDates
-    .map(d => `${d.getDate()} ${d.toLocaleString('en-US', { month: 'short' })} ${d.getFullYear()}`)
-    .join(', ');
+  return `${uniqueDates[0]} to ${uniqueDates[uniqueDates.length - 1]}`;
 };
 
 export const formatEventDatesForFilename = (
@@ -881,40 +858,7 @@ export const formatEventDatesForDisplay = (
   endDateStr?: string
 ): string => {
   if (!startDateStr) return 'Dates to be announced';
-  if (!endDateStr || startDateStr === endDateStr) {
-    const d = new Date(startDateStr + 'T00:00:00');
-    if (isNaN(d.getTime())) return startDateStr;
-    const day = d.getDate();
-    const month = d.toLocaleString('en-US', { month: 'long' });
-    const year = d.getFullYear();
-    return `${day} ${month} ${year}`;
-  }
-
-  const d1 = new Date(startDateStr + 'T00:00:00');
-  const d2 = new Date(endDateStr + 'T00:00:00');
-  if (isNaN(d1.getTime()) || isNaN(d2.getTime())) {
-    return `${startDateStr} to ${endDateStr}`;
-  }
-
-  const m1 = d1.toLocaleString('en-US', { month: 'short' });
-  const m2 = d2.toLocaleString('en-US', { month: 'short' });
-  const y1 = d1.getFullYear();
-  const y2 = d2.getFullYear();
-
-  if (d1.getFullYear() === d2.getFullYear() && d1.getMonth() === d2.getMonth()) {
-    const month = d1.toLocaleString('en-US', { month: 'long' });
-    const year = d1.getFullYear();
-    const dayDiff = Math.round((d2.getTime() - d1.getTime()) / (1000 * 60 * 60 * 24));
-    if (dayDiff === 1) {
-      return `${d1.getDate()} & ${d2.getDate()} ${month} ${year}`;
-    }
-    return `${d1.getDate()} to ${d2.getDate()} ${month} ${year}`;
-  }
-
-  if (y1 === y2) {
-    return `${d1.getDate()} ${m1} to ${d2.getDate()} ${m2} ${y1}`;
-  }
-  return `${d1.getDate()} ${m1} ${y1} to ${d2.getDate()} ${m2} ${y2}`;
+  return formatDisplayDateRange(startDateStr, endDateStr, 'Dates to be announced');
 };
 
 export const formatIndianNumber = (val: number): string => {
@@ -1103,16 +1047,9 @@ export const extractDayWiseSchedule = (project: Project): DayScheduleItem[] => {
     const sorted = sortProjectEvents(project.events);
 
     return sorted.map((evt, idx) => {
-      let dateDisplay = evt.event_date;
-      const d = new Date(evt.event_date + 'T00:00:00');
-      if (!isNaN(d.getTime())) {
-        const day = d.getDate();
-        const month = d.toLocaleString('en-US', { month: 'long' });
-        const year = d.getFullYear();
-        dateDisplay = `${day} ${month} ${year}`;
-      }
+      const dateDisplay = formatDisplayDate(evt.event_date);
 
-            return {
+      return {
         dayNum: idx + 1,
         dateStr: dateDisplay,
         eventName: evt.event_name,
@@ -1135,9 +1072,8 @@ export const extractDayWiseSchedule = (project: Project): DayScheduleItem[] => {
   const datesList: { dateStr: string; fullDate: string }[] = [];
   if (d1 && !isNaN(d1.getTime())) {
     if (!d2 || isNaN(d2.getTime()) || d1.getTime() === d2.getTime()) {
-      const month = d1.toLocaleString('en-US', { month: 'long' });
       datesList.push({
-        dateStr: `${d1.getDate()} ${month} ${d1.getFullYear()}`,
+        dateStr: formatDisplayDate(d1),
         fullDate: d1.toISOString().split('T')[0],
       });
     } else {
@@ -1145,17 +1081,14 @@ export const extractDayWiseSchedule = (project: Project): DayScheduleItem[] => {
       if (dayDiff >= 0 && dayDiff <= 6) {
         for (let i = 0; i <= dayDiff; i++) {
           const cur = new Date(d1.getTime() + i * 24 * 60 * 60 * 1000);
-          const month = cur.toLocaleString('en-US', { month: 'long' });
           datesList.push({
-            dateStr: `${cur.getDate()} ${month} ${cur.getFullYear()}`,
+            dateStr: formatDisplayDate(cur),
             fullDate: cur.toISOString().split('T')[0],
           });
         }
       } else {
-        const m1 = d1.toLocaleString('en-US', { month: 'long' });
-        const m2 = d2.toLocaleString('en-US', { month: 'long' });
-        datesList.push({ dateStr: `${d1.getDate()} ${m1} ${d1.getFullYear()}`, fullDate: startDateStr || '' });
-        datesList.push({ dateStr: `${d2.getDate()} ${m2} ${d2.getFullYear()}`, fullDate: endDateStr || '' });
+        datesList.push({ dateStr: formatDisplayDate(d1), fullDate: startDateStr || '' });
+        datesList.push({ dateStr: formatDisplayDate(d2), fullDate: endDateStr || '' });
       }
     }
   }
@@ -1380,11 +1313,7 @@ export const generateOrderFormPDF = (
   const colorMuted = [90, 90, 90];
   const colorLine = [210, 210, 210];
 
-  const dateFiled = new Date().toLocaleDateString('en-IN', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-  });
+  const dateFiled = formatDisplayDate(new Date());
 
   const clientTitle = client
     ? client.partner_name

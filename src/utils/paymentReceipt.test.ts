@@ -78,10 +78,10 @@ function runTests() {
 
   // 2. Date Formatting Tests
   assert(
-    formatReceiptDateForDisplay('2026-10-13') === '13 Oct 2026',
-    'Date display: 2026-10-13 -> 13 Oct 2026',
+    formatReceiptDateForDisplay('2026-10-13') === '13-10-2026',
+    'Date display: 2026-10-13 -> 13-10-2026',
     formatReceiptDateForDisplay('2026-10-13'),
-    '13 Oct 2026'
+    '13-10-2026'
   );
   assert(
     formatReceiptDateForDisplay('') === '—',

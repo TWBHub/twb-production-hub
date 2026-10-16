@@ -16,6 +16,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { TeamMember } from '../../types';
 import { sortProjectEvents } from '../../utils/eventUtils';
+import { formatDisplayDate } from '../../utils/dateUtils';
 
 const formatDateKey = (date: Date) => {
   return [
@@ -478,7 +479,7 @@ try {
     });
     return Array.from(map.entries()).map(([date, names]) => ({
       date,
-      label: `${new Date(date + 'T00:00:00').toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })} — ${names.join(', ')}`,
+      label: `${formatDisplayDate(date)} — ${names.join(', ')}`,
     }));
   }, [editingProject]);
 
@@ -763,22 +764,10 @@ try {
 
                     <div className="text-[10px] text-slate-400 mt-1">
                       {project.wedding_date_start
-                        ? new Date(
-                            `${project.wedding_date_start.slice(0, 10)}T12:00:00`
-                          ).toLocaleDateString('en-IN', {
-                            day: 'numeric',
-                            month: 'short',
-                          })
+                        ? (project.wedding_date_end && project.wedding_date_end !== project.wedding_date_start
+                            ? `${formatDisplayDate(project.wedding_date_start)} – ${formatDisplayDate(project.wedding_date_end)}`
+                            : formatDisplayDate(project.wedding_date_start))
                         : 'Date not set'}
-                      {project.wedding_date_end &&
-                        project.wedding_date_end !== project.wedding_date_start
-                        ? ` – ${new Date(
-                            `${project.wedding_date_end.slice(0, 10)}T12:00:00`
-                          ).toLocaleDateString('en-IN', {
-                            day: 'numeric',
-                            month: 'short',
-                          })}`
-                        : ''}
                     </div>
 
                   </div>
@@ -922,12 +911,7 @@ try {
                   </h3>
 
                   <div className="text-xs text-slate-500 mt-1">
-                    {selectedDate.toLocaleDateString('en-IN', {
-                      weekday: 'long',
-                      day: 'numeric',
-                      month: 'long',
-                      year: 'numeric',
-                    })}
+                    {selectedDate.toLocaleDateString('en-IN', { weekday: 'long' })}, {formatDisplayDate(selectedDate)}
                   </div>
                 </div>
 
@@ -1076,15 +1060,7 @@ try {
             Assign Team Member
           </h3>
           <p className="text-xs text-slate-500 mt-0.5">
-            Assign crew to this wedding on{' '}
-            {new Date(selectedCell.date + 'T00:00:00').toLocaleDateString(
-              'en-IN',
-              {
-                day: 'numeric',
-                month: 'short',
-                year: 'numeric',
-              }
-            )}
+            Assign crew to this wedding on {formatDisplayDate(selectedCell.date)}
           </p>
         </div>
 

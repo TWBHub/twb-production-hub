@@ -18,10 +18,28 @@ import {
   AlertTriangle,
   X,
   Loader2,
+  Calendar,
+  ArrowUpDown,
+  RotateCcw,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Payment, PaymentMode, ExpenseCategory, Expense } from '../../types';
 import { generateReceiptPDF } from '../../utils/pdfGenerator';
+import {
+  DateFilterOption,
+  SortOrderOption,
+  resolveActiveDateRange,
+  isDateInRange,
+  matchesProjectOrClientSearch,
+  matchesPaymentSearch,
+  matchesExpenseSearch,
+  sortPayments,
+  sortExpenses,
+  calculateProjectProfitItem,
+  sortProjectProfitItems,
+  getIndianFinancialYearBoundaries,
+} from '../../utils/financeUtils';
+import { formatDisplayDate } from '../../utils/dateUtils';
 
 export const FinanceView: React.FC = () => {
   const {
@@ -68,6 +86,11 @@ export const FinanceView: React.FC = () => {
 
   const [activeTab, setActiveTab] = useState<'overview' | 'payments' | 'expenses'>('overview');
   const [searchQuery, setSearchQuery] = useState('');
+  const [dateFilter, setDateFilter] = useState<DateFilterOption>('all');
+  const [customStartDate, setCustomStartDate] = useState('');
+  const [customEndDate, setCustomEndDate] = useState('');
+  const [sortOrder, setSortOrder] = useState<SortOrderOption>('newest');
+
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showExpenseModal, setShowExpenseModal] = useState(false);
   const [editingPayment, setEditingPayment] = useState<Payment | null>(null);
@@ -105,35 +128,93 @@ export const FinanceView: React.FC = () => {
     );
   }
 
-  // Helper to calculate total received for a project directly from payments
-  const calculateProjectReceived = (_p: (typeof filteredProjects)[0], pPayments: typeof filteredPayments) => {
-    return pPayments.reduce((s, pm) => s + pm.amount, 0);
-  };
+  const thisFyInfo = getIndianFinancialYearBoundaries(0);
+  const prevFyInfo = getIndianFinancialYearBoundaries(-1);
 
-  // Project by Project Profit Breakdown
-  const projectProfits = filteredProjects.map(p => {
-    const pPayments = filteredPayments.filter(pm => pm.project_id === p.id);
-    const pExpenses = filteredExpenses.filter(pe => pe.project_id === p.id);
-    const received = calculateProjectReceived(p, pPayments);
-    const cost = pExpenses.reduce((s, pe) => s + pe.amount, 0);
-    const profit = received - cost;
-    const balance = Math.max(0, p.total_amount - received);
+  const resolvedDateRange = resolveActiveDateRange(
+    dateFilter,
+    customStartDate,
+    customEndDate
+  );
 
-    return {
-      project: p,
-      contract: p.total_amount,
-      received,
-      cost,
-      profit,
-      balance,
-    };
-  });
+  // 1. Filter and sort Payments
+  const displayedPayments = sortPayments(
+    filteredPayments.filter(p => {
+      if (!isDateInRange(p.payment_date, resolvedDateRange.startDate, resolvedDateRange.endDate)) {
+        return false;
+      }
+      const proj = projects.find(pr => pr.id === p.project_id) || filteredProjects.find(pr => pr.id === p.project_id);
+      const cli = proj ? clients.find(c => c.id === proj.client_id) : undefined;
+      return matchesPaymentSearch(searchQuery, p, proj, cli);
+    }),
+    sortOrder
+  );
 
-  // Financial calculations
-  const totalPipeline = filteredProjects.reduce((sum, p) => sum + p.total_amount, 0);
-  const totalReceived = projectProfits.reduce((sum, pp) => sum + pp.received, 0);
-  const totalExpenses = filteredExpenses.reduce((sum, e) => sum + e.amount, 0);
-  const pendingReceivables = Math.max(0, totalPipeline - totalReceived);
+  // 2. Filter and sort Expenses
+  const displayedExpenses = sortExpenses(
+    filteredExpenses.filter(e => {
+      if (!isDateInRange(e.expense_date, resolvedDateRange.startDate, resolvedDateRange.endDate)) {
+        return false;
+      }
+      const proj = e.project_id
+        ? (projects.find(pr => pr.id === e.project_id) || filteredProjects.find(pr => pr.id === e.project_id))
+        : null;
+      const cli = proj ? clients.find(c => c.id === proj.client_id) : null;
+      return matchesExpenseSearch(searchQuery, e, proj, cli);
+    }),
+    sortOrder
+  );
+
+  // 3. Profitability Matrix (Projects)
+  // Calculates metrics and sorts by financial activity date according to sortOrder
+  const rawProjectProfits = filteredProjects
+    .filter(p => {
+      const cli = clients.find(c => c.id === p.client_id);
+      return matchesProjectOrClientSearch(searchQuery, p, cli);
+    })
+    .map(p => {
+      const allProjectPayments = (payments || []).filter(pm => pm.project_id === p.id);
+      const periodProjectPayments = filteredPayments.filter(
+        pm => pm.project_id === p.id && isDateInRange(pm.payment_date, resolvedDateRange.startDate, resolvedDateRange.endDate)
+      );
+      const allProjectExpenses = filteredExpenses.filter(pe => pe.project_id === p.id);
+      const periodProjectExpenses = filteredExpenses.filter(
+        pe => pe.project_id === p.id && isDateInRange(pe.expense_date, resolvedDateRange.startDate, resolvedDateRange.endDate)
+      );
+
+      return calculateProjectProfitItem(
+        p,
+        allProjectPayments,
+        periodProjectPayments,
+        allProjectExpenses,
+        periodProjectExpenses,
+        resolvedDateRange.isActive
+      );
+    })
+    .filter(item => {
+      if (resolvedDateRange.isActive) {
+        return item.hasActivityInPeriod;
+      }
+      return true;
+    });
+
+  const projectProfits = sortProjectProfitItems(rawProjectProfits, sortOrder);
+
+  // Financial calculations for Metric Cards
+  const totalPipeline = resolvedDateRange.isActive
+    ? projectProfits.reduce((sum, pp) => sum + pp.contract, 0)
+    : filteredProjects.reduce((sum, p) => sum + p.total_amount, 0);
+
+  const totalReceived = resolvedDateRange.isActive
+    ? displayedPayments.reduce((sum, p) => sum + p.amount, 0)
+    : projectProfits.reduce((sum, pp) => sum + pp.received, 0);
+
+  const totalExpenses = displayedExpenses.reduce((sum, e) => sum + e.amount, 0);
+
+  const pendingReceivables = resolvedDateRange.isActive
+    ? projectProfits.reduce((sum, pp) => sum + pp.balance, 0)
+    : Math.max(0, totalPipeline - totalReceived);
+
   const netMargin = totalReceived - totalExpenses;
   const marginPercentage = totalReceived > 0 ? Math.round((netMargin / totalReceived) * 100) : 0;
 
@@ -359,47 +440,181 @@ return (
           <div className="text-xl sm:text-2xl font-bold text-slate-900 mt-2">
             ₹{totalPipeline.toLocaleString()}
           </div>
-          <div className="text-[11px] text-slate-400 mt-1">{filteredProjects.length} weddings committed</div>
+          <div className="text-[11px] text-slate-400 mt-1">
+            {resolvedDateRange.isActive
+              ? `${projectProfits.length} active in period`
+              : `${filteredProjects.length} projects committed`}
+          </div>
         </div>
 
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-          <div className="text-xs font-medium text-slate-500">Cleared Inflow (Collected)</div>
+          <div className="text-xs font-medium text-slate-500">
+            {resolvedDateRange.isActive ? 'Period Inflow (Collected)' : 'Cleared Inflow (Collected)'}
+          </div>
           <div className="text-xl sm:text-2xl font-bold text-emerald-700 mt-2">
             ₹{totalReceived.toLocaleString()}
           </div>
           <div className="text-[11px] text-emerald-600 font-medium mt-1">
-            {totalPipeline > 0 ? Math.round((totalReceived / totalPipeline) * 100) : 0}% collected
+            {resolvedDateRange.isActive
+              ? `Inflow during ${resolvedDateRange.displayLabel}`
+              : `${totalPipeline > 0 ? Math.round((totalReceived / totalPipeline) * 100) : 0}% collected`}
           </div>
         </div>
 
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-          <div className="text-xs font-medium text-slate-500">Awaiting Collection</div>
+          <div className="text-xs font-medium text-slate-500">
+            {resolvedDateRange.isActive ? 'Awaiting Collection (Lifetime)' : 'Awaiting Collection'}
+          </div>
           <div className="text-xl sm:text-2xl font-bold text-[#8c672b] mt-2">
             ₹{pendingReceivables.toLocaleString()}
           </div>
-          <div className="text-[11px] text-[#8c672b] mt-1">Scheduled installments</div>
+          <div className="text-[11px] text-[#8c672b] mt-1">
+            {resolvedDateRange.isActive
+              ? 'True lifetime balance remaining'
+              : 'Scheduled installments'}
+          </div>
         </div>
 
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
-          <div className="text-xs font-medium text-slate-500">Direct Cost of Production</div>
+          <div className="text-xs font-medium text-slate-500">
+            {resolvedDateRange.isActive ? 'Period Production Expenses' : 'Direct Cost of Production'}
+          </div>
           <div className="text-xl sm:text-2xl font-bold text-rose-600 mt-2">
             ₹{totalExpenses.toLocaleString()}
           </div>
-          <div className="text-[11px] text-slate-400 mt-1">Crew, travel, gear, edit fees</div>
+          <div className="text-[11px] text-slate-400 mt-1">
+            {resolvedDateRange.isActive
+              ? `Logged in ${resolvedDateRange.displayLabel}`
+              : 'Crew, travel, gear, edit fees'}
+          </div>
         </div>
 
         <div className="col-span-2 lg:col-span-1 bg-slate-900 text-white p-4 rounded-xl shadow-xs">
           <div className="text-xs font-medium text-slate-300 flex items-center justify-between">
-            <span>Net Collected Margin</span>
+            <span>{resolvedDateRange.isActive ? 'Period Net Margin' : 'Net Collected Margin'}</span>
             <Sparkles className="w-4 h-4 text-[#F1D099]" />
           </div>
           <div className="text-xl sm:text-2xl font-bold text-[#F1D099] mt-2">
             ₹{netMargin.toLocaleString()}
           </div>
           <div className="text-[11px] text-slate-300 mt-1">
-            {marginPercentage}% operational margin
+            {resolvedDateRange.isActive
+              ? `${marginPercentage}% period margin`
+              : `${marginPercentage}% operational margin`}
           </div>
         </div>
+      </div>
+
+      {/* Shared Finance Controls: Search, Financial Year / Date Range, and Sorting */}
+      <div className="bg-white p-3.5 sm:p-4 rounded-xl border border-slate-200 shadow-xs">
+        <div className="flex flex-col lg:flex-row lg:items-center gap-3 justify-between">
+          {/* Global Search Bar */}
+          <div className="relative flex-1 min-w-[220px]">
+            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="Search by project, client, or partner name..."
+              className="w-full pl-9 pr-8 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 transition-colors"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 p-0.5 cursor-pointer"
+                title="Clear search"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
+          </div>
+
+          {/* Filter & Sort Controls - stable fixed-width items to prevent layout shift */}
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            {/* Financial Year / Date Range Selector with fixed/stable width */}
+            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 w-full sm:w-[275px]">
+              <Calendar className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+              <label htmlFor="fy-date-filter" className="text-[11px] font-medium text-slate-500 shrink-0">
+                Period:
+              </label>
+              <select
+                id="fy-date-filter"
+                value={dateFilter}
+                onChange={e => setDateFilter(e.target.value as DateFilterOption)}
+                className="w-full bg-transparent text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer truncate"
+              >
+                <option value="all">All Dates</option>
+                <option value="this_fy">This Financial Year ({thisFyInfo.fyShort})</option>
+                <option value="prev_fy">Previous Financial Year ({prevFyInfo.fyShort})</option>
+                <option value="custom">Custom Date Range</option>
+              </select>
+            </div>
+
+            {/* Sort Order Selector with fixed/stable width */}
+            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 w-full sm:w-[155px]">
+              <ArrowUpDown className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+              <label htmlFor="sort-order-select" className="text-[11px] font-medium text-slate-500 shrink-0">
+                Sort:
+              </label>
+              <select
+                id="sort-order-select"
+                value={sortOrder}
+                onChange={e => setSortOrder(e.target.value as SortOrderOption)}
+                className="w-full bg-transparent text-xs font-semibold text-slate-700 focus:outline-none cursor-pointer truncate"
+              >
+                <option value="newest">Newest First</option>
+                <option value="oldest">Oldest First</option>
+              </select>
+            </div>
+
+            {/* Reset Filters Button */}
+            {(searchQuery || dateFilter !== 'all') && (
+              <button
+                onClick={() => {
+                  setSearchQuery('');
+                  setDateFilter('all');
+                  setCustomStartDate('');
+                  setCustomEndDate('');
+                }}
+                className="px-2.5 py-1.5 text-xs text-slate-600 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors flex items-center gap-1 font-medium cursor-pointer shrink-0"
+                title="Reset all search and date filters"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Reset</span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Custom Date Range Inline Inputs in Dedicated Sub-Row */}
+        {dateFilter === 'custom' && (
+          <div className="mt-3 pt-3 border-t border-slate-100 flex flex-wrap items-center gap-3 text-xs bg-slate-50/70 p-2.5 rounded-lg">
+            <span className="font-semibold text-slate-700 text-[11px]">Custom Range (inclusive):</span>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] text-slate-500 font-medium">From:</span>
+              <input
+                type="date"
+                value={customStartDate}
+                onChange={e => setCustomStartDate(e.target.value)}
+                className="px-2.5 py-1 text-xs bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 text-slate-700"
+              />
+            </div>
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] text-slate-500 font-medium">To:</span>
+              <input
+                type="date"
+                value={customEndDate}
+                onChange={e => setCustomEndDate(e.target.value)}
+                className="px-2.5 py-1 text-xs bg-white border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-blue-500 text-slate-700"
+              />
+            </div>
+            {(customStartDate || customEndDate) && (
+              <span className="text-[11px] text-slate-500 italic ml-auto">
+                Active Filter: {resolvedDateRange.displayLabel}
+              </span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Tabs */}
@@ -425,7 +640,7 @@ return (
           }`}
         >
           <DollarSign className="w-4 h-4" />
-          <span>Payment Receipts Ledger ({filteredPayments.length})</span>
+          <span>Payment Receipts Ledger ({displayedPayments.length})</span>
         </button>
 
         <button
@@ -457,13 +672,21 @@ return (
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
                 <tr>
-                  <th className="p-3.5">Wedding Project</th>
+                  <th className="p-3.5">Project</th>
                   <th className="p-3.5">Brand</th>
                   <th className="p-3.5 text-right">Contract Fee</th>
-                  <th className="p-3.5 text-right">Collected</th>
-                  <th className="p-3.5 text-right">Pending Balance</th>
-                  <th className="p-3.5 text-right">Expenses</th>
-                  <th className="p-3.5 text-right font-bold text-slate-900">Net Profit</th>
+                  <th className="p-3.5 text-right">
+                    {resolvedDateRange.isActive ? 'Period Collected' : 'Collected'}
+                  </th>
+                  <th className="p-3.5 text-right">
+                    {resolvedDateRange.isActive ? 'Period Expenses' : 'Expenses'}
+                  </th>
+                  <th className="p-3.5 text-right font-bold text-slate-900">
+                    {resolvedDateRange.isActive ? 'Period Net Profit' : 'Net Profit'}
+                  </th>
+                  <th className="p-3.5 text-right" title="Lifetime outstanding balance (Contract Fee minus all-time collections)">
+                    Pending Balance
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -474,17 +697,11 @@ return (
                       <td className="p-3.5 font-semibold text-slate-900">
                         {project.name}
                         <div className="text-[11px] text-slate-400 font-normal">
-                          {project.wedding_date_start} • {project.venue}
+                          {formatDisplayDate(project.wedding_date_start)} • {project.venue}
                         </div>
                       </td>
                       <td className="p-3.5">
-                        <span
-                          className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${
-                            isTWB ? 'bg-blue-100 text-blue-800' : 'bg-[#F1D099]/25 text-[#5e430c] border border-[#F1D099]/40'
-                          }`}
-                        >
-                          {isTWB ? 'TWB' : 'Golden June'}
-                        </span>
+                        {renderBrandBadge(isTWB ? 'twb' : 'golden_june')}
                       </td>
                       <td className="p-3.5 text-right font-medium text-slate-800">
                         ₹{contract.toLocaleString()}
@@ -492,18 +709,25 @@ return (
                       <td className="p-3.5 text-right font-semibold text-emerald-700">
                         ₹{received.toLocaleString()}
                       </td>
-                      <td className="p-3.5 text-right text-[#8c672b] font-medium">
-                        ₹{balance.toLocaleString()}
-                      </td>
                       <td className="p-3.5 text-right text-rose-600">
                         ₹{cost.toLocaleString()}
                       </td>
                       <td className="p-3.5 text-right font-bold text-blue-900">
                         ₹{profit.toLocaleString()}
                       </td>
+                      <td className="p-3.5 text-right text-[#8c672b] font-medium" title="True lifetime outstanding balance">
+                        ₹{balance.toLocaleString()}
+                      </td>
                     </tr>
                   );
                 })}
+                {projectProfits.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="p-8 text-center text-slate-500">
+                      No projects found matching the current search query or date filter.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -528,16 +752,16 @@ return (
                 <tr>
                   <th className="p-3.5">Receipt #</th>
                   <th className="p-3.5">Date</th>
-                  <th className="p-3.5">Wedding Project</th>
+                  <th className="p-3.5">Project</th>
                   <th className="p-3.5">Brand</th>
                   <th className="p-3.5">Payment Method</th>
                   <th className="p-3.5">Description</th>
                   <th className="p-3.5 text-right">Amount Paid</th>
-                  <th className="p-3.5 text-right">Action</th>
+                  <th className="p-3.5 text-right">Actions</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredPayments.map(p => {
+                {displayedPayments.map(p => {
                   const project = projects.find(pr => pr.id === p.project_id) || filteredProjects.find(pr => pr.id === p.project_id);
                   const brand = resolveRecordBrand(p.project_id, p.company_id);
                   return (
@@ -545,7 +769,7 @@ return (
                       <td className="p-3.5 font-mono text-[11px] font-bold text-slate-900">
                         {p.receipt_number}
                       </td>
-                      <td className="p-3.5 text-slate-600">{p.payment_date}</td>
+                      <td className="p-3.5 text-slate-600">{formatDisplayDate(p.payment_date)}</td>
                       <td className="p-3.5 font-semibold text-slate-900">
                         {project?.name || 'Wedding'}
                       </td>
@@ -613,6 +837,13 @@ return (
                     </tr>
                   );
                 })}
+                {displayedPayments.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="p-8 text-center text-slate-500">
+                      No payment receipts found matching the current search query or date filter.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -646,12 +877,12 @@ return (
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredExpenses.map(e => {
+                {displayedExpenses.map(e => {
                   const project = projects.find(pr => pr.id === e.project_id) || filteredProjects.find(pr => pr.id === e.project_id);
                   const brand = resolveRecordBrand(e.project_id, e.company_id);
                   return (
                     <tr key={e.id} className="hover:bg-slate-50/70 transition-colors">
-                      <td className="p-3.5 text-slate-600">{e.expense_date}</td>
+                      <td className="p-3.5 text-slate-600">{formatDisplayDate(e.expense_date)}</td>
                       <td className="p-3.5 font-semibold text-slate-900">
                         {project?.name || 'Studio General'}
                       </td>
@@ -687,6 +918,13 @@ return (
                     </tr>
                   );
                 })}
+                {displayedExpenses.length === 0 && (
+                  <tr>
+                    <td colSpan={8} className="p-8 text-center text-slate-500">
+                      No expenses found matching the current search query or date filter.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -702,15 +940,15 @@ return (
 </h2>
             <form onSubmit={handleAddPayment} className="space-y-3 text-xs">
               <div>
-                <label className="block font-semibold text-slate-700 mb-1">Target Wedding Project</label>
+                <label className="block font-semibold text-slate-700 mb-1">Target Project</label>
                 <select
                   value={payProjectId}
                   onChange={e => setPayProjectId(e.target.value)}
                   className="w-full p-2 border border-slate-300 rounded-lg"
                 >
                   {filteredProjects.map(p => {
-                    const pPayments = filteredPayments.filter(pm => pm.project_id === p.id);
-                    const pReceived = calculateProjectReceived(p, pPayments);
+                    const pPayments = (payments || []).filter(pm => pm.project_id === p.id);
+                    const pReceived = pPayments.reduce((s, pm) => s + pm.amount, 0);
                     const pBal = Math.max(0, p.total_amount - pReceived);
                     return (
                       <option key={p.id} value={p.id}>
@@ -804,7 +1042,7 @@ return (
             <h2 className="text-base font-bold text-slate-900 mb-4">{editingExpense ? 'Edit Production Expense' : 'Record Production Expense'}</h2>
             <form onSubmit={handleAddExpense} className="space-y-3 text-xs">
               <div>
-                <label className="block font-semibold text-slate-700 mb-1">Target Wedding Project</label>
+                <label className="block font-semibold text-slate-700 mb-1">Target Project</label>
                 <select
                   value={expProjectId}
                   onChange={e => setExpProjectId(e.target.value)}

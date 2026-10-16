@@ -13,6 +13,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { NotificationType } from '../../types';
+import { formatDisplayDate } from '../../utils/dateUtils';
 
 export const NotificationsView: React.FC = () => {
   const {
@@ -140,7 +141,7 @@ export const NotificationsView: React.FC = () => {
                 </div>
                 <p className="text-xs text-slate-600 leading-relaxed">{n.message}</p>
                 <span className="text-[10px] text-slate-400 block pt-0.5">
-                  Triggered on {new Date(n.created_at).toLocaleDateString()}
+                  Triggered on {formatDisplayDate(n.created_at)}
                 </span>
               </div>
             </div>
