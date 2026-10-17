@@ -38,6 +38,7 @@ import {
   calculateProjectProfitItem,
   sortProjectProfitItems,
   getIndianFinancialYearBoundaries,
+  calculateFinanceViewMetrics,
 } from '../../utils/financeUtils';
 import { formatDisplayDate } from '../../utils/dateUtils';
 
@@ -201,22 +202,19 @@ export const FinanceView: React.FC = () => {
   const projectProfits = sortProjectProfitItems(rawProjectProfits, sortOrder);
 
   // Financial calculations for Metric Cards
-  const totalPipeline = resolvedDateRange.isActive
-    ? projectProfits.reduce((sum, pp) => sum + pp.contract, 0)
-    : filteredProjects.reduce((sum, p) => sum + p.total_amount, 0);
-
-  const totalReceived = resolvedDateRange.isActive
-    ? displayedPayments.reduce((sum, p) => sum + p.amount, 0)
-    : projectProfits.reduce((sum, pp) => sum + pp.received, 0);
-
-  const totalExpenses = displayedExpenses.reduce((sum, e) => sum + e.amount, 0);
-
-  const pendingReceivables = resolvedDateRange.isActive
-    ? projectProfits.reduce((sum, pp) => sum + pp.balance, 0)
-    : Math.max(0, totalPipeline - totalReceived);
-
-  const netMargin = totalReceived - totalExpenses;
-  const marginPercentage = totalReceived > 0 ? Math.round((netMargin / totalReceived) * 100) : 0;
+  const {
+    totalPipeline,
+    totalReceived,
+    totalExpenses,
+    pendingReceivables,
+    netMargin,
+    marginPercentage,
+  } = calculateFinanceViewMetrics(
+    filteredProjects,
+    filteredPayments,
+    displayedPayments,
+    displayedExpenses
+  );
 
   const [receiptDownloadError, setReceiptDownloadError] = useState<string | null>(null);
   const [receiptDownloadSuccessId, setReceiptDownloadSuccessId] = useState<string | null>(null);
@@ -442,7 +440,7 @@ return (
           </div>
           <div className="text-[11px] text-slate-400 mt-1">
             {resolvedDateRange.isActive
-              ? `${projectProfits.length} active in period`
+              ? `${filteredProjects.length} projects committed (lifetime)`
               : `${filteredProjects.length} projects committed`}
           </div>
         </div>
@@ -469,9 +467,7 @@ return (
             ₹{pendingReceivables.toLocaleString()}
           </div>
           <div className="text-[11px] text-[#8c672b] mt-1">
-            {resolvedDateRange.isActive
-              ? 'True lifetime balance remaining'
-              : 'Scheduled installments'}
+            True lifetime balance remaining
           </div>
         </div>
 

@@ -10,6 +10,7 @@ import {
   calculateProjectProfitItem,
   sortProjectProfitItems,
   calculateDashboardFinanceMetrics,
+  calculateFinanceViewMetrics,
 } from './financeUtils';
 import { Project, Client, Payment, Expense } from '../types';
 
@@ -637,4 +638,231 @@ console.log('--- Starting Finance Utilities Unit Tests ---');
   assert(customMetrics.pendingReceivables === 170000, 'Custom Range: Pending balance remains true lifetime 1,70,000');
 }
 
+// 7. Test Main Finance View Metrics (calculateFinanceViewMetrics)
+{
+  const mockProjects: Project[] = [
+    {
+      id: 'prj-fin-1',
+      name: 'Sharma Wedding Gala',
+      client_id: 'cli-fin-1',
+      company_id: 'twb',
+      status: 'Shooting',
+      total_amount: 350000,
+      booking_amount: 50000,
+      wedding_date_start: '2026-11-20',
+      wedding_date_end: '2026-11-22',
+      venue: 'Grand Palace',
+      city: 'Udaipur',
+      client_contact: { phone: '9876543210', email: 'sharma@example.com' },
+      package_name: 'Royal Cinema',
+      package_details: 'Full Photo & Cinema',
+      created_at: '2026-05-01T10:00:00Z',
+    },
+    {
+      id: 'prj-fin-2',
+      name: 'Mehta Destination Nuptials',
+      client_id: 'cli-fin-2',
+      company_id: 'twb',
+      status: 'Booked',
+      total_amount: 250000,
+      booking_amount: 50000,
+      wedding_date_start: '2027-01-15',
+      wedding_date_end: '2027-01-17',
+      venue: 'Heritage Resort',
+      city: 'Jaipur',
+      client_contact: { phone: '9876543211', email: 'mehta@example.com' },
+      package_name: 'Traditional',
+      package_details: 'Photo & Video',
+      created_at: '2026-06-01T10:00:00Z',
+    },
+  ];
+  // Total Contract Pipeline for TWB = 3,50,000 + 2,50,000 = 6,00,000
+
+  const pay1: Payment = {
+    id: 'pay-fin-1',
+    project_id: 'prj-fin-1',
+    company_id: 'twb',
+    payment_date: '2025-12-10', // Past FY
+    amount: 50000,
+    payment_mode: 'Bank Transfer',
+    description: 'Initial Retainer',
+    receipt_number: 'REC-TWB-001',
+    created_at: '2025-12-10T10:00:00Z',
+  };
+
+  const pay2: Payment = {
+    id: 'pay-fin-2',
+    project_id: 'prj-fin-1',
+    company_id: 'twb',
+    payment_date: '2026-06-15', // Current FY
+    amount: 150000,
+    payment_mode: 'UPI',
+    description: 'Pre-production Milestone',
+    receipt_number: 'REC-TWB-002',
+    created_at: '2026-06-15T10:00:00Z',
+  };
+
+  const pay3: Payment = {
+    id: 'pay-fin-3',
+    project_id: 'prj-fin-2',
+    company_id: 'twb',
+    payment_date: '2026-09-01', // Current FY
+    amount: 100000,
+    payment_mode: 'Bank Transfer',
+    description: 'Booking Advance',
+    receipt_number: 'REC-TWB-003',
+    created_at: '2026-09-01T10:00:00Z',
+  };
+  // All-time payments received for brand = 50,000 + 1,50,000 + 1,00,000 = 3,00,000
+  // True lifetime Pending Receivables = 6,00,000 - 3,00,000 = 3,00,000
+
+  const exp1: Expense = {
+    id: 'exp-fin-1',
+    project_id: 'prj-fin-1',
+    company_id: 'twb',
+    expense_date: '2026-06-20', // Current FY
+    amount: 40000,
+    category: 'Crew Travel',
+    description: 'Advance flight tickets',
+    paid_to: 'IndiGo Airlines',
+    created_at: '2026-06-20T10:00:00Z',
+  };
+
+  const exp2: Expense = {
+    id: 'exp-fin-2',
+    project_id: 'prj-fin-2',
+    company_id: 'twb',
+    expense_date: '2026-09-05', // Current FY
+    amount: 25000,
+    category: 'Equipment Rental',
+    description: 'Lighting kit hire',
+    paid_to: 'Pro Lights Co',
+    created_at: '2026-09-05T10:00:00Z',
+  };
+
+  const allBrandPayments = [pay1, pay2, pay3];
+
+  // Test Case A: All Dates, No Search Query
+  {
+    const displayedPayments = [pay1, pay2, pay3];
+    const displayedExpenses = [exp1, exp2];
+    const metrics = calculateFinanceViewMetrics(
+      mockProjects,
+      allBrandPayments,
+      displayedPayments,
+      displayedExpenses
+    );
+
+    assert(metrics.totalPipeline === 600000, 'FinanceView All Dates: Contract Pipeline is lifetime 6,00,000');
+    assert(metrics.totalReceived === 300000, 'FinanceView All Dates: Payments Received is 3,00,000');
+    assert(metrics.totalExpenses === 65000, 'FinanceView All Dates: Production Expenses is 65,000');
+    assert(metrics.pendingReceivables === 300000, 'FinanceView All Dates: Pending Receivables is 3,00,000');
+    assert(metrics.netMargin === 235000, 'FinanceView All Dates: Net Margin is 3,00,000 - 65,000 = 2,35,000');
+    assert(metrics.marginPercentage === 78, 'FinanceView All Dates: Margin Percentage is 78%');
+  }
+
+  // Test Case B: Date Filter Active (Current FY) - Pipeline & Pending Receivables must NOT shrink
+  {
+    // Filtered to Current FY: pay2 (1,50,000) and pay3 (1,00,000), excluding pay1 (past FY: 50,000)
+    const displayedPayments = [pay2, pay3];
+    const displayedExpenses = [exp1, exp2];
+    const metrics = calculateFinanceViewMetrics(
+      mockProjects,
+      allBrandPayments,
+      displayedPayments,
+      displayedExpenses
+    );
+
+    assert(metrics.totalPipeline === 600000, 'FinanceView FY Filter: Contract Pipeline remains full lifetime value 6,00,000');
+    assert(metrics.pendingReceivables === 300000, 'FinanceView FY Filter: Pending Receivables remains true lifetime balance 3,00,000');
+    assert(metrics.totalReceived === 250000, 'FinanceView FY Filter: Period Inflow is 2,50,000');
+    assert(metrics.totalExpenses === 65000, 'FinanceView FY Filter: Period Expenses is 65,000');
+    assert(metrics.netMargin === 185000, 'FinanceView FY Filter: Period Operating Profit is 2,50,000 - 65,000 = 1,85,000');
+    assert(metrics.marginPercentage === 74, 'FinanceView FY Filter: Period Margin Percentage is 74%');
+  }
+
+  // Test Case C: Search Query by Receipt Number ("REC-TWB-002")
+  // MUST calculate Payments Received from displayed payments, NOT yielding 0 when matching rows are visible!
+  {
+    const displayedPayments = [pay2]; // only REC-TWB-002 matches
+    const displayedExpenses: Expense[] = []; // no expense matches
+    const metrics = calculateFinanceViewMetrics(
+      mockProjects,
+      allBrandPayments,
+      displayedPayments,
+      displayedExpenses
+    );
+
+    assert(metrics.totalReceived === 150000, 'FinanceView Search by Receipt: Payments Received is 1,50,000 (not zero!)');
+    assert(metrics.totalPipeline === 600000, 'FinanceView Search by Receipt: Contract Pipeline remains lifetime 6,00,000');
+    assert(metrics.pendingReceivables === 300000, 'FinanceView Search by Receipt: Pending Receivables remains lifetime 3,00,000');
+    assert(metrics.totalExpenses === 0, 'FinanceView Search by Receipt: Expenses is 0');
+    assert(metrics.netMargin === 150000, 'FinanceView Search by Receipt: Net Margin is 1,50,000');
+  }
+
+  // Test Case D: Search Query by Payment Description ("Booking Advance")
+  {
+    const displayedPayments = [pay3]; // only pay3 description matches
+    const displayedExpenses: Expense[] = [];
+    const metrics = calculateFinanceViewMetrics(
+      mockProjects,
+      allBrandPayments,
+      displayedPayments,
+      displayedExpenses
+    );
+
+    assert(metrics.totalReceived === 100000, 'FinanceView Search by Description: Payments Received is 1,00,000 (not zero)');
+    assert(metrics.totalPipeline === 600000, 'FinanceView Search by Description: Pipeline remains lifetime 6,00,000');
+    assert(metrics.pendingReceivables === 300000, 'FinanceView Search by Description: Pending remains lifetime 3,00,000');
+    assert(metrics.netMargin === 100000, 'FinanceView Search by Description: Operating profit is 1,00,000');
+  }
+
+  // Test Case E: Clamping Non-negative Pending Receivables
+  {
+    const overpaidProjects: Project[] = [
+      {
+        id: 'prj-over',
+        name: 'Overpaid Wedding',
+        client_id: 'cli-1',
+        company_id: 'twb',
+        status: 'Delivered',
+        total_amount: 100000,
+        booking_amount: 20000,
+        wedding_date_start: '2026-10-01',
+        wedding_date_end: '2026-10-02',
+        venue: 'City Hotel',
+        city: 'Mumbai',
+        client_contact: { phone: '9876543299', email: 'over@example.com' },
+        package_name: 'Standard',
+        package_details: 'Photo Only',
+        created_at: '2026-05-01T10:00:00Z',
+      },
+    ];
+    const overPayments: Payment[] = [
+      {
+        id: 'pay-over',
+        project_id: 'prj-over',
+        company_id: 'twb',
+        payment_date: '2026-10-01',
+        amount: 120000, // exceeds 1,00,000
+        payment_mode: 'Bank Transfer',
+        description: 'Settlement with extra tips',
+        receipt_number: 'REC-OVER',
+        created_at: '2026-10-01T10:00:00Z',
+      },
+    ];
+    const metrics = calculateFinanceViewMetrics(overpaidProjects, overPayments, overPayments, []);
+    assert(metrics.pendingReceivables === 0, 'FinanceView Clamping: Pending Receivables clamped to 0 when payments exceed contract');
+  }
+
+  // Test Case F: Zero Received Margin Percentage does not produce NaN
+  {
+    const metrics = calculateFinanceViewMetrics(mockProjects, allBrandPayments, [], [exp1]);
+    assert(metrics.totalReceived === 0, 'FinanceView Zero Inflow: totalReceived is 0');
+    assert(metrics.netMargin === -40000, 'FinanceView Zero Inflow: netMargin is -40,000');
+    assert(metrics.marginPercentage === 0, 'FinanceView Zero Inflow: marginPercentage is 0 (not NaN)');
+  }
+}
+
 console.log('--- All Finance Utilities Unit Tests Passed (0 failures) ---');
+

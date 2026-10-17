@@ -908,6 +908,18 @@ export const apiService = {
             'Failed to create project events in Supabase:',
             eventsError
           );
+          // Attempt to roll back the created project record so no orphaned/partial project remains
+          try {
+            await supabase.from('projects').delete().eq('id', projectId);
+          } catch (rollbackErr) {
+            console.warn(
+              'Could not roll back partial project record after event creation failure:',
+              rollbackErr
+            );
+          }
+          throw new Error(
+            `Could not save project events schedule: ${eventsError.message}`
+          );
         } else if (syncedEvents) {
           newProject.events = sortProjectEvents((syncedEvents || []) as ProjectEvent[]);
         }
@@ -1515,9 +1527,9 @@ updated_at: new Date().toISOString(),
       .select('*');
 
     if (!error && data && data.length > 0) {
-      const normalizedAssignments = data.map(assignment => ({
+      const normalizedAssignments = data.map((assignment: any) => ({
         ...assignment,
-        role: assignment.assignment_role,
+        role: assignment.role || assignment.assignment_role || '',
       }));
 
       saveToStorage('project_team', normalizedAssignments);
@@ -1580,28 +1592,65 @@ async assignTeamMember(
   const supabase = getSupabaseClient();
 
   if (supabase) {
-    const { data, error } = await supabase
+    const isMissingColumnError = (err: any, col: string) =>
+      Boolean(
+        err &&
+        err.message &&
+        err.message.toLowerCase().includes(col.toLowerCase()) &&
+        (err.message.includes('schema cache') ||
+          err.message.includes('does not exist') ||
+          err.message.includes('Could not find') ||
+          err.message.includes('column'))
+      );
+
+    const basePayload: Record<string, any> = {
+      project_id: assignment.project_id,
+      team_member_id: assignment.team_member_id,
+      role: assignment.role,
+      assignment_date: assignment.assignment_date,
+      notes: assignment.notes || null,
+    };
+
+    let insertRes = await supabase
       .from('project_team')
-      .insert({
+      .insert(basePayload)
+      .select()
+      .single();
+
+    // Fallback: retry with assignment_role ONLY if error clearly indicates 'role' column does not exist
+    if (insertRes.error && isMissingColumnError(insertRes.error, 'role')) {
+      console.warn(
+        'Supabase project_team table missing "role" column, retrying with "assignment_role":',
+        insertRes.error.message
+      );
+      const fallbackPayload = {
         project_id: assignment.project_id,
         team_member_id: assignment.team_member_id,
         assignment_role: assignment.role,
         assignment_date: assignment.assignment_date,
         notes: assignment.notes || null,
-      })
-      .select()
-      .single();
+      };
+      insertRes = await supabase
+        .from('project_team')
+        .insert(fallbackPayload)
+        .select()
+        .single();
+    }
 
-    if (error) {
-      console.error('Failed to create team assignment in Supabase:', error);
+    if (insertRes.error) {
+      console.error('Failed to create team assignment in Supabase:', insertRes.error);
 
       return {
         success: false,
-        conflictError: `Could not save team assignment: ${error.message}`,
+        conflictError: `Could not save team assignment: ${insertRes.error.message}`,
       };
     }
 
-    const createdAssignment = data as ProjectTeamAssignment;
+    const rawData: any = insertRes.data;
+    const createdAssignment: ProjectTeamAssignment = {
+      ...rawData,
+      role: rawData.role || rawData.assignment_role || assignment.role,
+    };
 
     const current = await this.getProjectTeam();
     saveToStorage('project_team', [...current, createdAssignment]);
@@ -1659,36 +1708,72 @@ async assignTeamMember(
   const supabase = getSupabaseClient();
 
   if (supabase) {
-    const updatePayload: Record<string, any> = {
+    const isMissingColumnError = (err: any, col: string) =>
+      Boolean(
+        err &&
+        err.message &&
+        err.message.toLowerCase().includes(col.toLowerCase()) &&
+        (err.message.includes('schema cache') ||
+          err.message.includes('does not exist') ||
+          err.message.includes('Could not find') ||
+          err.message.includes('column'))
+      );
+
+    const baseUpdate: Record<string, any> = {
       team_member_id: assignment.team_member_id,
-      assignment_role: assignment.role,
+      role: assignment.role,
       assignment_date: assignment.assignment_date,
       notes: assignment.notes || null,
     };
 
     if (assignment.project_id) {
-      updatePayload.project_id = assignment.project_id;
+      baseUpdate.project_id = assignment.project_id;
     }
 
-    const { data, error } = await supabase
+    let updateRes = await supabase
       .from('project_team')
-      .update(updatePayload)
+      .update(baseUpdate)
       .eq('id', assignmentId)
       .select()
       .single();
 
-    if (error) {
-      console.error('Failed to update team assignment in Supabase:', error);
+    // Fallback: retry with assignment_role ONLY if error clearly indicates 'role' column does not exist
+    if (updateRes.error && isMissingColumnError(updateRes.error, 'role')) {
+      console.warn(
+        'Supabase project_team table missing "role" column, retrying update with "assignment_role":',
+        updateRes.error.message
+      );
+      const fallbackUpdate: Record<string, any> = {
+        team_member_id: assignment.team_member_id,
+        assignment_role: assignment.role,
+        assignment_date: assignment.assignment_date,
+        notes: assignment.notes || null,
+      };
+      if (assignment.project_id) {
+        fallbackUpdate.project_id = assignment.project_id;
+      }
+
+      updateRes = await supabase
+        .from('project_team')
+        .update(fallbackUpdate)
+        .eq('id', assignmentId)
+        .select()
+        .single();
+    }
+
+    if (updateRes.error) {
+      console.error('Failed to update team assignment in Supabase:', updateRes.error);
 
       return {
         success: false,
-        error: `Could not update team assignment: ${error.message}`,
+        error: `Could not update team assignment: ${updateRes.error.message}`,
       };
     }
 
+    const rawData: any = updateRes.data;
     const updatedAssignment: ProjectTeamAssignment = {
-      ...data,
-      role: data.assignment_role,
+      ...rawData,
+      role: rawData.role || rawData.assignment_role || assignment.role,
     };
 
     const current = await this.getProjectTeam();

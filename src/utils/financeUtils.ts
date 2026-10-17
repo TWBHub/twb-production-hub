@@ -435,3 +435,48 @@ export function calculateDashboardFinanceMetrics(
     periodExpensesCount: periodExpensesList.length,
   };
 }
+
+export interface FinanceViewMetrics {
+  totalPipeline: number;
+  totalReceived: number;
+  totalExpenses: number;
+  pendingReceivables: number;
+  netMargin: number;
+  marginPercentage: number;
+}
+
+/**
+ * Calculates finance KPI metrics for the Main Finance View:
+ * - totalPipeline: Lifetime total contract value across the entire selected brand portfolio.
+ *   Does not shrink when date filter or search query is applied.
+ * - totalReceived: Inflow from payment records matching active brand filter, date filter, and search.
+ *   Correctly reflects payments matching receipt numbers or descriptions.
+ * - totalExpenses: Inflow outflow from expense records matching brand filter, date filter, and search.
+ * - pendingReceivables: True lifetime outstanding balance (totalPipeline - allTimeBrandPayments).
+ *   Protected against period or search shrinking, with non-negative balance preserved.
+ * - netMargin: Selected-period/filtered payments received minus selected-period/filtered expenses.
+ * - marginPercentage: Operational margin percentage based on totalReceived.
+ */
+export function calculateFinanceViewMetrics(
+  brandProjects: Project[],
+  allBrandPayments: Payment[],
+  displayedPayments: Payment[],
+  displayedExpenses: Expense[]
+): FinanceViewMetrics {
+  const totalPipeline = brandProjects.reduce((sum, p) => sum + p.total_amount, 0);
+  const totalReceived = displayedPayments.reduce((sum, p) => sum + p.amount, 0);
+  const totalExpenses = displayedExpenses.reduce((sum, e) => sum + e.amount, 0);
+  const allTimePaymentsReceived = allBrandPayments.reduce((sum, p) => sum + p.amount, 0);
+  const pendingReceivables = Math.max(0, totalPipeline - allTimePaymentsReceived);
+  const netMargin = totalReceived - totalExpenses;
+  const marginPercentage = totalReceived > 0 ? Math.round((netMargin / totalReceived) * 100) : 0;
+
+  return {
+    totalPipeline,
+    totalReceived,
+    totalExpenses,
+    pendingReceivables,
+    netMargin,
+    marginPercentage,
+  };
+}

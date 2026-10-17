@@ -1042,6 +1042,13 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                           </div>
                         )}
 
+                        {evt.team && evt.team.trim() && (
+                          <div className="flex items-center gap-1.5 text-slate-600 text-[11px]">
+                            <Users className="w-3 h-3 text-slate-400 shrink-0" />
+                            <span>Crew target: {evt.team.trim()}</span>
+                          </div>
+                        )}
+
                         {evt.event_notes && (
                           <div className="flex items-start gap-1.5 text-slate-500 text-[11px] pt-1 border-t border-slate-200/60 mt-1">
                             <FileText className="w-3 h-3 text-slate-400 shrink-0 mt-0.5" />

@@ -155,9 +155,30 @@ useEffect(() => {
   setNewNotes(projectToEdit.notes || '');
 }, [editingProjectId, filteredProjects]);
 
+  // Helper to select client and autofill project fields
+  const applyClientToProject = (client?: Client | null) => {
+    if (client) {
+      setNewClientId(client.id);
+      setNewWeddingName(
+        `${client.name}${client.partner_name ? ` & ${client.partner_name}` : ''}`
+      );
+      setNewPhone(client.phone?.trim() || '');
+      setNewEmail(client.email?.trim() || '');
+    } else {
+      setNewClientId('');
+      setNewWeddingName('');
+      setNewPhone('');
+      setNewEmail('');
+    }
+  };
+
   const resetCreateForm = () => {
     setEditingProjectId(null);
-    setNewWeddingName('');
+    if (clients.length > 0) {
+      applyClientToProject(clients[0]);
+    } else {
+      applyClientToProject(null);
+    }
     setNewEvents([
       {
         event_name: '',
@@ -170,8 +191,6 @@ useEffect(() => {
     ]);
     setNewVenue('');
     setNewCity('');
-    setNewPhone('');
-    setNewEmail('');
     setNewPackage('The Sovereign Cinema & Stills Collection');
     setNewPackageDetails(
       'Full day coverage, 3x cinematographers, 2x photographers, drone coverage, 4K highlight film.'
@@ -188,7 +207,6 @@ useEffect(() => {
       (!newClientId || newClientId === '__add_new_client__') &&
       clients.length > 0
     ) {
-      setNewClientId(clients[0].id);
       applyClientToProject(clients[0]);
     }
   }, [clients, newClientId]);
@@ -204,16 +222,6 @@ useEffect(() => {
   const [newClientAddress, setNewClientAddress] = useState('');
   const [newClientNotes, setNewClientNotes] = useState('');
   const [isSubmittingClient, setIsSubmittingClient] = useState(false);
-
-  // Helper to select client and autofill project fields
-  const applyClientToProject = (client: Client) => {
-    setNewClientId(client.id);
-    setNewWeddingName(
-      `${client.name}${client.partner_name ? ` & ${client.partner_name}` : ''}`
-    );
-    setNewPhone(client.phone || '');
-    setNewEmail(client.email || '');
-  };
 
   const handleCreateNewClient = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -487,7 +495,7 @@ useEffect(() => {
       city: newCity || 'San Francisco, CA',
 
       client_contact: {
-        phone: newPhone || '+1 (415) 555-0199',
+        phone: newPhone.trim() || '',
         email: newEmail.trim() || '',
       },
 
@@ -1009,15 +1017,14 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
                         return;
                       }
 
-                      setNewClientId(e.target.value);
+                      const selectedId = e.target.value;
+                      setNewClientId(selectedId);
 
                       const match = clients.find(
-                        c => c.id === e.target.value
+                        c => c.id === selectedId
                       );
 
-                      if (match) {
-                        applyClientToProject(match);
-                      }
+                      applyClientToProject(match || null);
                     }}
                     className="w-full p-2 border border-slate-300 rounded-lg"
                   >
@@ -1370,6 +1377,20 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
                     className="w-full p-2 border border-slate-300 rounded-lg"
                   />
                 </div>
+              </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">
+                  Project Notes
+                </label>
+
+                <textarea
+                  value={newNotes}
+                  onChange={e => setNewNotes(e.target.value)}
+                  placeholder="Internal production notes, logistics, client preferences, etc."
+                  rows={2}
+                  className="w-full p-2 border border-slate-300 rounded-lg"
+                />
               </div>
 
               {/* Visible error message banner */}
