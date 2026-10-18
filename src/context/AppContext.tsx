@@ -713,12 +713,26 @@ const deleteTeamMember = async (id: string) => {
 
   const updateDeliverableStatus = async (deliverableId: string, status: DeliverableStatus) => {
     // 1. Immediately update local state so UI and completion dot reflect change instantly
+    const now = new Date().toISOString();
     setDeliverables(prev =>
-      prev.map(d =>
-        d.id === deliverableId
-          ? { ...d, status, last_updated: new Date().toISOString() }
-          : d
-      )
+      prev.map(d => {
+        if (d.id !== deliverableId) return d;
+        const firstSubmittedAt =
+          status === 'Submitted' && !d.first_submitted_at
+            ? now
+            : d.first_submitted_at;
+        const deliveredAt =
+          status === 'Delivered' && !d.delivered_at
+            ? now
+            : d.delivered_at;
+        return {
+          ...d,
+          status,
+          first_submitted_at: firstSubmittedAt,
+          delivered_at: deliveredAt,
+          last_updated: now,
+        };
+      })
     );
 
     // 2. Persist to Supabase deliverables table and local storage

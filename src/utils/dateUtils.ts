@@ -145,3 +145,40 @@ export function formatDisplayDateTime(
 
   return `${day}-${month}-${year} ${hours}:${mins}`;
 }
+
+/**
+ * Calculates calendar days elapsed between two date strings (ISO or YYYY-MM-DD).
+ * Uses UTC date values to prevent timezone and daylight saving offset issues.
+ * Returns null if either date is missing or invalid.
+ */
+export function calculateCalendarDaysElapsed(
+  startDateStr?: string | null,
+  endDateStr?: string | null
+): number | null {
+  if (!startDateStr || !endDateStr) return null;
+  const start = new Date(startDateStr);
+  const end = new Date(endDateStr);
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) return null;
+
+  const utcStart = Date.UTC(start.getFullYear(), start.getMonth(), start.getDate());
+  const utcEnd = Date.UTC(end.getFullYear(), end.getMonth(), end.getDate());
+
+  const diffDays = Math.round((utcEnd - utcStart) / (1000 * 60 * 60 * 24));
+  return Math.max(0, diffDays);
+}
+
+/**
+ * Returns a human-friendly string representing calendar days turnaround:
+ * e.g. "Same day", "1 calendar day", "5 calendar days", or fallback.
+ */
+export function formatTurnaroundDays(
+  startDateStr?: string | null,
+  endDateStr?: string | null,
+  pendingFallback: string = '—'
+): string {
+  const days = calculateCalendarDaysElapsed(startDateStr, endDateStr);
+  if (days === null) return pendingFallback;
+  if (days === 0) return 'Same day (0 days)';
+  if (days === 1) return '1 calendar day';
+  return `${days} calendar days`;
+}

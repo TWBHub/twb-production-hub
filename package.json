@@ -9,7 +9,7 @@
     "preview": "vite preview",
     "clean": "rm -rf dist server.js",
     "lint": "tsc --noEmit",
-    "test": "tsx src/utils/paymentReceipt.test.ts && tsx src/utils/financeUtils.test.ts && tsx src/utils/dateUtils.test.ts"
+    "test": "tsx src/utils/paymentReceipt.test.ts && tsx src/utils/financeUtils.test.ts && tsx src/utils/dateUtils.test.ts && tsx src/utils/editorsWorkload.test.ts"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",

@@ -550,17 +550,18 @@ export const DashboardView: React.FC = () => {
 
             <div className="space-y-2.5">
               {editors.slice(0, 3).map(ed => {
+                const capacity = ed.max_active_deliverables || ed.max_concurrent_projects || 4;
                 const activeDels = filteredDeliverables.filter(
                   d => d.assigned_editor_id === ed.id && d.status !== 'Delivered'
                 ).length;
-                const percent = Math.min(100, Math.round((activeDels / ed.max_concurrent_projects) * 100));
+                const percent = Math.min(100, Math.round((activeDels / capacity) * 100));
 
                 return (
                   <div key={ed.id} className="space-y-1">
                     <div className="flex items-center justify-between text-xs">
                       <span className="font-medium text-slate-800">{ed.name}</span>
                       <span className="text-[11px] text-slate-500">
-                        {activeDels} / {ed.max_concurrent_projects} projects
+                        {activeDels} / {capacity} active deliverables
                       </span>
                     </div>
                     <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">

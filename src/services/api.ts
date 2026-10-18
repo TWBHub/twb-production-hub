@@ -198,6 +198,15 @@ export const mapSupabaseDeliverableToModel = (row: any): Deliverable => {
       ? 'golden_june'
       : 'twb';
 
+  let meta: any = {};
+  if (row.notes && typeof row.notes === 'string') {
+    if (row.notes.startsWith('__METADATA__:')) {
+      try {
+        meta = JSON.parse(row.notes.replace('__METADATA__:', ''));
+      } catch (e) {}
+    }
+  }
+
   return {
     id: row.id,
     project_id: row.project_id || '',
@@ -212,6 +221,9 @@ export const mapSupabaseDeliverableToModel = (row: any): Deliverable => {
     client_feedback: row.client_feedback || undefined,
     review_status: row.review_status || undefined,
     last_updated: row.last_updated || row.updated_at || row.created_at || new Date().toISOString(),
+    assigned_at: row.assigned_at || meta.assigned_at || undefined,
+    first_submitted_at: row.first_submitted_at || meta.first_submitted_at || undefined,
+    delivered_at: row.delivered_at || meta.delivered_at || undefined,
   };
 };
 
@@ -1500,23 +1512,38 @@ updated_at: new Date().toISOString(),
   },
 
   async getEditors(): Promise<Editor[]> {
-  const teamMembers = await this.getTeamMembers();
+    const supabase = getSupabaseClient();
+    const teamMembers = await this.getTeamMembers();
 
-  return teamMembers
-    .filter(member =>
-      member.categories?.includes('Editor')
-    )
-    .map(member => ({
-      id: member.id,
-      name: member.name,
-      email: member.email || '',
-      phone: member.phone || '',
-      specialization: member.role_title || 'Editor',
-      is_active: member.status !== 'Inactive',
-      max_concurrent_projects: 4,
-      notes: member.notes || '',
-    }));
-},
+    const teamEditors = teamMembers
+      .filter(member =>
+        member.categories?.includes('Editor') ||
+        member.role_title?.toLowerCase().includes('editor')
+      )
+      .map(member => ({
+        id: member.id,
+        name: member.name,
+        email: member.email || '',
+        phone: member.phone || '',
+        specialization: member.role_title || 'Editor',
+        is_active: member.status !== 'Inactive' && member.is_active !== false,
+        max_concurrent_projects: 4,
+        max_active_deliverables: 4,
+        notes: member.notes || '',
+      }));
+
+    // In connected Supabase mode: return genuine editors (empty array if none exist).
+    // Never inject fictional demo editors into a connected live environment.
+    if (supabase) {
+      return teamEditors;
+    }
+
+    if (teamEditors.length > 0) {
+      return teamEditors;
+    }
+
+    return getStoredOrInitial('editors', INITIAL_EDITORS);
+  },
 
   async getProjectTeam(): Promise<ProjectTeamAssignment[]> {
   const supabase = getSupabaseClient();
@@ -2047,6 +2074,17 @@ async assignTeamMember(
       const dueDate = deliverable.due_date || new Date().toISOString().split('T')[0];
       const statusValue = (deliverable.status && deliverable.status.trim()) ? deliverable.status.trim() : null;
 
+      const now = new Date().toISOString();
+      const assignedAt = (deliverable.assigned_editor_id && deliverable.assigned_editor_id.trim())
+        ? (deliverable.assigned_at || now)
+        : undefined;
+      const firstSubmittedAt = deliverable.status === 'Submitted'
+        ? (deliverable.first_submitted_at || now)
+        : (deliverable.first_submitted_at || undefined);
+      const deliveredAt = deliverable.status === 'Delivered'
+        ? (deliverable.delivered_at || now)
+        : (deliverable.delivered_at || undefined);
+
       // Note: Supabase deliverables table may have column 'name' (NOT NULL in some schemas)
       // and/or 'deliverable_type'. We provide both, and dynamically retry if columns differ.
       let insertPayload: any = {
@@ -2061,12 +2099,37 @@ async assignTeamMember(
         priority: deliverable.priority || 'Medium',
         external_link: deliverable.external_link || null,
         client_feedback: deliverable.client_feedback || null,
+        assigned_at: assignedAt || null,
+        first_submitted_at: firstSubmittedAt || null,
+        delivered_at: deliveredAt || null,
       };
 
       let { data, error } = await supabase
         .from('deliverables')
         .insert(insertPayload)
         .select();
+
+      // Check 0: If milestone columns do not exist in Supabase schema, retry without them and embed in notes
+      if (
+        error &&
+        (error.message?.includes('assigned_at') ||
+          error.message?.includes('first_submitted_at') ||
+          error.message?.includes('delivered_at') ||
+          error.message?.includes('schema cache'))
+      ) {
+        delete insertPayload.assigned_at;
+        delete insertPayload.first_submitted_at;
+        delete insertPayload.delivered_at;
+        const metaObj = {
+          assigned_at: assignedAt,
+          first_submitted_at: firstSubmittedAt,
+          delivered_at: deliveredAt,
+        };
+        insertPayload.notes = `__METADATA__:${JSON.stringify(metaObj)}`;
+        const retry = await supabase.from('deliverables').insert(insertPayload).select();
+        data = retry.data;
+        error = retry.error;
+      }
 
       // Check 1: If 'name' column does not exist or schema cache complaints
       if (
@@ -2138,7 +2201,13 @@ async assignTeamMember(
         throw new Error('Supabase did not return the created deliverable record.');
       }
 
-      const newDeliverable = mapSupabaseDeliverableToModel(data[0]);
+      const mapped = mapSupabaseDeliverableToModel(data[0]);
+      const newDeliverable: Deliverable = {
+        ...mapped,
+        assigned_at: mapped.assigned_at || assignedAt,
+        first_submitted_at: mapped.first_submitted_at || firstSubmittedAt,
+        delivered_at: mapped.delivered_at || deliveredAt,
+      };
 
       const current = getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
       saveToStorage(
@@ -2153,11 +2222,25 @@ async assignTeamMember(
     }
 
     // Local fallback only when Supabase is not configured.
+    const now = new Date().toISOString();
+    const assignedAt = (deliverable.assigned_editor_id && deliverable.assigned_editor_id.trim())
+      ? (deliverable.assigned_at || now)
+      : undefined;
+    const firstSubmittedAt = deliverable.status === 'Submitted'
+      ? (deliverable.first_submitted_at || now)
+      : (deliverable.first_submitted_at || undefined);
+    const deliveredAt = deliverable.status === 'Delivered'
+      ? (deliverable.delivered_at || now)
+      : (deliverable.delivered_at || undefined);
+
     const newDeliverable: Deliverable = {
       ...deliverable,
       id: crypto.randomUUID(),
       status: deliverable.status || ('' as DeliverableStatus),
-      last_updated: new Date().toISOString(),
+      last_updated: now,
+      assigned_at: assignedAt,
+      first_submitted_at: firstSubmittedAt,
+      delivered_at: deliveredAt,
     };
 
     const current = getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
@@ -2172,9 +2255,52 @@ async assignTeamMember(
   async updateDeliverable(
     deliverable: Deliverable
   ): Promise<Deliverable> {
+    const stored = getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
+    const existing = stored.find(d => d.id === deliverable.id);
+
+    const now = new Date().toISOString();
+
+    // 1. Assignment timestamp logic:
+    // - If assigned to a new, non-empty editor ID: record current timestamp
+    // - If unassigned (empty editor ID): clear assigned_at
+    // - If editor ID did not change: preserve existing assigned_at
+    const existingEditorId = (existing?.assigned_editor_id || '').trim();
+    const newEditorId = (deliverable.assigned_editor_id || '').trim();
+
+    let assignedAt: string | undefined;
+    if (newEditorId && newEditorId !== existingEditorId) {
+      // Reassigned to a different editor (or assigned for the first time)
+      assignedAt = now;
+    } else if (newEditorId && newEditorId === existingEditorId) {
+      // Same editor retained: preserve existing assignment date
+      assignedAt = existing?.assigned_at || deliverable.assigned_at;
+    } else {
+      // Unassigned
+      assignedAt = undefined;
+    }
+
+    // 2. First Submitted milestone logic:
+    // Set first_submitted_at when transitioning to 'Submitted' only if not already set.
+    // Never overwrite on later revisions or subsequent resubmissions.
+    let firstSubmittedAt: string | undefined = existing?.first_submitted_at || deliverable.first_submitted_at;
+    if (deliverable.status === 'Submitted' && !firstSubmittedAt) {
+      firstSubmittedAt = now;
+    }
+
+    // 3. Delivered milestone logic:
+    // Set delivered_at when transitioning to 'Delivered' only if not already set.
+    // Never overwrite on later edits.
+    let deliveredAt: string | undefined = existing?.delivered_at || deliverable.delivered_at;
+    if (deliverable.status === 'Delivered' && !deliveredAt) {
+      deliveredAt = now;
+    }
+
     const updatedDeliverable: Deliverable = {
       ...deliverable,
-      last_updated: new Date().toISOString(),
+      assigned_at: assignedAt,
+      first_submitted_at: firstSubmittedAt,
+      delivered_at: deliveredAt,
+      last_updated: now,
     };
 
     const supabase = getSupabaseClient();
@@ -2198,6 +2324,9 @@ async assignTeamMember(
         priority: updatedDeliverable.priority || 'Medium',
         external_link: updatedDeliverable.external_link || null,
         client_feedback: updatedDeliverable.client_feedback || null,
+        assigned_at: assignedAt || null,
+        first_submitted_at: firstSubmittedAt || null,
+        delivered_at: deliveredAt || null,
       };
 
       let { data, error } = await supabase
@@ -2205,6 +2334,28 @@ async assignTeamMember(
         .update(updatePayload)
         .eq('id', updatedDeliverable.id)
         .select();
+
+      // Retry without milestone columns if missing from Supabase schema cache, storing in notes metadata
+      if (
+        error &&
+        (error.message?.includes('assigned_at') ||
+          error.message?.includes('first_submitted_at') ||
+          error.message?.includes('delivered_at') ||
+          error.message?.includes('schema cache'))
+      ) {
+        delete updatePayload.assigned_at;
+        delete updatePayload.first_submitted_at;
+        delete updatePayload.delivered_at;
+        const metaObj = {
+          assigned_at: assignedAt,
+          first_submitted_at: firstSubmittedAt,
+          delivered_at: deliveredAt,
+        };
+        updatePayload.notes = `__METADATA__:${JSON.stringify(metaObj)}`;
+        const retry = await supabase.from('deliverables').update(updatePayload).eq('id', updatedDeliverable.id).select();
+        data = retry.data;
+        error = retry.error;
+      }
 
       if (
         error &&
@@ -2235,7 +2386,13 @@ async assignTeamMember(
         throw new Error(`Could not find deliverable ${updatedDeliverable.id} to update in Supabase.`);
       }
 
-      const saved = mapSupabaseDeliverableToModel(data[0]);
+      const mapped = mapSupabaseDeliverableToModel(data[0]);
+      const saved: Deliverable = {
+        ...mapped,
+        assigned_at: mapped.assigned_at || assignedAt,
+        first_submitted_at: mapped.first_submitted_at || firstSubmittedAt,
+        delivered_at: mapped.delivered_at || deliveredAt,
+      };
 
       // Cache updated list in storage immediately
       const current = getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
@@ -2267,6 +2424,23 @@ async assignTeamMember(
 
     const target = stored.find(d => d.id === deliverableId);
 
+    const now = new Date().toISOString();
+
+    // 1. Milestone rules:
+    // First Submitted: set only if transition to Submitted and currently empty
+    const firstSubmittedAt =
+      newStatus === 'Submitted' && !target?.first_submitted_at
+        ? now
+        : (target?.first_submitted_at || undefined);
+
+    // Delivered: set only if transition to Delivered and currently empty
+    const deliveredAt =
+      newStatus === 'Delivered' && !target?.delivered_at
+        ? now
+        : (target?.delivered_at || undefined);
+
+    const assignedAt = target?.assigned_at || undefined;
+
     const statusValueForDb = (newStatus && newStatus.trim()) ? newStatus : null;
 
     let savedDeliverable: Deliverable = {
@@ -2279,20 +2453,51 @@ async assignTeamMember(
         due_date: new Date().toISOString().split('T')[0],
         status: (newStatus || '') as DeliverableStatus,
         priority: 'High' as const,
-        last_updated: new Date().toISOString(),
+        last_updated: now,
       }),
       status: (newStatus || '') as DeliverableStatus,
-      last_updated: new Date().toISOString(),
+      assigned_at: assignedAt,
+      first_submitted_at: firstSubmittedAt,
+      delivered_at: deliveredAt,
+      last_updated: now,
     };
 
     if (supabase) {
-      const { data, error } = await supabase
+      let updatePayload: any = {
+        status: statusValueForDb,
+        first_submitted_at: firstSubmittedAt || null,
+        delivered_at: deliveredAt || null,
+      };
+
+      let { data, error } = await supabase
         .from('deliverables')
-        .update({
-          status: statusValueForDb,
-        })
+        .update(updatePayload)
         .eq('id', deliverableId)
         .select();
+
+      // Retry without milestone columns if missing from Supabase schema cache
+      if (
+        error &&
+        (error.message?.includes('first_submitted_at') ||
+          error.message?.includes('delivered_at') ||
+          error.message?.includes('schema cache'))
+      ) {
+        delete updatePayload.first_submitted_at;
+        delete updatePayload.delivered_at;
+        const metaObj = {
+          assigned_at: assignedAt,
+          first_submitted_at: firstSubmittedAt,
+          delivered_at: deliveredAt,
+        };
+        updatePayload.notes = `__METADATA__:${JSON.stringify(metaObj)}`;
+        const retry = await supabase
+          .from('deliverables')
+          .update(updatePayload)
+          .eq('id', deliverableId)
+          .select();
+        data = retry.data;
+        error = retry.error;
+      }
 
       if (error) {
         console.error('Failed to update deliverable status in Supabase:', error);
@@ -2300,9 +2505,13 @@ async assignTeamMember(
       }
 
       if (data && data.length > 0) {
+        const mapped = mapSupabaseDeliverableToModel(data[0]);
         savedDeliverable = {
           ...savedDeliverable,
-          ...mapSupabaseDeliverableToModel(data[0]),
+          ...mapped,
+          assigned_at: mapped.assigned_at || assignedAt,
+          first_submitted_at: mapped.first_submitted_at || firstSubmittedAt,
+          delivered_at: mapped.delivered_at || deliveredAt,
         };
       }
     }

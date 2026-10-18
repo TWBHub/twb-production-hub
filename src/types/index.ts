@@ -107,6 +107,7 @@ export interface Editor {
   specialization: string;
   is_active?: boolean;
   max_concurrent_projects: number;
+  max_active_deliverables?: number;
   rate_per_project?: number;
   status?: string;
   notes?: string;
@@ -301,6 +302,9 @@ export interface Deliverable {
   client_feedback?: string;
   review_status?: string;
   last_updated: string;
+  assigned_at?: string;
+  first_submitted_at?: string;
+  delivered_at?: string;
 }
 
 export type PaymentMode = 'Bank Transfer' | 'Credit Card' | 'UPI' | 'Cash' | 'Cheque';

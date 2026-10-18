@@ -241,7 +241,10 @@ create table if not exists deliverables (
   external_link text,
   notes text,
   review_status text,
-  last_updated timestamp with time zone default timezone('utc'::text, now()) not null
+  last_updated timestamp with time zone default timezone('utc'::text, now()) not null,
+  assigned_at timestamp with time zone,
+  first_submitted_at timestamp with time zone,
+  delivered_at timestamp with time zone
 );
 
 -- 10. PAYMENTS
