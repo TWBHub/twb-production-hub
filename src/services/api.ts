@@ -45,6 +45,11 @@ import {
 } from './seedData';
 import { sortProjectEvents } from '../utils/eventUtils';
 import { normalizeStorageRecord } from '../utils/storageUtils';
+import {
+  parseDeliverableNotes,
+  serializeDeliverableNotes,
+  prepareDeliverableForCreate,
+} from '../utils/deliverableMilestones';
 
 // Cache keys for resilient persistent storage when offline or before Supabase sync
 const STORAGE_PREFIX = 'twbhub_';
@@ -198,14 +203,7 @@ export const mapSupabaseDeliverableToModel = (row: any): Deliverable => {
       ? 'golden_june'
       : 'twb';
 
-  let meta: any = {};
-  if (row.notes && typeof row.notes === 'string') {
-    if (row.notes.startsWith('__METADATA__:')) {
-      try {
-        meta = JSON.parse(row.notes.replace('__METADATA__:', ''));
-      } catch (e) {}
-    }
-  }
+  const { userNotes, metadata } = parseDeliverableNotes(row.notes);
 
   return {
     id: row.id,
@@ -217,13 +215,13 @@ export const mapSupabaseDeliverableToModel = (row: any): Deliverable => {
     status: (row.status || '') as DeliverableStatus,
     priority: (row.priority || 'Medium') as DeliverablePriority,
     external_link: row.external_link || undefined,
-    notes: row.notes || undefined,
+    notes: userNotes || undefined,
     client_feedback: row.client_feedback || undefined,
     review_status: row.review_status || undefined,
     last_updated: row.last_updated || row.updated_at || row.created_at || new Date().toISOString(),
-    assigned_at: row.assigned_at || meta.assigned_at || undefined,
-    first_submitted_at: row.first_submitted_at || meta.first_submitted_at || undefined,
-    delivered_at: row.delivered_at || meta.delivered_at || undefined,
+    assigned_at: row.assigned_at || metadata?.assigned_at || undefined,
+    first_submitted_at: row.first_submitted_at || metadata?.first_submitted_at || undefined,
+    delivered_at: row.delivered_at || metadata?.delivered_at || undefined,
   };
 };
 
@@ -2041,7 +2039,20 @@ async assignTeamMember(
 
       if (error) {
         console.warn('Warning loading deliverables from Supabase:', error.message);
-        return getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
+        const stored = getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
+        return stored.map(d => {
+          if (d.notes && typeof d.notes === 'string' && d.notes.startsWith('__METADATA__:')) {
+            const parsed = parseDeliverableNotes(d.notes);
+            return {
+              ...d,
+              notes: parsed.userNotes,
+              assigned_at: d.assigned_at || parsed.metadata?.assigned_at,
+              first_submitted_at: d.first_submitted_at || parsed.metadata?.first_submitted_at,
+              delivered_at: d.delivered_at || parsed.metadata?.delivered_at,
+            };
+          }
+          return d;
+        });
       }
 
       const deliverables = (data || []).map(mapSupabaseDeliverableToModel);
@@ -2054,13 +2065,35 @@ async assignTeamMember(
     }
 
     // Local fallback only when Supabase is not configured.
-    return getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
+    const stored = getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
+    return stored.map(d => {
+      if (d.notes && typeof d.notes === 'string' && d.notes.startsWith('__METADATA__:')) {
+        const parsed = parseDeliverableNotes(d.notes);
+        return {
+          ...d,
+          notes: parsed.userNotes,
+          assigned_at: d.assigned_at || parsed.metadata?.assigned_at,
+          first_submitted_at: d.first_submitted_at || parsed.metadata?.first_submitted_at,
+          delivered_at: d.delivered_at || parsed.metadata?.delivered_at,
+        };
+      }
+      return d;
+    });
   },
 
   async createDeliverable(
     deliverable: Omit<Deliverable, 'id' | 'last_updated'>
   ): Promise<Deliverable> {
     const supabase = getSupabaseClient();
+    const now = new Date().toISOString();
+
+    const {
+      userNotes,
+      assigned_at: assignedAt,
+      first_submitted_at: firstSubmittedAt,
+      delivered_at: deliveredAt,
+      serializedNotesForFallback,
+    } = prepareDeliverableForCreate(deliverable, now);
 
     if (supabase) {
       const isUuid = (val?: string | null) =>
@@ -2073,17 +2106,6 @@ async assignTeamMember(
         : null;
       const dueDate = deliverable.due_date || new Date().toISOString().split('T')[0];
       const statusValue = (deliverable.status && deliverable.status.trim()) ? deliverable.status.trim() : null;
-
-      const now = new Date().toISOString();
-      const assignedAt = (deliverable.assigned_editor_id && deliverable.assigned_editor_id.trim())
-        ? (deliverable.assigned_at || now)
-        : undefined;
-      const firstSubmittedAt = deliverable.status === 'Submitted'
-        ? (deliverable.first_submitted_at || now)
-        : (deliverable.first_submitted_at || undefined);
-      const deliveredAt = deliverable.status === 'Delivered'
-        ? (deliverable.delivered_at || now)
-        : (deliverable.delivered_at || undefined);
 
       // Note: Supabase deliverables table may have column 'name' (NOT NULL in some schemas)
       // and/or 'deliverable_type'. We provide both, and dynamically retry if columns differ.
@@ -2099,6 +2121,7 @@ async assignTeamMember(
         priority: deliverable.priority || 'Medium',
         external_link: deliverable.external_link || null,
         client_feedback: deliverable.client_feedback || null,
+        notes: userNotes || null,
         assigned_at: assignedAt || null,
         first_submitted_at: firstSubmittedAt || null,
         delivered_at: deliveredAt || null,
@@ -2120,12 +2143,7 @@ async assignTeamMember(
         delete insertPayload.assigned_at;
         delete insertPayload.first_submitted_at;
         delete insertPayload.delivered_at;
-        const metaObj = {
-          assigned_at: assignedAt,
-          first_submitted_at: firstSubmittedAt,
-          delivered_at: deliveredAt,
-        };
-        insertPayload.notes = `__METADATA__:${JSON.stringify(metaObj)}`;
+        insertPayload.notes = serializedNotesForFallback;
         const retry = await supabase.from('deliverables').insert(insertPayload).select();
         data = retry.data;
         error = retry.error;
@@ -2204,6 +2222,7 @@ async assignTeamMember(
       const mapped = mapSupabaseDeliverableToModel(data[0]);
       const newDeliverable: Deliverable = {
         ...mapped,
+        notes: mapped.notes || userNotes,
         assigned_at: mapped.assigned_at || assignedAt,
         first_submitted_at: mapped.first_submitted_at || firstSubmittedAt,
         delivered_at: mapped.delivered_at || deliveredAt,
@@ -2222,21 +2241,11 @@ async assignTeamMember(
     }
 
     // Local fallback only when Supabase is not configured.
-    const now = new Date().toISOString();
-    const assignedAt = (deliverable.assigned_editor_id && deliverable.assigned_editor_id.trim())
-      ? (deliverable.assigned_at || now)
-      : undefined;
-    const firstSubmittedAt = deliverable.status === 'Submitted'
-      ? (deliverable.first_submitted_at || now)
-      : (deliverable.first_submitted_at || undefined);
-    const deliveredAt = deliverable.status === 'Delivered'
-      ? (deliverable.delivered_at || now)
-      : (deliverable.delivered_at || undefined);
-
     const newDeliverable: Deliverable = {
       ...deliverable,
       id: crypto.randomUUID(),
       status: deliverable.status || ('' as DeliverableStatus),
+      notes: userNotes,
       last_updated: now,
       assigned_at: assignedAt,
       first_submitted_at: firstSubmittedAt,
@@ -2256,7 +2265,17 @@ async assignTeamMember(
     deliverable: Deliverable
   ): Promise<Deliverable> {
     const stored = getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
-    const existing = stored.find(d => d.id === deliverable.id);
+    let existing = stored.find(d => d.id === deliverable.id);
+    if (existing && existing.notes && typeof existing.notes === 'string' && existing.notes.startsWith('__METADATA__:')) {
+      const parsedExisting = parseDeliverableNotes(existing.notes);
+      existing = {
+        ...existing,
+        notes: parsedExisting.userNotes,
+        assigned_at: existing.assigned_at || parsedExisting.metadata?.assigned_at,
+        first_submitted_at: existing.first_submitted_at || parsedExisting.metadata?.first_submitted_at,
+        delivered_at: existing.delivered_at || parsedExisting.metadata?.delivered_at,
+      };
+    }
 
     const now = new Date().toISOString();
 
@@ -2295,8 +2314,19 @@ async assignTeamMember(
       deliveredAt = now;
     }
 
+    // Extract clean user notes in case incoming deliverable still had metadata string
+    let userNotesToSave = deliverable.notes;
+    if (userNotesToSave && typeof userNotesToSave === 'string' && userNotesToSave.startsWith('__METADATA__:')) {
+      const parsedIncoming = parseDeliverableNotes(userNotesToSave);
+      userNotesToSave = parsedIncoming.userNotes;
+      if (!assignedAt && parsedIncoming.metadata?.assigned_at) assignedAt = parsedIncoming.metadata.assigned_at;
+      if (!firstSubmittedAt && parsedIncoming.metadata?.first_submitted_at) firstSubmittedAt = parsedIncoming.metadata.first_submitted_at;
+      if (!deliveredAt && parsedIncoming.metadata?.delivered_at) deliveredAt = parsedIncoming.metadata.delivered_at;
+    }
+
     const updatedDeliverable: Deliverable = {
       ...deliverable,
+      notes: userNotesToSave,
       assigned_at: assignedAt,
       first_submitted_at: firstSubmittedAt,
       delivered_at: deliveredAt,
@@ -2324,6 +2354,7 @@ async assignTeamMember(
         priority: updatedDeliverable.priority || 'Medium',
         external_link: updatedDeliverable.external_link || null,
         client_feedback: updatedDeliverable.client_feedback || null,
+        notes: userNotesToSave || null,
         assigned_at: assignedAt || null,
         first_submitted_at: firstSubmittedAt || null,
         delivered_at: deliveredAt || null,
@@ -2346,12 +2377,11 @@ async assignTeamMember(
         delete updatePayload.assigned_at;
         delete updatePayload.first_submitted_at;
         delete updatePayload.delivered_at;
-        const metaObj = {
+        updatePayload.notes = serializeDeliverableNotes(userNotesToSave, {
           assigned_at: assignedAt,
           first_submitted_at: firstSubmittedAt,
           delivered_at: deliveredAt,
-        };
-        updatePayload.notes = `__METADATA__:${JSON.stringify(metaObj)}`;
+        });
         const retry = await supabase.from('deliverables').update(updatePayload).eq('id', updatedDeliverable.id).select();
         data = retry.data;
         error = retry.error;
@@ -2421,8 +2451,17 @@ async assignTeamMember(
   ): Promise<Deliverable> {
     const supabase = getSupabaseClient();
     const stored = getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
-
-    const target = stored.find(d => d.id === deliverableId);
+    let target = stored.find(d => d.id === deliverableId);
+    if (target && target.notes && typeof target.notes === 'string' && target.notes.startsWith('__METADATA__:')) {
+      const parsed = parseDeliverableNotes(target.notes);
+      target = {
+        ...target,
+        notes: parsed.userNotes,
+        assigned_at: target.assigned_at || parsed.metadata?.assigned_at,
+        first_submitted_at: target.first_submitted_at || parsed.metadata?.first_submitted_at,
+        delivered_at: target.delivered_at || parsed.metadata?.delivered_at,
+      };
+    }
 
     const now = new Date().toISOString();
 
@@ -2456,6 +2495,7 @@ async assignTeamMember(
         last_updated: now,
       }),
       status: (newStatus || '') as DeliverableStatus,
+      notes: target?.notes || undefined,
       assigned_at: assignedAt,
       first_submitted_at: firstSubmittedAt,
       delivered_at: deliveredAt,
@@ -2484,12 +2524,11 @@ async assignTeamMember(
       ) {
         delete updatePayload.first_submitted_at;
         delete updatePayload.delivered_at;
-        const metaObj = {
+        updatePayload.notes = serializeDeliverableNotes(target?.notes, {
           assigned_at: assignedAt,
           first_submitted_at: firstSubmittedAt,
           delivered_at: deliveredAt,
-        };
-        updatePayload.notes = `__METADATA__:${JSON.stringify(metaObj)}`;
+        });
         const retry = await supabase
           .from('deliverables')
           .update(updatePayload)
