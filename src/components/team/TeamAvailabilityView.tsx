@@ -17,6 +17,7 @@ import { useApp } from '../../context/AppContext';
 import { TeamMember } from '../../types';
 import { sortProjectEvents } from '../../utils/eventUtils';
 import { formatDisplayDate } from '../../utils/dateUtils';
+import { filterProductionTeamMembers } from '../../utils/teamMemberFilters';
 
 const formatDateKey = (date: Date) => {
   return [
@@ -124,6 +125,19 @@ const [savingMember, setSavingMember] = useState(false);
     () => getDaysInMonth(currentMonth),
     [currentMonth]
   );
+
+  // Production team member options for scheduling / crew assignment
+  const availableProductionMembers = useMemo(() => {
+    return filterProductionTeamMembers(teamMembers, {
+      currentMemberId: assignMemberId,
+    });
+  }, [teamMembers, assignMemberId]);
+
+  const editCrewMembers = useMemo(() => {
+    return filterProductionTeamMembers(teamMembers, {
+      currentMemberId: editingAssignment?.memberId,
+    });
+  }, [teamMembers, editingAssignment?.memberId]);
 
   /*
    * Only show projects that are relevant to this month.
@@ -1087,13 +1101,11 @@ try {
             className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm bg-white"
           >
             <option value="">Select team member...</option>
-            {teamMembers
-              .filter(member => member.status !== 'Inactive')
-              .map(member => (
-                <option key={member.id} value={member.id}>
-                  {member.name}
-                </option>
-              ))}
+            {availableProductionMembers.map(member => (
+              <option key={member.id} value={member.id}>
+                {member.name}
+              </option>
+            ))}
           </select>
         </div>
 
@@ -1282,7 +1294,7 @@ try {
                   className="w-full px-3 py-2 border border-slate-200 rounded-lg bg-white text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-300"
                 >
                   <option value="">Select Team Member</option>
-                  {teamMembers.map(m => (
+                  {editCrewMembers.map(m => (
                     <option key={m.id} value={m.id}>
                       {m.name} {m.primary_role ? `(${m.primary_role})` : ''}
                     </option>

@@ -50,6 +50,8 @@ import {
   serializeDeliverableNotes,
   prepareDeliverableForCreate,
 } from '../utils/deliverableMilestones';
+import { isDeliverableEditor } from '../utils/teamMemberFilters';
+import { sanitizeCompany } from '../utils/companyUtils';
 
 // Cache keys for resilient persistent storage when offline or before Supabase sync
 const STORAGE_PREFIX = 'twbhub_';
@@ -59,10 +61,20 @@ function getStoredOrInitial<T>(key: string, initial: T): T {
   try {
     const raw = localStorage.getItem(STORAGE_PREFIX + key);
     if (!raw) {
-      localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(initial));
-      return initial;
+      const initToStore =
+        key === 'companies' && Array.isArray(initial)
+          ? (initial as any[]).map(c => sanitizeCompany(c))
+          : initial;
+      localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(initToStore));
+      return initToStore as T;
     }
-    return JSON.parse(raw) as T;
+    const parsed = JSON.parse(raw);
+    if (key === 'companies' && Array.isArray(parsed)) {
+      const sanitized = parsed.map(c => sanitizeCompany(c));
+      localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(sanitized));
+      return sanitized as unknown as T;
+    }
+    return parsed as T;
   } catch {
     return initial;
   }
@@ -459,26 +471,89 @@ export const apiService = {
 
   // COMPANIES
   async getCompanies(): Promise<Company[]> {
+    const existingStored = getStoredOrInitial('companies', INITIAL_COMPANIES);
+    let result: Company[] = existingStored;
     const supabase = getSupabaseClient();
     if (supabase) {
       const { data, error } = await supabase.from('companies').select('*');
       if (!error && data && data.length > 0) {
-        saveToStorage('companies', data);
-        return data as Company[];
+        // Merge Supabase rows (which only contain id, code, name, created_at)
+        // with the stored companies to preserve bank details, terms, contact info, etc.
+        result = existingStored.map(stored => {
+          const matchingRow = data.find(
+            (row: any) => row.id === stored.id || row.code === stored.code
+          );
+          if (matchingRow) {
+            return {
+              ...stored,
+              id: matchingRow.id,
+              code: matchingRow.code || stored.code,
+              name: matchingRow.name || stored.name,
+            };
+          }
+          return stored;
+        });
+
+        // Also include any Supabase company rows not in existingStored
+        data.forEach((row: any) => {
+          const alreadyIncluded = result.some(
+            c => c.id === row.id || c.code === row.code
+          );
+          if (!alreadyIncluded) {
+            result.push(sanitizeCompany(row));
+          }
+        });
       }
     }
-    return getStoredOrInitial('companies', INITIAL_COMPANIES);
+
+    const sanitized = result.map(c => sanitizeCompany(c));
+    saveToStorage('companies', sanitized);
+    return sanitized;
   },
 
   async updateCompany(company: Company): Promise<Company> {
+    const cleaned = sanitizeCompany(company);
     const supabase = getSupabaseClient();
     if (supabase) {
-      await supabase.from('companies').upsert(company);
+      // The Supabase public.companies table schema contains only:
+      // id, code, name (and created_at).
+      // Sending other columns (accent_color, tagline, email, phone, website, address, banking, terms)
+      // triggers PostgREST schema cache error PGRST204 because those columns do not exist in the database.
+      const dbPayload = {
+        id: cleaned.id,
+        code: cleaned.code,
+        name: cleaned.name,
+      };
+
+      const { error } = await supabase.from('companies').upsert(dbPayload);
+      if (error) {
+        console.error('Failed to update company in Supabase:', error);
+        throw new Error(`Failed to update company in database: ${error.message}`);
+      }
     }
+
     const current = await this.getCompanies();
-    const updated = current.map(c => (c.id === company.id ? company : c));
+    let matched = false;
+    const updated = current.map(c => {
+      if (c.id === cleaned.id || c.code === cleaned.code) {
+        matched = true;
+        return {
+          ...c,
+          ...cleaned,
+          id: cleaned.id,
+          code: cleaned.code,
+          name: cleaned.name,
+          bank_details: cleaned.bank_details || c.bank_details,
+          terms_conditions: cleaned.terms_conditions || c.terms_conditions,
+        };
+      }
+      return c;
+    });
+    if (!matched) {
+      updated.push(cleaned);
+    }
     saveToStorage('companies', updated);
-    return company;
+    return cleaned;
   },
 
   // CLIENTS
@@ -1515,8 +1590,9 @@ updated_at: new Date().toISOString(),
 
     const teamEditors = teamMembers
       .filter(member =>
-        member.categories?.includes('Editor') ||
-        member.role_title?.toLowerCase().includes('editor')
+        isDeliverableEditor(member) ||
+        ((!member.categories || member.categories.length === 0) &&
+          member.role_title?.toLowerCase().includes('editor'))
       )
       .map(member => ({
         id: member.id,

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Settings,
   Database,
@@ -12,8 +12,14 @@ import {
   Lock,
   Layers,
   FileCode,
+  AlertCircle,
+  Globe,
+  Tag,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { INITIAL_COMPANIES } from '../../services/seedData';
+import { Company } from '../../types';
+import { resolveCompany, prepareCompanyForUpdate, sanitizeCompany } from '../../utils/companyUtils';
 
 export const SettingsView: React.FC = () => {
   const {
@@ -33,16 +39,49 @@ export const SettingsView: React.FC = () => {
     notifications,
   } = useApp();
 
-  const [twbBrand, setTwbBrand] = useState(companies.find(c => c.id === 'twb') || companies[0]);
-  const [gjBrand, setGjBrand] = useState(companies.find(c => c.id === 'golden_june') || companies[1]);
+  const [twbBrand, setTwbBrand] = useState<Company>(
+    () => resolveCompany(companies, 'twb', INITIAL_COMPANIES[0]) || sanitizeCompany(INITIAL_COMPANIES[0], 'twb')
+  );
+  const [gjBrand, setGjBrand] = useState<Company>(
+    () => resolveCompany(companies, 'golden_june', INITIAL_COMPANIES[1]) || sanitizeCompany(INITIAL_COMPANIES[1], 'golden_june')
+  );
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // Synchronize when companies finish loading from backend or cache
+  useEffect(() => {
+    if (companies && companies.length > 0) {
+      const foundTwb = resolveCompany(companies, 'twb', INITIAL_COMPANIES[0]);
+      if (foundTwb) setTwbBrand(foundTwb);
+      const foundGj = resolveCompany(companies, 'golden_june', INITIAL_COMPANIES[1]);
+      if (foundGj) setGjBrand(foundGj);
+    }
+  }, [companies]);
 
   const handleSaveBrands = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (twbBrand) await updateCompany(twbBrand);
-    if (gjBrand) await updateCompany(gjBrand);
-    setSaveSuccess(true);
-    setTimeout(() => setSaveSuccess(false), 3000);
+    setIsSaving(true);
+    setSaveSuccess(false);
+    setSaveError(null);
+
+    try {
+      if (twbBrand) {
+        const payload = prepareCompanyForUpdate(twbBrand, companies);
+        await updateCompany(payload);
+      }
+      if (gjBrand) {
+        const payload = prepareCompanyForUpdate(gjBrand, companies);
+        await updateCompany(payload);
+      }
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 4000);
+    } catch (err: any) {
+      console.error('Error saving brand settings:', err);
+      setSaveError(err.message || 'Failed to update brand settings in database.');
+    } finally {
+      setIsSaving(false);
+    }
   };
 
   const tables = [
@@ -125,7 +164,7 @@ export const SettingsView: React.FC = () => {
                 Two-Brand Configuration
               </h2>
               <p className="text-xs text-slate-500">
-                Custom invoice details, legal names, and contact credentials for TWB and Golden June
+                Custom invoice details, legal names, and contact credentials for The Wedding Booth and Golden June Films
               </p>
             </div>
           </div>
@@ -136,6 +175,16 @@ export const SettingsView: React.FC = () => {
             </span>
           )}
         </div>
+
+        {saveError && (
+          <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs flex items-center gap-2.5">
+            <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+            <div className="flex-1">
+              <span className="font-semibold">Update Failed: </span>
+              <span>{saveError}</span>
+            </div>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           {/* Brand 1: TWB */}
@@ -149,12 +198,24 @@ export const SettingsView: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-slate-600 font-semibold mb-1">Brand Name</label>
+                <label className="block text-slate-600 font-semibold mb-1">Brand / Display Name</label>
                 <input
                   type="text"
                   value={twbBrand.name}
                   onChange={e => setTwbBrand({ ...twbBrand, name: e.target.value })}
                   className="w-full p-2 border border-slate-300 rounded-lg bg-white"
+                  placeholder="The Wedding Booth"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-600 font-semibold mb-1">Tagline</label>
+                <input
+                  type="text"
+                  value={twbBrand.tagline || ''}
+                  onChange={e => setTwbBrand({ ...twbBrand, tagline: e.target.value })}
+                  className="w-full p-2 border border-slate-300 rounded-lg bg-white"
+                  placeholder="Wedding Photography & Films"
                 />
               </div>
 
@@ -165,6 +226,7 @@ export const SettingsView: React.FC = () => {
                   value={twbBrand.email}
                   onChange={e => setTwbBrand({ ...twbBrand, email: e.target.value })}
                   className="w-full p-2 border border-slate-300 rounded-lg bg-white"
+                  placeholder="dweddingbooth@gmail.com"
                 />
               </div>
 
@@ -175,6 +237,18 @@ export const SettingsView: React.FC = () => {
                   value={twbBrand.phone}
                   onChange={e => setTwbBrand({ ...twbBrand, phone: e.target.value })}
                   className="w-full p-2 border border-slate-300 rounded-lg bg-white"
+                  placeholder="+91 9074448850"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-600 font-semibold mb-1">Website</label>
+                <input
+                  type="text"
+                  value={twbBrand.website || ''}
+                  onChange={e => setTwbBrand({ ...twbBrand, website: e.target.value })}
+                  className="w-full p-2 border border-slate-300 rounded-lg bg-white"
+                  placeholder="www.theweddingbooth.in"
                 />
               </div>
 
@@ -182,9 +256,10 @@ export const SettingsView: React.FC = () => {
                 <label className="block text-slate-600 font-semibold mb-1">Studio Address</label>
                 <input
                   type="text"
-                  value={twbBrand.address}
+                  value={twbBrand.address || ''}
                   onChange={e => setTwbBrand({ ...twbBrand, address: e.target.value })}
                   className="w-full p-2 border border-slate-300 rounded-lg bg-white"
+                  placeholder="Leave blank until supplied"
                 />
               </div>
             </div>
@@ -201,12 +276,24 @@ export const SettingsView: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-slate-600 font-semibold mb-1">Brand Name</label>
+                <label className="block text-slate-600 font-semibold mb-1">Brand / Display Name</label>
                 <input
                   type="text"
                   value={gjBrand.name}
                   onChange={e => setGjBrand({ ...gjBrand, name: e.target.value })}
                   className="w-full p-2 border border-slate-300 rounded-lg bg-white"
+                  placeholder="Golden June Films"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-600 font-semibold mb-1">Tagline</label>
+                <input
+                  type="text"
+                  value={gjBrand.tagline || ''}
+                  onChange={e => setGjBrand({ ...gjBrand, tagline: e.target.value })}
+                  className="w-full p-2 border border-slate-300 rounded-lg bg-white"
+                  placeholder="Wedding Photography & Films"
                 />
               </div>
 
@@ -217,6 +304,7 @@ export const SettingsView: React.FC = () => {
                   value={gjBrand.email}
                   onChange={e => setGjBrand({ ...gjBrand, email: e.target.value })}
                   className="w-full p-2 border border-slate-300 rounded-lg bg-white"
+                  placeholder="goldenjunefilms@gmail.com"
                 />
               </div>
 
@@ -227,6 +315,18 @@ export const SettingsView: React.FC = () => {
                   value={gjBrand.phone}
                   onChange={e => setGjBrand({ ...gjBrand, phone: e.target.value })}
                   className="w-full p-2 border border-slate-300 rounded-lg bg-white"
+                  placeholder="+91 9074963370"
+                />
+              </div>
+
+              <div>
+                <label className="block text-slate-600 font-semibold mb-1">Website</label>
+                <input
+                  type="text"
+                  value={gjBrand.website || ''}
+                  onChange={e => setGjBrand({ ...gjBrand, website: e.target.value })}
+                  className="w-full p-2 border border-slate-300 rounded-lg bg-white"
+                  placeholder="www.goldenjunefilms.com"
                 />
               </div>
 
@@ -234,9 +334,10 @@ export const SettingsView: React.FC = () => {
                 <label className="block text-slate-600 font-semibold mb-1">Studio Address</label>
                 <input
                   type="text"
-                  value={gjBrand.address}
+                  value={gjBrand.address || ''}
                   onChange={e => setGjBrand({ ...gjBrand, address: e.target.value })}
                   className="w-full p-2 border border-slate-300 rounded-lg bg-white"
+                  placeholder="Leave blank until supplied"
                 />
               </div>
             </div>
@@ -246,9 +347,11 @@ export const SettingsView: React.FC = () => {
         <div className="flex justify-end pt-2">
           <button
             type="submit"
-            className="px-5 py-2 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg shadow-xs transition-colors"
+            disabled={isSaving}
+            className="px-5 py-2 text-xs font-semibold bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white rounded-lg shadow-xs transition-colors flex items-center gap-2 cursor-pointer"
           >
-            Update Brand Settings
+            {isSaving && <RefreshCw className="w-3.5 h-3.5 animate-spin" />}
+            <span>{isSaving ? 'Updating...' : 'Update Brand Settings'}</span>
           </button>
         </div>
       </form>

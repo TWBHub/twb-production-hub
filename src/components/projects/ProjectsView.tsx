@@ -695,8 +695,10 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {filtered.map(project => {
           const isTWB = project.company_id === 'twb';
-          const company =
-            companies.find(c => c.id === project.company_id) || companies[0];
+         const company =
+  companies.find(
+    c => c.code === project.company_id || c.id === project.company_id
+  ) || companies.find(c => c.code === 'twb');
           const client = clients.find(c => c.id === project.client_id);
 
           return (

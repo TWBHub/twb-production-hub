@@ -27,6 +27,7 @@ const CATEGORY_OPTIONS: TeamMemberCategory[] = [
   'Video',
   'Editor',
   'Drone',
+  'Same Day',
   'Other',
 ];
 

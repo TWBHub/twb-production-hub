@@ -78,6 +78,7 @@ export type TeamMemberCategory =
   | 'Video'
   | 'Editor'
   | 'Drone'
+  | 'Same Day'
   | 'Other';
 
 export interface TeamMember {

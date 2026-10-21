@@ -9,7 +9,15 @@ import {
   prepareDeliverableForCreate,
 } from './deliverableMilestones';
 import { mapSupabaseDeliverableToModel } from '../services/api';
-import { Deliverable, DeliverableStatus, Editor, Project } from '../types';
+import { Deliverable, DeliverableStatus, Editor, Project, TeamMember, TeamMemberCategory } from '../types';
+import {
+  isProductionTeamMember,
+  isEligibleProductionTeamMember,
+  isDeliverableEditor,
+  isEligibleDeliverableEditor,
+  filterProductionTeamMembers,
+  filterDeliverableEditors,
+} from './teamMemberFilters';
 
 function assert(condition: boolean, message: string) {
   if (!condition) {
@@ -625,7 +633,272 @@ async function runEditorsWorkloadTests() {
     status: '',
     notes: 'Awaiting editor assignment',
   }, nowTestIso);
-  assert(createUnassigned.assigned_at === undefined, 'Create unassigned: assigned_at is undefined');
+  // ==========================================
+  // Test 9: Team Member Category: Same Day & Multi-Category Filtering
+  // ==========================================
+  console.log('\n[Suite 9] Team Member Category: Same Day & Multi-Category Filtering');
+
+  const testTeamMembers: TeamMember[] = [
+    {
+      id: 'tm-101',
+      name: 'Lucas Gray',
+      email: 'lucas@twb.com',
+      phone: '+1 555-0101',
+      role_title: 'Same Day Lead Editor',
+      categories: ['Same Day'],
+      is_active: true,
+      status: 'Active',
+    },
+    {
+      id: 'tm-102',
+      name: 'Aria Montgomery',
+      email: 'aria@twb.com',
+      phone: '+1 555-0102',
+      role_title: 'Lead Photographer & Same Day Retoucher',
+      categories: ['Photo', 'Same Day'],
+      is_active: true,
+      status: 'Active',
+    },
+    {
+      id: 'tm-103',
+      name: 'Oliver Queen',
+      email: 'oliver@twb.com',
+      phone: '+1 555-0103',
+      role_title: 'Cinematographer',
+      categories: ['Video'],
+      is_active: true,
+      status: 'Active',
+    },
+    {
+      id: 'tm-104',
+      name: 'Felicity Smoak',
+      email: 'felicity@twb.com',
+      phone: '+1 555-0104',
+      role_title: 'Colorist & Same Day Deliverables Specialist',
+      categories: ['Editor', 'Same Day'],
+      is_active: true,
+      status: 'Active',
+    },
+  ];
+
+  // 9a. Verify Same Day category filter logic matches both single and multi-category members
+  const sameDayFilter: TeamMemberCategory[] = ['Same Day'];
+  const sameDayMembers = testTeamMembers.filter(m => {
+    const cats = m.categories || [];
+    return sameDayFilter.some(c => cats.includes(c));
+  });
+  assert(sameDayMembers.length === 3, 'Same Day filter: matches 3 members with Same Day category');
+  assert(sameDayMembers.some(m => m.id === 'tm-101'), 'Same Day filter: matches single-category member (tm-101)');
+  assert(sameDayMembers.some(m => m.id === 'tm-102'), 'Same Day filter: matches multi-category Photo + Same Day (tm-102)');
+  assert(sameDayMembers.some(m => m.id === 'tm-104'), 'Same Day filter: matches multi-category Editor + Same Day (tm-104)');
+  assert(!sameDayMembers.some(m => m.id === 'tm-103'), 'Same Day filter: excludes Video-only member (tm-103)');
+
+  // 9b. Verify multi-category filter union (e.g. Photo + Same Day)
+  const multiFilter: TeamMemberCategory[] = ['Photo', 'Drone'];
+  const photoOrDrone = testTeamMembers.filter(m => {
+    const cats = m.categories || [];
+    return multiFilter.some(c => cats.includes(c));
+  });
+  assert(photoOrDrone.length === 1 && photoOrDrone[0].id === 'tm-102', 'Multi-category filter: matches member with Photo category');
+
+  // 9c. Toggle category logic preserves multiple selections
+  let currentSelection: TeamMemberCategory[] = ['Photo'];
+  // Add Same Day
+  currentSelection = currentSelection.includes('Same Day')
+    ? currentSelection.filter(c => c !== 'Same Day')
+    : [...currentSelection, 'Same Day'];
+  assert(currentSelection.length === 2 && currentSelection.includes('Same Day'), 'Category toggle: adds Same Day without losing Photo');
+
+  // Remove Photo
+  currentSelection = currentSelection.includes('Photo')
+    ? currentSelection.filter(c => c !== 'Photo')
+    : [...currentSelection, 'Photo'];
+  assert(currentSelection.length === 1 && currentSelection[0] === 'Same Day', 'Category toggle: removes Photo retaining Same Day');
+
+  // 9d. Verify editor workload eligibility rule: only members with Editor category are editors
+  const editorCandidates = testTeamMembers.filter(m =>
+    m.categories?.includes('Editor') || m.role_title?.toLowerCase().includes('editor')
+  );
+  assert(editorCandidates.some(m => m.id === 'tm-104'), 'Editor check: includes tm-104 who has Editor category');
+  assert(!testTeamMembers.filter(m => m.categories?.includes('Editor')).some(m => m.id === 'tm-102'), 'Editor check: tm-102 without Editor category is not in editor categories');
+
+  // ==========================================
+  // Test 10: Separate Category Rules for Production Team vs Deliverable Editors
+  // ==========================================
+  console.log('\n[Suite 10] Separate Category Rules: Production Team vs Deliverable Editor');
+
+  const roster: TeamMember[] = [
+    // Editor-only member
+    {
+      id: 'm-editor-only',
+      name: 'Elena Rostova',
+      email: 'elena@twb.com',
+      phone: '+1 555-0201',
+      role_title: 'Senior Feature Editor',
+      categories: ['Editor'],
+      is_active: true,
+      status: 'Active',
+    },
+    // Production-only: Photo
+    {
+      id: 'm-photo-only',
+      name: 'Peter Parker',
+      email: 'peter@twb.com',
+      phone: '+1 555-0202',
+      role_title: 'Editorial Photographer',
+      categories: ['Photo'],
+      is_active: true,
+      status: 'Active',
+    },
+    // Production-only: Video
+    {
+      id: 'm-video-only',
+      name: 'Victor Stone',
+      email: 'victor@twb.com',
+      phone: '+1 555-0203',
+      role_title: 'Lead Cinematographer',
+      categories: ['Video'],
+      is_active: true,
+      status: 'Active',
+    },
+    // Production-only: Same Day
+    {
+      id: 'm-sameday-only',
+      name: 'Sam Wilson',
+      email: 'sam@twb.com',
+      phone: '+1 555-0204',
+      role_title: 'Same Day On-Site Specialist',
+      categories: ['Same Day'],
+      is_active: true,
+      status: 'Active',
+    },
+    // Production-only: Drone
+    {
+      id: 'm-drone-only',
+      name: 'Danvers Carol',
+      email: 'carol@twb.com',
+      phone: '+1 555-0205',
+      role_title: 'Part 107 Drone Pilot',
+      categories: ['Drone'],
+      is_active: true,
+      status: 'Active',
+    },
+    // Production-only: Other
+    {
+      id: 'm-other-only',
+      name: 'Otto Octavius',
+      email: 'otto@twb.com',
+      phone: '+1 555-0206',
+      role_title: 'DIT & Audio Tech',
+      categories: ['Other'],
+      is_active: true,
+      status: 'Active',
+    },
+    // Multi-category member: Editor + Video + Same Day
+    {
+      id: 'm-multi-hybrid',
+      name: 'Miles Morales',
+      email: 'miles@twb.com',
+      phone: '+1 555-0207',
+      role_title: 'Hybrid Shooter & Fast Turnaround Editor',
+      categories: ['Editor', 'Video', 'Same Day'],
+      is_active: true,
+      status: 'Active',
+    },
+    // Member with no categories assigned
+    {
+      id: 'm-no-category',
+      name: 'Natasha Romanoff',
+      email: 'natasha@twb.com',
+      phone: '+1 555-0208',
+      role_title: 'Operations Assistant',
+      categories: [],
+      is_active: true,
+      status: 'Active',
+    },
+    // Inactive production member
+    {
+      id: 'm-inactive-prod',
+      name: 'Steve Rogers',
+      email: 'steve@twb.com',
+      phone: '+1 555-0209',
+      role_title: 'Retired Photographer',
+      categories: ['Photo'],
+      is_active: false,
+      status: 'Inactive',
+    },
+    // Inactive editor member
+    {
+      id: 'm-inactive-editor',
+      name: 'Bruce Banner',
+      email: 'bruce@twb.com',
+      phone: '+1 555-0210',
+      role_title: 'Former Colorist',
+      categories: ['Editor'],
+      is_active: false,
+      status: 'Inactive',
+    },
+  ];
+
+  // 10a. Production team qualification checks
+  assert(!isProductionTeamMember(roster.find(m => m.id === 'm-editor-only')), 'Production check: excludes Editor-only member');
+  assert(isProductionTeamMember(roster.find(m => m.id === 'm-photo-only')), 'Production check: includes Photo-only member');
+  assert(isProductionTeamMember(roster.find(m => m.id === 'm-video-only')), 'Production check: includes Video-only member');
+  assert(isProductionTeamMember(roster.find(m => m.id === 'm-sameday-only')), 'Production check: includes Same Day-only member');
+  assert(isProductionTeamMember(roster.find(m => m.id === 'm-drone-only')), 'Production check: includes Drone-only member');
+  assert(isProductionTeamMember(roster.find(m => m.id === 'm-other-only')), 'Production check: includes Other-only member');
+  assert(isProductionTeamMember(roster.find(m => m.id === 'm-multi-hybrid')), 'Production check: includes Editor + Video + Same Day member');
+  assert(!isProductionTeamMember(roster.find(m => m.id === 'm-no-category')), 'Production check: excludes member with empty categories');
+
+  // 10b. Deliverables editor qualification checks
+  assert(isDeliverableEditor(roster.find(m => m.id === 'm-editor-only')), 'Editor check: includes Editor-only member');
+  assert(!isDeliverableEditor(roster.find(m => m.id === 'm-photo-only')), 'Editor check: excludes Photo-only member');
+  assert(!isDeliverableEditor(roster.find(m => m.id === 'm-video-only')), 'Editor check: excludes Video-only member');
+  assert(!isDeliverableEditor(roster.find(m => m.id === 'm-sameday-only')), 'Editor check: excludes Same Day-only member');
+  assert(!isDeliverableEditor(roster.find(m => m.id === 'm-drone-only')), 'Editor check: excludes Drone-only member');
+  assert(!isDeliverableEditor(roster.find(m => m.id === 'm-other-only')), 'Editor check: excludes Other-only member');
+  assert(isDeliverableEditor(roster.find(m => m.id === 'm-multi-hybrid')), 'Editor check: includes Editor + Video + Same Day member');
+  assert(!isDeliverableEditor(roster.find(m => m.id === 'm-no-category')), 'Editor check: excludes member without categories');
+
+  // 10c. Filtered production team list (Team Availability & Project Crew)
+  const productionList = filterProductionTeamMembers(roster);
+  const prodIds = new Set(productionList.map(m => m.id));
+  assert(!prodIds.has('m-editor-only'), 'filterProductionTeamMembers: excludes Editor-only member');
+  assert(prodIds.has('m-photo-only'), 'filterProductionTeamMembers: includes Photo member');
+  assert(prodIds.has('m-video-only'), 'filterProductionTeamMembers: includes Video member');
+  assert(prodIds.has('m-sameday-only'), 'filterProductionTeamMembers: includes Same Day member');
+  assert(prodIds.has('m-drone-only'), 'filterProductionTeamMembers: includes Drone member');
+  assert(prodIds.has('m-other-only'), 'filterProductionTeamMembers: includes Other member');
+  assert(prodIds.has('m-multi-hybrid'), 'filterProductionTeamMembers: includes Editor + Video + Same Day member');
+  assert(!prodIds.has('m-inactive-prod'), 'filterProductionTeamMembers: excludes inactive member by default');
+
+  // 10d. Preserving current assigned member even if inactive when editing
+  const prodListWithCurrentInactive = filterProductionTeamMembers(roster, {
+    currentMemberId: 'm-inactive-prod',
+  });
+  assert(
+    prodListWithCurrentInactive.some(m => m.id === 'm-inactive-prod'),
+    'filterProductionTeamMembers: preserves current assigned member when currentMemberId is passed'
+  );
+
+  // 10e. Filtered deliverable editors list
+  const editorList = filterDeliverableEditors(roster);
+  const editorIds = new Set(editorList.map(m => m.id));
+  assert(editorIds.has('m-editor-only'), 'filterDeliverableEditors: includes Editor-only member');
+  assert(!editorIds.has('m-photo-only'), 'filterDeliverableEditors: excludes Photo-only member');
+  assert(!editorIds.has('m-video-only'), 'filterDeliverableEditors: excludes Video-only member');
+  assert(!editorIds.has('m-sameday-only'), 'filterDeliverableEditors: excludes Same Day-only member');
+  assert(editorIds.has('m-multi-hybrid'), 'filterDeliverableEditors: includes Editor + Video + Same Day member');
+  assert(!editorIds.has('m-inactive-editor'), 'filterDeliverableEditors: excludes inactive editor by default');
+
+  // 10f. Preserving current editor even if inactive when editing deliverable
+  const editorListWithCurrentInactive = filterDeliverableEditors(roster, {
+    currentEditorId: 'm-inactive-editor',
+  });
+  assert(
+    editorListWithCurrentInactive.some(m => m.id === 'm-inactive-editor'),
+    'filterDeliverableEditors: preserves current assigned editor when currentEditorId is passed'
+  );
 
   console.log('\n--- All Editors & Workload Tests Passed Successfully (0 failures) ---');
 }

@@ -321,8 +321,8 @@ export const EnquiriesView: React.FC = () => {
                     onChange={e => setCompanyId(e.target.value as any)}
                     className="w-full p-2 border border-slate-300 rounded-lg"
                   >
-                    <option value="twb">TWB (The Wedding Book)</option>
-                    <option value="golden_june">Golden June Studios</option>
+                    <option value="twb">The Wedding Booth</option>
+                    <option value="golden_june">Golden June Films</option>
                   </select>
                 </div>
                 <div>

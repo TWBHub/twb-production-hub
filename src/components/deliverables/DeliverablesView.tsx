@@ -18,6 +18,7 @@ import {
   DeliverableType,
   Project,
 } from '../../types';
+import { filterDeliverableEditors } from '../../utils/teamMemberFilters';
 
 const DELIVERABLE_TYPES: DeliverableType[] = [
   'Highlight Film (4-5 mins)',
@@ -407,39 +408,21 @@ export const DeliverablesView: React.FC = () => {
   // Must ONLY show Team Members whose categories include "Editor"
   // Do NOT display "(editor)" in dropdown label
   const availableEditors = useMemo(() => {
-    if (!Array.isArray(teamMembers)) return [];
-    return teamMembers
-      .filter(
-        member =>
-          member &&
-          Array.isArray(member.categories) &&
-          member.categories.includes('Editor') &&
-          member.status !== 'Inactive'
-      )
-      .map(member => ({
-        id: member.id,
-        name: member.name,
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    return filterDeliverableEditors(teamMembers).map(member => ({
+      id: member.id,
+      name: member.name,
+    }));
   }, [teamMembers]);
 
   // For Edit modal: include current assigned editor even if legacy/inactive so assignment isn't lost
   const editAvailableEditors = useMemo(() => {
-    const list = Array.isArray(availableEditors) ? [...availableEditors] : [];
-    if (editingDeliverable?.assigned_editor_id) {
-      const alreadyIncluded = list.some(e => e.id === editingDeliverable.assigned_editor_id);
-      if (!alreadyIncluded && Array.isArray(teamMembers)) {
-        const currentMember = teamMembers.find(m => m.id === editingDeliverable.assigned_editor_id);
-        if (currentMember) {
-          list.push({
-            id: currentMember.id,
-            name: currentMember.name,
-          });
-        }
-      }
-    }
-    return list;
-  }, [availableEditors, editingDeliverable, teamMembers]);
+    return filterDeliverableEditors(teamMembers, {
+      currentEditorId: editingDeliverable?.assigned_editor_id,
+    }).map(member => ({
+      id: member.id,
+      name: member.name,
+    }));
+  }, [teamMembers, editingDeliverable?.assigned_editor_id]);
 
   // Lookup helper for editor display name
   const getEditorName = (editorId?: string) => {

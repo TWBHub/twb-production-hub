@@ -27,6 +27,7 @@ import {
   Project,
 } from '../../types';
 import { formatDisplayDate, formatTurnaroundDays } from '../../utils/dateUtils';
+import { isDeliverableEditor } from '../../utils/teamMemberFilters';
 
 const getStatusBadge = (status?: DeliverableStatus | '') => {
   switch (status) {
@@ -125,11 +126,11 @@ export const EditorsWorkloadView: React.FC = () => {
     // 1. From teamMembers with category 'Editor' or role/title containing 'Editor'
     if (Array.isArray(teamMembers)) {
       teamMembers.forEach(tm => {
-        const isEditorCategory =
-          Array.isArray(tm.categories) && tm.categories.includes('Editor');
+        const isEditorCategory = isDeliverableEditor(tm);
         const isEditorTitle =
-          (tm.role_title && tm.role_title.toLowerCase().includes('editor')) ||
-          tm.role === 'Editor';
+          (!tm.categories || tm.categories.length === 0) &&
+          ((tm.role_title && tm.role_title.toLowerCase().includes('editor')) ||
+            tm.role === 'Editor');
 
         if (isEditorCategory || isEditorTitle) {
           const matchingEd = editors.find(e => e.id === tm.id || e.email === tm.email);

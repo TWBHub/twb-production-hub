@@ -260,7 +260,7 @@ export const LoginView: React.FC = () => {
                       >
                         <option value="both">Both Brands</option>
                         <option value="twb">The Wedding Booth</option>
-                        <option value="golden_june">Golden June</option>
+                        <option value="golden_june">Golden June Films</option>
                       </select>
                     </div>
                   </div>

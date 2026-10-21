@@ -55,6 +55,10 @@ import { generateOrderFormPDF, generateReceiptPDF } from '../../utils/pdfGenerat
 import { ProjectTermsEditor } from './ProjectTermsEditor';
 import { sortProjectEvents } from '../../utils/eventUtils';
 import { formatDisplayDate } from '../../utils/dateUtils';
+import {
+  filterProductionTeamMembers,
+  filterDeliverableEditors,
+} from '../../utils/teamMemberFilters';
 
 interface ProjectWorkspaceProps {
   projectId: string;
@@ -111,7 +115,9 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
   const project = matchedProject || fetchedProject;
   const client = clients.find(c => c.id === project?.client_id);
-  const company = companies.find(c => c.id === project?.company_id) || companies[0];
+  const company = companies.find(
+  c => c.id === project?.company_id || c.code === project?.company_id
+);
 
   useEffect(() => {
     if (!projectId) return;
@@ -227,20 +233,10 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const canManageDeliverables = isAdmin || isManager || !currentUser || currentUser.role === 'Admin' || currentUser.role === 'Manager';
 
   const availableEditors = useMemo(() => {
-    if (!Array.isArray(teamMembers)) return [];
-    return teamMembers
-      .filter(
-        member =>
-          member &&
-          Array.isArray(member.categories) &&
-          member.categories.includes('Editor') &&
-          member.status !== 'Inactive'
-      )
-      .map(member => ({
-        id: member.id,
-        name: member.name,
-      }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    return filterDeliverableEditors(teamMembers).map(member => ({
+      id: member.id,
+      name: member.name,
+    }));
   }, [teamMembers]);
 
   // New Deliverable modal state
@@ -460,6 +456,14 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
       };
     });
   }, [projectCrew, teamMembers]);
+
+  // Production crew member options for Project Team assignments
+  const availableCrewMembers = useMemo(() => {
+    return filterProductionTeamMembers(teamMembers, {
+      currentMemberId: selectedMemberId,
+    });
+  }, [teamMembers, selectedMemberId]);
+
   const projectDeliverablesList = deliverables.filter(d => d.project_id === project.id);
   const projectDataList = projectData.filter(d => d.project_id === project.id);
   const projectPayments = payments.filter(p => p.project_id === project.id);
@@ -1276,13 +1280,11 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                           className="w-full p-2 border border-slate-300 rounded-lg text-xs bg-white"
                         >
                           <option value="">-- Choose crew member --</option>
-                          {[...teamMembers]
-                            .sort((a, b) => a.name.localeCompare(b.name))
-                            .map(m => (
-                              <option key={m.id} value={m.id}>
-                                {m.name}
-                              </option>
-                            ))}
+                          {availableCrewMembers.map(m => (
+                            <option key={m.id} value={m.id}>
+                              {m.name}
+                            </option>
+                          ))}
                         </select>
                       </div>
 
