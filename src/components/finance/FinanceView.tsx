@@ -62,28 +62,51 @@ export const FinanceView: React.FC = () => {
   } = useApp();
 
   // Helper to resolve brand from linked project or fallback
-  const resolveRecordBrand = (projectId?: string, recordCompanyId?: string): 'twb' | 'golden_june' => {
-    if (projectId) {
-      const matched = projects.find(p => p.id === projectId);
-      if (matched?.company_id) {
-        return matched.company_id === 'golden_june' ? 'golden_june' : 'twb';
-      }
-    }
-    return recordCompanyId === 'golden_june' ? 'golden_june' : 'twb';
-  };
+const resolveRecordBrand = (
+  projectId?: string,
+  recordCompanyId?: string
+): 'twb' | 'golden_june' | 'shared' => {
+  if (recordCompanyId === 'shared') {
+    return 'shared';
+  }
 
-  const renderBrandBadge = (brand: 'twb' | 'golden_june') => {
-    const isTWB = brand === 'twb';
-    return (
-      <span
-        className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${
-          isTWB ? 'bg-blue-100 text-blue-800' : 'bg-[#F1D099]/25 text-[#5e430c] border border-[#F1D099]/40'
-        }`}
-      >
-        {isTWB ? 'TWB' : 'Golden June'}
-      </span>
-    );
-  };
+  if (projectId) {
+    const matched = projects.find(p => p.id === projectId);
+    if (matched?.company_id) {
+      return matched.company_id === 'golden_june'
+        ? 'golden_june'
+        : 'twb';
+    }
+  }
+
+  return recordCompanyId === 'golden_june'
+    ? 'golden_june'
+    : 'twb';
+};
+
+  const renderBrandBadge = (brand: 'twb' | 'golden_june' | 'shared') => {
+  const label =
+    brand === 'shared'
+      ? 'Shared'
+      : brand === 'golden_june'
+        ? 'Golden June'
+        : 'TWB';
+
+  const badgeStyle =
+    brand === 'shared'
+      ? 'bg-purple-100 text-purple-800 border border-purple-200'
+      : brand === 'golden_june'
+        ? 'bg-[#F1D099]/25 text-[#5e430c] border border-[#F1D099]/40'
+        : 'bg-blue-100 text-blue-800';
+
+  return (
+    <span
+      className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${badgeStyle}`}
+    >
+      {label}
+    </span>
+  );
+};
 
   const [activeTab, setActiveTab] = useState<'overview' | 'payments' | 'expenses'>('overview');
   const [searchQuery, setSearchQuery] = useState('');
@@ -94,6 +117,14 @@ export const FinanceView: React.FC = () => {
 
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [showExpenseModal, setShowExpenseModal] = useState(false);
+  const [showBusinessExpenseModal, setShowBusinessExpenseModal] = useState(false);
+const [businessExpenseBrand, setBusinessExpenseBrand] = useState<'twb' | 'golden_june' | 'shared'>('twb');
+const [businessExpenseAmount, setBusinessExpenseAmount] = useState(0);
+const [businessExpenseCategory, setBusinessExpenseCategory] = useState('Office & Operations');
+const [businessExpenseVendor, setBusinessExpenseVendor] = useState('');
+const [businessExpenseDescription, setBusinessExpenseDescription] = useState('');
+const [businessExpenseDate, setBusinessExpenseDate] = useState(new Date().toISOString().slice(0, 10));
+const [businessExpensePaymentMethod, setBusinessExpensePaymentMethod] = useState('UPI');
   const [editingPayment, setEditingPayment] = useState<Payment | null>(null);
   const [deletingPaymentId, setDeletingPaymentId] = useState<string | null>(null);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
@@ -101,19 +132,21 @@ export const FinanceView: React.FC = () => {
 
   // New Payment Form
   const [payProjectId, setPayProjectId] = useState(filteredProjects[0]?.id || '');
+  const [payProjectSearch, setPayProjectSearch] = useState('');
   const [payAmount, setPayAmount] = useState(2500);
   const [payMode, setPayMode] = useState<PaymentMode>('Bank Transfer');
   const [payDesc, setPayDesc] = useState('Milestone Retainer Payment');
   const [payDate, setPayDate] = useState(new Date().toISOString().split('T')[0]);
   const [isSavingPayment, setIsSavingPayment] = useState(false);
 
-  // New Expense Form
-  const [expProjectId, setExpProjectId] = useState(filteredProjects[0]?.id || '');
-  const [expAmount, setExpAmount] = useState(450);
-  const [expCat, setExpCat] = useState<ExpenseCategory>('Crew Travel');
-  const [expDesc, setExpDesc] = useState('Airfare and local transport');
-  const [expPaidTo, setExpPaidTo] = useState('Delta Airlines');
-  const [expDate, setExpDate] = useState(new Date().toISOString().split('T')[0]);
+ // New Expense Form
+const [expProjectId, setExpProjectId] = useState(filteredProjects[0]?.id || '');
+const [expProjectSearch, setExpProjectSearch] = useState('');
+const [expAmount, setExpAmount] = useState(450);
+const [expCat, setExpCat] = useState<ExpenseCategory>('Crew Travel');
+const [expDesc, setExpDesc] = useState('Airfare and local transport');
+const [expPaidTo, setExpPaidTo] = useState('Delta Airlines');
+const [expDate, setExpDate] = useState(new Date().toISOString().split('T')[0]);
 
   if (!canManageFinance) {
     return (
@@ -201,20 +234,22 @@ export const FinanceView: React.FC = () => {
 
   const projectProfits = sortProjectProfitItems(rawProjectProfits, sortOrder);
 
-  // Financial calculations for Metric Cards
-  const {
-    totalPipeline,
-    totalReceived,
-    totalExpenses,
-    pendingReceivables,
-    netMargin,
-    marginPercentage,
-  } = calculateFinanceViewMetrics(
-    filteredProjects,
-    filteredPayments,
-    displayedPayments,
-    displayedExpenses
-  );
+ // Financial calculations for Metric Cards
+const {
+  totalPipeline,
+  totalReceived,
+  totalExpenses,
+  businessOverheads,
+  productionExpenses,
+  pendingReceivables,
+  netMargin,
+  marginPercentage,
+} = calculateFinanceViewMetrics(
+  filteredProjects,
+  filteredPayments,
+  displayedPayments,
+  displayedExpenses
+);
 
   const [receiptDownloadError, setReceiptDownloadError] = useState<string | null>(null);
   const [receiptDownloadSuccessId, setReceiptDownloadSuccessId] = useState<string | null>(null);
@@ -356,6 +391,51 @@ const confirmDeletePayment = async () => {
     setShowExpenseModal(false);
   };
 
+  const handleAddBusinessExpense = async (e: React.FormEvent) => {
+  e.preventDefault();
+
+  if (businessExpenseAmount <= 0) {
+    alert('Please enter an expense amount greater than zero.');
+    return;
+  }
+
+  if (!businessExpenseVendor.trim() || !businessExpenseDescription.trim()) {
+    alert('Please enter both the vendor and description.');
+    return;
+  }
+
+  try {
+    await createExpense({
+      project_id: '',
+      company_id: businessExpenseBrand,
+      expense_type: 'business',
+      payment_method: businessExpensePaymentMethod,
+      receipt_url: '',
+      amount: businessExpenseAmount,
+      category: businessExpenseCategory,
+      description: businessExpenseDescription.trim(),
+      paid_to: businessExpenseVendor.trim(),
+      expense_date: businessExpenseDate,
+    });
+
+    setBusinessExpenseAmount(0);
+    setBusinessExpenseCategory('Office & Operations');
+    setBusinessExpenseVendor('');
+    setBusinessExpenseDescription('');
+    setBusinessExpenseDate(new Date().toISOString().slice(0, 10));
+    setBusinessExpensePaymentMethod('UPI');
+    setBusinessExpenseBrand('twb');
+    setShowBusinessExpenseModal(false);
+  } catch (error) {
+    console.error('Failed to save business expense:', error);
+    alert(
+      `Could not save business expense: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+};
+
     const handleEditExpense = (expense: Expense) => {
     setEditingExpense(expense);
     setExpProjectId(expense.project_id);
@@ -411,6 +491,13 @@ return (
             <Plus className="w-4 h-4" />
             <span>Record Expense</span>
           </button>
+                    <button
+            onClick={() => setShowBusinessExpenseModal(true)}
+            className="px-3.5 py-2 text-xs font-semibold bg-[#A42C2C] hover:bg-[#7A2721] text-white rounded-lg shadow-xs transition-colors flex items-center gap-1.5"
+          >
+            <Plus className="w-4 h-4" />
+            <span>Business Expense</span>
+          </button>
         </div>
       </div>
 
@@ -431,17 +518,16 @@ return (
         </div>
       )}
 
-      {/* 5 Financial Metric Cards */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
+
+      {/* 6 Financial Metric Cards */}
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 sm:gap-4">
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
           <div className="text-xs font-medium text-slate-500">Gross Contract Pipeline</div>
           <div className="text-xl sm:text-2xl font-bold text-slate-900 mt-2">
             ₹{totalPipeline.toLocaleString()}
           </div>
           <div className="text-[11px] text-slate-400 mt-1">
-            {resolvedDateRange.isActive
-              ? `${filteredProjects.length} projects committed (lifetime)`
-              : `${filteredProjects.length} projects committed`}
+            {filteredProjects.length} projects committed
           </div>
         </div>
 
@@ -461,13 +547,13 @@ return (
 
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs">
           <div className="text-xs font-medium text-slate-500">
-            {resolvedDateRange.isActive ? 'Awaiting Collection (Lifetime)' : 'Awaiting Collection'}
+            Awaiting Collection
           </div>
           <div className="text-xl sm:text-2xl font-bold text-[#8c672b] mt-2">
             ₹{pendingReceivables.toLocaleString()}
           </div>
           <div className="text-[11px] text-[#8c672b] mt-1">
-            True lifetime balance remaining
+            Lifetime balance remaining
           </div>
         </div>
 
@@ -476,16 +562,26 @@ return (
             {resolvedDateRange.isActive ? 'Period Production Expenses' : 'Direct Cost of Production'}
           </div>
           <div className="text-xl sm:text-2xl font-bold text-rose-600 mt-2">
-            ₹{totalExpenses.toLocaleString()}
+            ₹{productionExpenses.toLocaleString()}
           </div>
           <div className="text-[11px] text-slate-400 mt-1">
-            {resolvedDateRange.isActive
-              ? `Logged in ${resolvedDateRange.displayLabel}`
-              : 'Crew, travel, gear, edit fees'}
+            Crew, travel, gear, and editing
           </div>
         </div>
 
-        <div className="col-span-2 lg:col-span-1 bg-slate-900 text-white p-4 rounded-xl shadow-xs">
+        <div className="bg-white p-4 rounded-xl border border-amber-200 shadow-xs">
+          <div className="text-xs font-medium text-amber-800">
+            {resolvedDateRange.isActive ? 'Period Business Overheads' : 'Business Overheads'}
+          </div>
+          <div className="text-xl sm:text-2xl font-bold text-amber-700 mt-2">
+            ₹{businessOverheads.toLocaleString()}
+          </div>
+          <div className="text-[11px] text-slate-500 mt-1">
+            Office, subscriptions, marketing, and assets
+          </div>
+        </div>
+
+        <div className="bg-slate-900 text-white p-4 rounded-xl shadow-xs">
           <div className="text-xs font-medium text-slate-300 flex items-center justify-between">
             <span>{resolvedDateRange.isActive ? 'Period Net Margin' : 'Net Collected Margin'}</span>
             <Sparkles className="w-4 h-4 text-[#F1D099]" />
@@ -494,12 +590,11 @@ return (
             ₹{netMargin.toLocaleString()}
           </div>
           <div className="text-[11px] text-slate-300 mt-1">
-            {resolvedDateRange.isActive
-              ? `${marginPercentage}% period margin`
-              : `${marginPercentage}% operational margin`}
+            {marginPercentage}% after all logged expenses
           </div>
         </div>
       </div>
+
 
       {/* Shared Finance Controls: Search, Financial Year / Date Range, and Sorting */}
       <div className="bg-white p-3.5 sm:p-4 rounded-xl border border-slate-200 shadow-xs">
@@ -668,7 +763,8 @@ return (
             <table className="w-full text-left text-xs">
               <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
                 <tr>
-                  <th className="p-3.5">Project</th>
+                  <th className="p-3.5">Type</th>
+                  <th className="p-3.5">Project / Scope</th>
                   <th className="p-3.5">Brand</th>
                   <th className="p-3.5 text-right">Contract Fee</th>
                   <th className="p-3.5 text-right">
@@ -860,18 +956,21 @@ return (
 
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
-                <tr>
-                  <th className="p-3.5">Date</th>
-                  <th className="p-3.5">Project</th>
-                  <th className="p-3.5">Brand</th>
-                  <th className="p-3.5">Category</th>
-                  <th className="p-3.5">Vendor / Payee</th>
-                  <th className="p-3.5">Expense Details</th>
-                  <th className="p-3.5 text-right">Amount</th>
-                  <th className="p-3.5 text-right">Actions</th>
-                </tr>
-              </thead>
+             
+<thead className="bg-slate-50 text-slate-600 font-semibold border-b border-slate-200">
+  <tr>
+    <th className="p-3.5">Date</th>
+    <th className="p-3.5">Type</th>
+    <th className="p-3.5">Project / Scope</th>
+    <th className="p-3.5">Brand</th>
+    <th className="p-3.5">Category</th>
+    <th className="p-3.5">Vendor / Payee</th>
+    <th className="p-3.5">Expense Details</th>
+    <th className="p-3.5 text-right">Amount</th>
+    <th className="p-3.5 text-right">Actions</th>
+  </tr>
+</thead>
+
               <tbody className="divide-y divide-slate-100">
                 {displayedExpenses.map(e => {
                   const project = projects.find(pr => pr.id === e.project_id) || filteredProjects.find(pr => pr.id === e.project_id);
@@ -879,9 +978,22 @@ return (
                   return (
                     <tr key={e.id} className="hover:bg-slate-50/70 transition-colors">
                       <td className="p-3.5 text-slate-600">{formatDisplayDate(e.expense_date)}</td>
-                      <td className="p-3.5 font-semibold text-slate-900">
-                        {project?.name || 'Studio General'}
-                      </td>
+                      <td className="p-3.5">
+  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+    e.expense_type === 'business'
+      ? 'bg-amber-100 text-amber-800'
+      : 'bg-blue-100 text-blue-800'
+  }`}>
+    {e.expense_type === 'business' ? 'Business' : 'Production'}
+  </span>
+</td>
+<td className="p-3.5 font-semibold text-slate-900">
+  {e.expense_type === 'business'
+    ? e.company_id === 'shared'
+      ? 'Shared Business'
+      : 'Business Overhead'
+    : project?.name || 'Studio General'}
+</td>
                       <td className="p-3.5">
                         {renderBrandBadge(brand)}
                       </td>
@@ -916,7 +1028,7 @@ return (
                 })}
                 {displayedExpenses.length === 0 && (
                   <tr>
-                    <td colSpan={8} className="p-8 text-center text-slate-500">
+                    <td colSpan={9} className="p-8 text-center text-slate-500">
                       No expenses found matching the current search query or date filter.
                     </td>
                   </tr>
@@ -936,23 +1048,88 @@ return (
 </h2>
             <form onSubmit={handleAddPayment} className="space-y-3 text-xs">
               <div>
-                <label className="block font-semibold text-slate-700 mb-1">Target Project</label>
-                <select
-                  value={payProjectId}
-                  onChange={e => setPayProjectId(e.target.value)}
-                  className="w-full p-2 border border-slate-300 rounded-lg"
-                >
-                  {filteredProjects.map(p => {
-                    const pPayments = (payments || []).filter(pm => pm.project_id === p.id);
-                    const pReceived = pPayments.reduce((s, pm) => s + pm.amount, 0);
-                    const pBal = Math.max(0, p.total_amount - pReceived);
-                    return (
-                      <option key={p.id} value={p.id}>
-                        {p.name} (Balance: ₹{pBal.toLocaleString()})
-                      </option>
-                    );
-                  })}
-                </select>
+                <label className="block font-semibold text-slate-700 mb-1">
+  Target Project
+</label>
+
+<input
+  type="text"
+  value={payProjectSearch}
+  onChange={e => {
+    setPayProjectSearch(e.target.value);
+    setPayProjectId('');
+  }}
+  placeholder="Search project or client name..."
+  className="w-full p-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+/>
+
+{payProjectSearch.trim() && (
+  <div className="mt-1 max-h-44 overflow-y-auto border border-slate-200 rounded-lg bg-white shadow-sm">
+    {filteredProjects
+      .filter(p => {
+        const client = clients.find(c => c.id === p.client_id);
+        const query = payProjectSearch.trim().toLowerCase();
+
+        return (
+          p.name.toLowerCase().includes(query) ||
+          (client?.name || '').toLowerCase().includes(query)
+        );
+      })
+      .slice(0, 20)
+      .map(p => {
+        const client = clients.find(c => c.id === p.client_id);
+        const pPayments = (payments || []).filter(
+          pm => pm.project_id === p.id
+        );
+        const pReceived = pPayments.reduce((s, pm) => s + pm.amount, 0);
+        const pBal = Math.max(0, p.total_amount - pReceived);
+
+        return (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() => {
+              setPayProjectId(p.id);
+              setPayProjectSearch(p.name);
+            }}
+            className="w-full text-left px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-b-0"
+          >
+            <span className="block font-medium text-slate-800">
+              {p.name}
+            </span>
+            {client?.name && (
+              <span className="block text-[11px] text-slate-500 mt-0.5">
+                Client: {client.name}
+              </span>
+            )}
+            <span className="block text-[11px] text-emerald-700 mt-0.5">
+              Balance: ₹{pBal.toLocaleString()}
+            </span>
+          </button>
+        );
+      })}
+
+    {filteredProjects.filter(p => {
+      const client = clients.find(c => c.id === p.client_id);
+      const query = payProjectSearch.trim().toLowerCase();
+
+      return (
+        p.name.toLowerCase().includes(query) ||
+        (client?.name || '').toLowerCase().includes(query)
+      );
+    }).length === 0 && (
+      <p className="px-3 py-3 text-slate-500">
+        No projects found.
+      </p>
+    )}
+  </div>
+)}
+
+{payProjectId && (
+  <p className="mt-1 text-[11px] text-emerald-700">
+    ✓ Selected: {filteredProjects.find(p => p.id === payProjectId)?.name || projects.find(p => p.id === payProjectId)?.name}
+  </p>
+)}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -1038,18 +1215,80 @@ return (
             <h2 className="text-base font-bold text-slate-900 mb-4">{editingExpense ? 'Edit Production Expense' : 'Record Production Expense'}</h2>
             <form onSubmit={handleAddExpense} className="space-y-3 text-xs">
               <div>
-                <label className="block font-semibold text-slate-700 mb-1">Target Project</label>
-                <select
-                  value={expProjectId}
-                  onChange={e => setExpProjectId(e.target.value)}
-                  className="w-full p-2 border border-slate-300 rounded-lg"
-                >
-                  {filteredProjects.map(p => (
-                    <option key={p.id} value={p.id}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
+               <label className="block font-semibold text-slate-700 mb-1">
+  Target Project
+</label>
+
+<input
+  type="text"
+  value={expProjectSearch}
+  onChange={e => {
+    setExpProjectSearch(e.target.value);
+    setExpProjectId('');
+  }}
+  placeholder="Search project or client name..."
+  className="w-full p-2 border border-slate-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500"
+/>
+
+{expProjectSearch.trim() && (
+  <div className="mt-1 max-h-44 overflow-y-auto border border-slate-200 rounded-lg bg-white shadow-sm">
+    {filteredProjects
+      .filter(p => {
+        const client = clients.find(c => c.id === p.client_id);
+        const query = expProjectSearch.trim().toLowerCase();
+
+        return (
+          p.name.toLowerCase().includes(query) ||
+          (client?.name || '').toLowerCase().includes(query)
+        );
+      })
+      .slice(0, 20)
+      .map(p => {
+        const client = clients.find(c => c.id === p.client_id);
+
+        return (
+          <button
+            key={p.id}
+            type="button"
+            onClick={() => {
+              setExpProjectId(p.id);
+              setExpProjectSearch(p.name);
+            }}
+            className="w-full text-left px-3 py-2 hover:bg-slate-50 border-b border-slate-100 last:border-b-0"
+          >
+            <span className="block font-medium text-slate-800">
+              {p.name}
+            </span>
+            {client?.name && (
+              <span className="block text-[11px] text-slate-500 mt-0.5">
+                Client: {client.name}
+              </span>
+            )}
+          </button>
+        );
+      })}
+
+    {filteredProjects.filter(p => {
+      const client = clients.find(c => c.id === p.client_id);
+      const query = expProjectSearch.trim().toLowerCase();
+
+      return (
+        p.name.toLowerCase().includes(query) ||
+        (client?.name || '').toLowerCase().includes(query)
+      );
+    }).length === 0 && (
+      <p className="px-3 py-3 text-slate-500">
+        No projects found.
+      </p>
+    )}
+  </div>
+)}
+
+{expProjectId && (
+  <p className="mt-1 text-[11px] text-emerald-700">
+    ✓ Selected: {filteredProjects.find(p => p.id === expProjectId)?.name || projects.find(p => p.id === expProjectId)?.name}
+  </p>
+)}
               </div>
 
               <div className="grid grid-cols-2 gap-3">
@@ -1135,6 +1374,155 @@ return (
           </div>
         </div>
       )}
+
+
+{/* Record Business Expense Modal */}
+{showBusinessExpenseModal && (
+  <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+    <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6 border border-slate-200 my-8">
+      <h2 className="text-base font-bold text-slate-900 mb-4">
+        Record Business Expense
+      </h2>
+
+      <form onSubmit={handleAddBusinessExpense} className="space-y-3 text-xs">
+        <div>
+          <label className="block font-semibold text-slate-700 mb-1">
+            Business / Brand
+          </label>
+          <select
+            value={businessExpenseBrand}
+            onChange={e =>
+              setBusinessExpenseBrand(
+                e.target.value as 'twb' | 'golden_june' | 'shared'
+              )
+            }
+            className="w-full p-2 border border-slate-300 rounded-lg"
+          >
+            <option value="twb">The Wedding Booth (TWB)</option>
+            <option value="golden_june">Golden June Films</option>
+            <option value="shared">Shared Business Expense</option>
+          </select>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block font-semibold text-slate-700 mb-1">
+              Amount (₹)
+            </label>
+            <input
+              type="number"
+              min="1"
+              required
+              value={businessExpenseAmount || ''}
+              onChange={e => setBusinessExpenseAmount(Number(e.target.value))}
+              className="w-full p-2 border border-slate-300 rounded-lg"
+            />
+          </div>
+
+          <div>
+            <label className="block font-semibold text-slate-700 mb-1">
+              Category
+            </label>
+            <select
+              value={businessExpenseCategory}
+              onChange={e => setBusinessExpenseCategory(e.target.value)}
+              className="w-full p-2 border border-slate-300 rounded-lg"
+            >
+              <option value="Office & Operations">Office & Operations</option>
+              <option value="Rent">Rent</option>
+              <option value="Internet & Phone">Internet & Phone</option>
+              <option value="Marketing">Marketing</option>
+              <option value="Software & Subscriptions">Software & Subscriptions</option>
+              <option value="Equipment / Asset">Equipment / Asset</option>
+              <option value="Travel">Travel</option>
+              <option value="Professional Services">Professional Services</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label className="block font-semibold text-slate-700 mb-1">
+            Vendor / Payee
+          </label>
+          <input
+            type="text"
+            required
+            value={businessExpenseVendor}
+            onChange={e => setBusinessExpenseVendor(e.target.value)}
+            placeholder="Who was paid?"
+            className="w-full p-2 border border-slate-300 rounded-lg"
+          />
+        </div>
+
+        <div>
+          <label className="block font-semibold text-slate-700 mb-1">
+            Description
+          </label>
+          <input
+            type="text"
+            required
+            value={businessExpenseDescription}
+            onChange={e => setBusinessExpenseDescription(e.target.value)}
+            placeholder="What was this expense for?"
+            className="w-full p-2 border border-slate-300 rounded-lg"
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-3">
+          <div>
+            <label className="block font-semibold text-slate-700 mb-1">
+              Date
+            </label>
+            <input
+              type="date"
+              required
+              value={businessExpenseDate}
+              onChange={e => setBusinessExpenseDate(e.target.value)}
+              className="w-full p-2 border border-slate-300 rounded-lg"
+            />
+          </div>
+
+          <div>
+            <label className="block font-semibold text-slate-700 mb-1">
+              Payment Method
+            </label>
+            <select
+              value={businessExpensePaymentMethod}
+              onChange={e => setBusinessExpensePaymentMethod(e.target.value)}
+              className="w-full p-2 border border-slate-300 rounded-lg"
+            >
+              <option value="UPI">UPI</option>
+              <option value="Bank Transfer">Bank Transfer</option>
+              <option value="Cash">Cash</option>
+              <option value="Credit Card">Credit Card</option>
+              <option value="Debit Card">Debit Card</option>
+              <option value="Other">Other</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2 pt-3 border-t">
+          <button
+            type="button"
+            onClick={() => setShowBusinessExpenseModal(false)}
+            className="px-4 py-2 text-xs text-slate-600 hover:bg-slate-100 rounded-lg font-medium"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            className="px-5 py-2 text-xs font-semibold bg-[#A42C2C] hover:bg-[#7A2721] text-white rounded-lg shadow-xs transition-colors"
+          >
+            Save Business Expense
+          </button>
+        </div>
+      </form>
+    </div>
+  </div>
+)}
+
+
       {deletingExpenseId && (
   <div className="fixed inset-0 z-[60] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
     <div className="bg-white rounded-2xl shadow-xl max-w-sm w-full p-6 border border-slate-200">

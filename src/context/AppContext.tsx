@@ -559,7 +559,15 @@ const matchBrand = (companyId: string) => {
   const filteredProjectData = projectData.filter(d => matchBrand(d.company_id));
   const filteredCalendarEvents = calendarEvents.filter(e => matchBrand(e.company_id));
   const filteredPayments = payments.filter(p => matchBrand(resolveItemCompanyId(p.project_id, p.company_id)));
-  const filteredExpenses = expenses.filter(e => matchBrand(resolveItemCompanyId(e.project_id, e.company_id)));
+  const filteredExpenses = expenses.filter(e => {
+  const companyId = resolveItemCompanyId(e.project_id, e.company_id);
+
+  if (companyId === 'shared') {
+    return true;
+  }
+
+  return matchBrand(companyId);
+});
 
   const unreadNotificationCount = notifications.filter(n => !n.read).length;
 

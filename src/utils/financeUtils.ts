@@ -440,6 +440,8 @@ export interface FinanceViewMetrics {
   totalPipeline: number;
   totalReceived: number;
   totalExpenses: number;
+  businessOverheads: number;
+  productionExpenses: number;
   pendingReceivables: number;
   netMargin: number;
   marginPercentage: number;
@@ -457,24 +459,56 @@ export interface FinanceViewMetrics {
  * - netMargin: Selected-period/filtered payments received minus selected-period/filtered expenses.
  * - marginPercentage: Operational margin percentage based on totalReceived.
  */
+
 export function calculateFinanceViewMetrics(
   brandProjects: Project[],
   allBrandPayments: Payment[],
   displayedPayments: Payment[],
   displayedExpenses: Expense[]
 ): FinanceViewMetrics {
-  const totalPipeline = brandProjects.reduce((sum, p) => sum + p.total_amount, 0);
-  const totalReceived = displayedPayments.reduce((sum, p) => sum + p.amount, 0);
-  const totalExpenses = displayedExpenses.reduce((sum, e) => sum + e.amount, 0);
-  const allTimePaymentsReceived = allBrandPayments.reduce((sum, p) => sum + p.amount, 0);
-  const pendingReceivables = Math.max(0, totalPipeline - allTimePaymentsReceived);
-  const netMargin = totalReceived - totalExpenses;
-  const marginPercentage = totalReceived > 0 ? Math.round((netMargin / totalReceived) * 100) : 0;
+  const totalPipeline = brandProjects.reduce(
+    (sum, p) => sum + p.total_amount,
+    0
+  );
 
-  return {
+  const totalReceived = displayedPayments.reduce(
+    (sum, p) => sum + p.amount,
+    0
+  );
+
+    const businessOverheads = displayedExpenses
+    .filter(e => e.expense_type === 'business')
+    .reduce((sum, e) => sum + e.amount, 0);
+
+  const productionExpenses = displayedExpenses
+    .filter(e => e.expense_type !== 'business')
+    .reduce((sum, e) => sum + e.amount, 0);
+
+  const totalExpenses = businessOverheads + productionExpenses;
+
+  const allTimePaymentsReceived = allBrandPayments.reduce(
+    (sum, p) => sum + p.amount,
+    0
+  );
+
+  const pendingReceivables = Math.max(
+    0,
+    totalPipeline - allTimePaymentsReceived
+  );
+
+  const netMargin = totalReceived - totalExpenses;
+
+  const marginPercentage =
+    totalReceived > 0
+      ? Math.round((netMargin / totalReceived) * 100)
+      : 0;
+
+      return {
     totalPipeline,
     totalReceived,
     totalExpenses,
+    businessOverheads,
+    productionExpenses,
     pendingReceivables,
     netMargin,
     marginPercentage,

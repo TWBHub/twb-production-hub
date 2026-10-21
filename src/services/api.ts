@@ -2942,49 +2942,83 @@ async assignTeamMember(
     );
   },
 
-  async getExpenses(): Promise<Expense[]> {
-    const supabase = getSupabaseClient();
-    if (supabase) {
-      const { data, error } = await supabase.from('expenses').select('*').order('expense_date', { ascending: false });
-      if (!error && data) {
-        // Resolve company_id using stored or cached projects because public.expenses does not store company_id
-        const cachedProjects = getStoredOrInitial('projects', INITIAL_PROJECTS);
-        const mapped = data.map((row: any) => {
-          let rawCompany = row.company_id;
-          if (!rawCompany) {
-            const matchedProj = cachedProjects.find((p: Project) => p.id === row.project_id);
-            rawCompany = matchedProj?.company_id || 'twb';
-          }
-          const isGJ = rawCompany === 'golden_june' || rawCompany === '3a19bbe1-a2bc-46db-bbbc-44ef7f5036ec';
+ 
+async getExpenses(): Promise<Expense[]> {
+  const supabase = getSupabaseClient();
 
-          return {
-            ...row,
-            company_id: isGJ ? 'golden_june' : 'twb',
-            amount: Number(row.amount) || 0,
-          } as Expense;
-        });
+  if (supabase) {
+    const { data, error } = await supabase
+      .from('expenses')
+      .select('*')
+      .order('expense_date', { ascending: false });
 
-        saveToStorage('expenses', mapped);
-        return mapped;
-      }
+    if (error) {
+      console.error('Failed to load expenses from Supabase:', error);
+      throw new Error(`Could not load expenses: ${error.message}`);
     }
-    return getStoredOrInitial('expenses', INITIAL_EXPENSES);
-  },
 
-  async createExpense(expense: Omit<Expense, 'id' | 'created_at'>): Promise<Expense> {
+    if (data) {
+      const cachedProjects = getStoredOrInitial(
+        'projects',
+        INITIAL_PROJECTS
+      );
+
+      const mapped = data.map((row: any) => {
+        let rawCompany = row.company_id;
+
+        // For existing project expenses, resolve the brand from the project.
+        if (!rawCompany && row.project_id) {
+          const matchedProj = cachedProjects.find(
+            (p: Project) => p.id === row.project_id
+          );
+          rawCompany = matchedProj?.company_id;
+        }
+
+        const isGJ =
+          rawCompany === 'golden_june' ||
+          rawCompany === '3a19bbe1-a2bc-46db-bbbc-44ef7f5036ec';
+
+        return {
+          ...row,
+          project_id: row.project_id || '',
+          company_id:
+  rawCompany === 'shared'
+    ? 'shared'
+    : isGJ
+      ? 'golden_june'
+      : 'twb',
+          amount: Number(row.amount) || 0,
+        } as Expense;
+      });
+
+      saveToStorage('expenses', mapped);
+      return mapped;
+    }
+  }
+
+  return getStoredOrInitial('expenses', INITIAL_EXPENSES);
+},
+
+    async createExpense(expense: Omit<Expense, 'id' | 'created_at'>): Promise<Expense> {
     const supabase = getSupabaseClient();
+
+    const expensePayload = {
+      project_id: expense.project_id || null,
+      company_id: expense.company_id || 'twb',
+      expense_type: expense.expense_type || 'project',
+      payment_method: expense.payment_method || null,
+      receipt_url: expense.receipt_url || null,
+      amount: Number(expense.amount) || 0,
+      category: expense.category,
+      description: expense.description,
+      paid_to: expense.paid_to,
+      expense_date: expense.expense_date,
+    };
 
     if (supabase) {
       const { data, error } = await supabase
         .from('expenses')
-        .insert({
-          project_id: expense.project_id,
-          amount: Number(expense.amount) || 0,
-          category: expense.category,
-          description: expense.description,
-          paid_to: expense.paid_to,
-          expense_date: expense.expense_date,
-        })
+        .insert(expensePayload)
         .select()
         .single();
 
@@ -2993,53 +3027,65 @@ async assignTeamMember(
         throw new Error(`Could not create expense: ${error.message}`);
       }
 
-      const cachedProjects = getStoredOrInitial('projects', INITIAL_PROJECTS);
-      const matchedProj = cachedProjects.find((p: Project) => p.id === expense.project_id);
-      const resolvedCompanyId: 'twb' | 'golden_june' =
-        expense.company_id === 'golden_june' || matchedProj?.company_id === 'golden_june'
-          ? 'golden_june'
-          : 'twb';
-
       const newExpense: Expense = {
-        ...(data as Expense),
-        company_id: resolvedCompanyId,
+        ...expense,
+        ...data,
+        project_id: data.project_id || '',
+        company_id: expense.company_id || 'twb',
+        expense_type: data.expense_type || expense.expense_type || 'project',
+        payment_method: data.payment_method || expense.payment_method,
+        receipt_url: data.receipt_url || expense.receipt_url,
+        amount: Number(data.amount) || 0,
       };
 
       const current = await this.getExpenses();
-      const updated = [newExpense, ...current.filter(e => e.id !== newExpense.id)];
-      saveToStorage('expenses', updated);
+      const updated = [
+        newExpense,
+        ...current.filter(e => e.id !== newExpense.id),
+      ];
 
+      saveToStorage('expenses', updated);
       return newExpense;
     }
 
     const newExpense: Expense = {
       ...expense,
+      project_id: expense.project_id || '',
+      expense_type: expense.expense_type || 'project',
       id: crypto.randomUUID(),
       created_at: new Date().toISOString(),
     };
 
     const current = await this.getExpenses();
-    const updated = [newExpense, ...current];
-    saveToStorage('expenses', updated);
+    const updated = [
+      newExpense,
+      ...current.filter(e => e.id !== newExpense.id),
+    ];
 
+    saveToStorage('expenses', updated);
     return newExpense;
   },
 
-  async updateExpense(expense: Expense): Promise<Expense> {
+    async updateExpense(expense: Expense): Promise<Expense> {
     const supabase = getSupabaseClient();
+
+    const expensePayload = {
+      project_id: expense.project_id || null,
+      company_id: expense.company_id || 'twb',
+      expense_type: expense.expense_type || 'project',
+      payment_method: expense.payment_method || null,
+      receipt_url: expense.receipt_url || null,
+      amount: Number(expense.amount) || 0,
+      category: expense.category,
+      description: expense.description,
+      paid_to: expense.paid_to,
+      expense_date: expense.expense_date,
+    };
 
     if (supabase) {
       const { data, error } = await supabase
         .from('expenses')
-        .update({
-          project_id: expense.project_id,
-          // company_id is not a column in the expenses table
-          amount: Number(expense.amount) || 0,
-          category: expense.category,
-          description: expense.description,
-          paid_to: expense.paid_to,
-          expense_date: expense.expense_date,
-        })
+        .update(expensePayload)
         .eq('id', expense.id)
         .select()
         .single();
@@ -3049,16 +3095,13 @@ async assignTeamMember(
         throw new Error(`Could not update expense: ${error.message}`);
       }
 
-      const cachedProjects = getStoredOrInitial('projects', INITIAL_PROJECTS);
-      const matchedProj = cachedProjects.find((p: Project) => p.id === expense.project_id);
-      const resolvedCompanyId: 'twb' | 'golden_june' =
-        expense.company_id === 'golden_june' || matchedProj?.company_id === 'golden_june'
-          ? 'golden_june'
-          : 'twb';
-
       const updatedExpense: Expense = {
-        ...(data as Expense),
-        company_id: resolvedCompanyId,
+        ...expense,
+        ...data,
+        project_id: data.project_id || '',
+        company_id: data.company_id || expense.company_id || 'twb',
+        expense_type: data.expense_type || expense.expense_type || 'project',
+        amount: Number(data.amount) || 0,
       };
 
       const current = await this.getExpenses();
@@ -3074,6 +3117,8 @@ async assignTeamMember(
     const updatedExpense = {
       ...current.find(e => e.id === expense.id),
       ...expense,
+      project_id: expense.project_id || '',
+      expense_type: expense.expense_type || 'project',
     } as Expense;
 
     saveToStorage(

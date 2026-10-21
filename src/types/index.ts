@@ -334,13 +334,16 @@ export type ExpenseCategory =
 export interface Expense {
   id: string;
   project_id: string;
-  company_id: 'twb' | 'golden_june';
+  company_id: 'twb' | 'golden_june' | 'shared';
   expense_date: string;
   amount: number;
-  category: ExpenseCategory;
+  category: ExpenseCategory | string;
   description: string;
   paid_to: string;
   created_at: string;
+  expense_type?: 'project' | 'business';
+  payment_method?: string;
+  receipt_url?: string;
 }
 
 export type CalendarEventType = 
