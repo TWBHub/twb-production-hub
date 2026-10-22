@@ -786,6 +786,11 @@ return (
                   const isTWB = project.company_id === 'twb';
                   return (
                     <tr key={project.id} className="hover:bg-slate-50/70 transition-colors">
+                      <td className="p-3.5">
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-100 text-blue-800">
+                          Production
+                        </span>
+                      </td>
                       <td className="p-3.5 font-semibold text-slate-900">
                         {project.name}
                         <div className="text-[11px] text-slate-400 font-normal">
@@ -815,7 +820,7 @@ return (
                 })}
                 {projectProfits.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="p-8 text-center text-slate-500">
+                    <td colSpan={8} className="p-8 text-center text-slate-500">
                       No projects found matching the current search query or date filter.
                     </td>
                   </tr>
