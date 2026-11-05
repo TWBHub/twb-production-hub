@@ -21,7 +21,11 @@ import {
   getDefaultProjectClauses,
   saveProjectClausesToStorage,
 } from '../../utils/termsLibrary';
-import { generateOrderFormPDF } from '../../utils/pdfGenerator';
+import {
+  generateOrderFormPDF,
+  downloadPdfDoc,
+  getOrderFormFilename,
+} from '../../utils/pdfGenerator';
 
 interface ProjectTermsEditorProps {
   project: Project;
@@ -124,15 +128,17 @@ export const ProjectTermsEditor: React.FC<ProjectTermsEditorProps> = ({
     await saveClauses(defaultClauses);
   };
 
-  const handleDownloadPDF = async () => {
+  const handleDownloadPDF = () => {
+    if (isDownloadingPdf) return;
     setPdfError(null);
     setDownloadSuccess(false);
     setIsDownloadingPdf(true);
-    // Yield to allow the browser and React to render the loading state
-    await new Promise(resolve => setTimeout(resolve, 50));
+
     try {
       const doc = generateOrderFormPDF(project, client, company, deliverables, payments);
-      doc.save();
+      const filename = getOrderFormFilename(project, client, company);
+      downloadPdfDoc(doc, filename);
+
       setDownloadSuccess(true);
       setTimeout(() => {
         setDownloadSuccess(false);
@@ -142,6 +148,7 @@ export const ProjectTermsEditor: React.FC<ProjectTermsEditorProps> = ({
       setPdfError(
         `Failed to generate Order Form PDF: ${err instanceof Error ? err.message : String(err)}`
       );
+      setDownloadSuccess(false);
     } finally {
       setIsDownloadingPdf(false);
     }

@@ -88,7 +88,7 @@ export const getProjectClauses = (projectId: string, projectClauses?: ProjectTCC
   if (projectClauses && projectClauses.length > 0) {
     return projectClauses;
   }
-  if (typeof window !== 'undefined') {
+  if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
     const saved = localStorage.getItem(`project_terms_${projectId}`);
     if (saved) {
       try {
@@ -105,7 +105,7 @@ export const getProjectClauses = (projectId: string, projectClauses?: ProjectTCC
 };
 
 export const saveProjectClausesToStorage = (projectId: string, clauses: ProjectTCClause[]): void => {
-  if (typeof window !== 'undefined') {
+  if (typeof window !== 'undefined' && typeof localStorage !== 'undefined') {
     localStorage.setItem(`project_terms_${projectId}`, JSON.stringify(clauses));
   }
 };

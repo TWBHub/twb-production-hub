@@ -6,6 +6,7 @@ import {
   Company,
   Client,
   Enquiry,
+  Quotation,
   Profile,
   TeamMember,
   Editor,
@@ -96,6 +97,11 @@ interface AppContextType {
   deleteProject: (id: string) => Promise<void>;
   createEnquiry: (enquiry: Omit<Enquiry, 'id' | 'created_at'>) => Promise<Enquiry>;
   updateEnquiry: (enquiry: Enquiry) => Promise<Enquiry>;
+  deleteEnquiry: (id: string) => Promise<void>;
+  quotations: Quotation[];
+  createQuotation: (quotation: Omit<Quotation, 'id' | 'created_at'>) => Promise<Quotation>;
+  updateQuotation: (quotation: Quotation) => Promise<Quotation>;
+  deleteQuotation: (id: string) => Promise<void>;
   createClient: (client: Omit<Client, 'id' | 'created_at'>) => Promise<Client>;
   updateClient: (client: Client) => Promise<Client>;
   createTeamMember: (member: Omit<TeamMember, 'id'>) => Promise<TeamMember>;
@@ -197,6 +203,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [quotations, setQuotations] = useState<Quotation[]>([]);
 
   // Persist brand filter
   const handleSetBrandFilter = (brand: BrandId) => {
@@ -232,6 +239,7 @@ const refreshAllData = useCallback(async () => {
       apiService.getExpenses(),
       apiService.getCalendarEvents(),
       apiService.getNotifications(),
+      apiService.getQuotations(),
     ]);
 
     const names = [
@@ -248,6 +256,7 @@ const refreshAllData = useCallback(async () => {
       'expenses',
       'calendar events',
       'notifications',
+      'quotations',
     ];
 
     results.forEach((result, index) => {
@@ -273,6 +282,7 @@ const refreshAllData = useCallback(async () => {
       exps,
       evts,
       notifs,
+      quots,
     ] = results;
 
     if (comps.status === 'fulfilled') setCompanies(comps.value);
@@ -288,6 +298,7 @@ const refreshAllData = useCallback(async () => {
     if (exps.status === 'fulfilled') setExpenses(exps.value);
     if (evts.status === 'fulfilled') setCalendarEvents(evts.value);
     if (notifs.status === 'fulfilled') setNotifications(notifs.value);
+    if (quots && quots.status === 'fulfilled') setQuotations(quots.value);
   } catch (err) {
     console.error('Failed to load TWBHub data:', err);
   }
@@ -602,6 +613,28 @@ const matchBrand = (companyId: string) => {
     return updated;
   };
 
+  const deleteEnquiry = async (id: string) => {
+    await apiService.deleteEnquiry(id);
+    await refreshAllData();
+  };
+
+  const createQuotation = async (quotation: Omit<Quotation, 'id' | 'created_at' | 'updated_at'>) => {
+    const created = await apiService.createQuotation(quotation);
+    await refreshAllData();
+    return created;
+  };
+
+  const updateQuotation = async (quotation: Quotation) => {
+    const updated = await apiService.updateQuotation(quotation);
+    await refreshAllData();
+    return updated;
+  };
+
+  const deleteQuotation = async (id: string) => {
+    await apiService.deleteQuotation(id);
+    await refreshAllData();
+  };
+
   const createClient = async (client: Omit<Client, 'id' | 'created_at'>) => {
     const created = await apiService.createClient(client);
     await refreshAllData();
@@ -874,6 +907,11 @@ const deleteExpense = async (id: string) => {
         deleteProject,
         createEnquiry,
         updateEnquiry,
+        deleteEnquiry,
+        quotations,
+        createQuotation,
+        updateQuotation,
+        deleteQuotation,
         createClient,
         updateClient,
         createTeamMember,

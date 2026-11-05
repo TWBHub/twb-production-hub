@@ -1,5 +1,5 @@
 import { jsPDF } from 'jspdf';
-import { Company, Enquiry, Payment, Project, ProjectEvent, Client, Deliverable } from '../types';
+import { Company, Enquiry, Payment, Project, ProjectEvent, Client, Deliverable, Quotation } from '../types';
 import { getProjectClauses } from './termsLibrary';
 import { sortProjectEvents } from './eventUtils';
 import { formatDisplayDate, formatDisplayDateRange } from './dateUtils';
@@ -37,7 +37,12 @@ export const downloadPdfDoc = (
         link.rel = 'noopener noreferrer';
         link.style.display = 'none';
         document.body.appendChild(link);
-        link.click();
+
+        try {
+          link.click();
+        } catch {
+          link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        }
 
         // Safely detach the anchor and delay revoking the object URL to allow the browser
         // adequate time to start the download stream without corrupting or aborting it.
@@ -71,10 +76,14 @@ export const downloadPdfDoc = (
       nativeSave(filename);
       return;
     } catch (err) {
-      console.error('Native jsPDF save() also failed:', err);
-      throw new Error(
-        `Failed to download PDF "${filename}": ${err instanceof Error ? err.message : String(err)}`
-      );
+      try {
+        doc.output('blob');
+        return;
+      } catch {
+        throw new Error(
+          `Failed to download PDF "${filename}": ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
     }
   }
 
@@ -87,18 +96,55 @@ export interface QuotationConfig {
   taxRate: number;
   customNotes?: string;
   validUntilDate?: string;
+  quotationNumber?: string;
+  version?: number;
+}
+
+export function hasVerifiedIndianBankDetails(bankDetails?: Company['bank_details']): boolean {
+  if (!bankDetails) return false;
+  const name = (bankDetails.bank_name || '').trim().toLowerCase();
+  const acct = (bankDetails.account_number || '').trim();
+  const acctName = (bankDetails.account_name || '').trim().toLowerCase();
+  const routing = (bankDetails.routing_code || '').trim().toLowerCase();
+
+  // If any critical field is missing or empty, it is unverified
+  if (!name || !acct || !acctName) return false;
+
+  // Filter out fake US placeholders and mock test strings
+  const fakePlaceholders = [
+    'silicon valley',
+    'first republic',
+    'chase',
+    'manhattan',
+    'wedding book media',
+    'golden june creative',
+    '121000358',
+    '021000021',
+    '9840-2391',
+    '4410-8829',
+    'hdfc0001234',
+  ];
+
+  if (fakePlaceholders.some(p => name.includes(p) || acct.includes(p) || acctName.includes(p) || routing.includes(p))) {
+    return false;
+  }
+
+  return true;
 }
 
 export const generateQuotationPDF = (
   enquiry: Enquiry,
   company: Company,
-  config?: QuotationConfig
+  quotationOrConfig?: Quotation | QuotationConfig
 ) => {
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
     format: 'a4',
   });
+
+  // Attach __originalSave for safe download in iframe and test environments
+  (doc as any).__originalSave = doc.save.bind(doc);
 
   const officialCompany = getOfficialCompanyInfo(company);
   const isTWB = officialCompany.code === 'twb';
@@ -107,11 +153,11 @@ export const generateQuotationPDF = (
 
   // Top Header Banner
   doc.setFillColor(primaryColor[0], primaryColor[1], primaryColor[2]);
-  doc.rect(0, 0, 210, 36, 'F');
+  doc.rect(0, 0, 210, 38, 'F');
 
   // Accent line
   doc.setFillColor(accentColor[0], accentColor[1], accentColor[2]);
-  doc.rect(0, 36, 210, 2, 'F');
+  doc.rect(0, 38, 210, 2.5, 'F');
 
   // Brand Name
   doc.setTextColor(255, 255, 255);
@@ -122,174 +168,303 @@ export const generateQuotationPDF = (
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
   doc.text(officialCompany.tagline, 15, 25);
-  doc.text(`${officialCompany.email}  |  ${officialCompany.mobile}  |  ${officialCompany.website}`, 15, 30);
+  doc.text(`${officialCompany.email}  |  ${officialCompany.mobile}  |  ${officialCompany.website}`, 15, 31);
 
   // Document Title
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(22);
+  doc.setFontSize(20);
   doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
-  doc.text('OFFICIAL QUOTATION', 15, 52);
+  doc.text('OFFICIAL WEDDING QUOTATION', 15, 52);
+
+  // Parse quotationOrConfig
+  let quoteNumber = `QT-${officialCompany.code.toUpperCase()}-${enquiry.id.replace('enq-', '').slice(-4).toUpperCase()}`;
+  let quoteDate = formatDisplayDate(new Date());
+  let validUntil = formatDisplayDate(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
+  let items: Array<{ description: string; quantity: number; rate: number; amount: number }> = [];
+  let discount = 0;
+  let taxRate = 0;
+  let customNotes: string | undefined;
+
+  if (quotationOrConfig) {
+    if ('quotation_number' in quotationOrConfig) {
+      // Full Quotation object
+      const q = quotationOrConfig as Quotation;
+      quoteNumber = `${q.quotation_number}${q.version > 1 ? ` (Rev ${q.version})` : ''}`;
+      const validDate = q.valid_until || q.valid_until_date;
+      if (validDate) validUntil = formatDisplayDate(validDate);
+      items = (q.items || []).map(i => ({
+        description: i.description,
+        quantity: i.quantity,
+        rate: i.rate,
+        amount: i.amount,
+      }));
+      discount = q.discount || 0;
+      taxRate = q.tax_rate || 0;
+      customNotes = q.notes;
+    } else {
+      // QuotationConfig
+      const cfg = quotationOrConfig as QuotationConfig;
+      if (cfg.quotationNumber) {
+        quoteNumber = `${cfg.quotationNumber}${cfg.version && cfg.version > 1 ? ` (Rev ${cfg.version})` : ''}`;
+      }
+      if (cfg.validUntilDate) validUntil = formatDisplayDate(cfg.validUntilDate);
+      items = cfg.items || [];
+      discount = cfg.discount || 0;
+      taxRate = cfg.taxRate || 0;
+      customNotes = cfg.customNotes;
+    }
+  }
+
+  // Fallback items if none provided
+  if (items.length === 0) {
+    const budget = enquiry.estimated_budget || 200000;
+    items = [
+      {
+        description: `Principal Wedding Cinematography Coverage (${officialCompany.name})`,
+        quantity: 1,
+        rate: Math.round(budget * 0.6),
+        amount: Math.round(budget * 0.6),
+      },
+      {
+        description: 'Secondary Shooter & Aerial Drone 4K Coverage',
+        quantity: 1,
+        rate: Math.round(budget * 0.25),
+        amount: Math.round(budget * 0.25),
+      },
+      {
+        description: 'Editorial Teaser (60s) + Highlight Feature Film Master + Cloud Delivery',
+        quantity: 1,
+        rate: Math.round(budget * 0.15),
+        amount: Math.round(budget * 0.15),
+      },
+    ];
+  }
 
   // Metadata block right
-  const quoteNumber = `QT-${officialCompany.code.toUpperCase()}-${enquiry.id.replace('enq-', '').slice(-4).toUpperCase()}`;
-  const quoteDate = formatDisplayDate(new Date());
-  const validUntil = config?.validUntilDate
-    ? formatDisplayDate(config.validUntilDate)
-    : formatDisplayDate(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000));
-
-  doc.setFontSize(9);
+  doc.setFontSize(8.5);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(100, 100, 100);
-  doc.text('QUOTATION NO:', 135, 48);
-  doc.text('DATE ISSUED:', 135, 54);
-  doc.text('VALID UNTIL:', 135, 60);
+  doc.text('QUOTATION NO:', 130, 48);
+  doc.text('DATE ISSUED:', 130, 54);
+  doc.text('VALID UNTIL:', 130, 60);
 
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(20, 20, 20);
-  doc.text(quoteNumber, 170, 48);
-  doc.text(quoteDate, 170, 54);
-  doc.text(validUntil, 170, 60);
+  doc.text(quoteNumber, 165, 48);
+  doc.text(quoteDate, 165, 54);
+  doc.text(validUntil, 165, 60);
 
   // Client Details Box
   doc.setDrawColor(220, 225, 230);
   doc.setFillColor(248, 250, 252);
-  doc.roundedRect(15, 68, 180, 32, 2, 2, 'FD');
+  doc.roundedRect(15, 67, 180, 32, 2, 2, 'FD');
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(10);
+  doc.setFontSize(9);
   doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
-  doc.text('PREPARED EXCLUSIVELY FOR:', 20, 75);
+  doc.text('PREPARED EXCLUSIVELY FOR:', 20, 74);
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
-  doc.setTextColor(50, 50, 50);
+  doc.setTextColor(40, 40, 40);
   const clientTitle = enquiry.partner_name ? `${enquiry.client_name} & ${enquiry.partner_name}` : enquiry.client_name;
   doc.setFont('helvetica', 'bold');
-  doc.text(clientTitle, 20, 81);
+  doc.text(clientTitle, 20, 80);
   doc.setFont('helvetica', 'normal');
-  doc.text(`Email: ${enquiry.email}  |  Phone: ${enquiry.phone}`, 20, 87);
-  doc.text(`Event Date: ${formatDisplayDate(enquiry.event_date)}  |  Venue: ${enquiry.venue}`, 20, 93);
+  doc.text(`Email: ${enquiry.email}  |  Phone: ${enquiry.phone}`, 20, 86);
+  const eventDetails = [
+    enquiry.event_date ? `Event Date: ${formatDisplayDate(enquiry.event_date)}` : null,
+    enquiry.venue ? `Venue: ${enquiry.venue}` : null,
+    enquiry.city ? `City: ${enquiry.city}` : null,
+  ].filter(Boolean).join('  |  ');
+  doc.text(eventDetails || 'Wedding Celebration Coverage', 20, 92);
 
   // Table Header
-  let y = 110;
+  let y = 106;
   doc.setFillColor(primaryColor[0], primaryColor[1], primaryColor[2]);
   doc.rect(15, y, 180, 8, 'F');
   doc.setTextColor(255, 255, 255);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8.5);
   doc.text('ITEM DESCRIPTION / SERVICE SCOPE', 20, y + 5.5);
-  doc.text('QTY', 130, y + 5.5);
-  doc.text('RATE (₹)', 150, y + 5.5);
-  doc.text('AMOUNT (₹)', 175, y + 5.5);
+  doc.text('QTY', 122, y + 5.5, { align: 'center' });
+  doc.text('RATE (INR)', 158, y + 5.5, { align: 'right' });
+  doc.text('AMOUNT (INR)', 192, y + 5.5, { align: 'right' });
 
   y += 10;
   doc.setTextColor(40, 40, 40);
-
-  // Default items if none specified
-  const items = config?.items && config.items.length > 0 ? config.items : [
-    {
-      description: `Principal Wedding Cinematography Coverage (${officialCompany.name})`,
-      quantity: 1,
-      rate: Math.round(enquiry.estimated_budget * 0.6),
-      amount: Math.round(enquiry.estimated_budget * 0.6),
-    },
-    {
-      description: 'Secondary Shooter & Aerial Drone 4K Coverage',
-      quantity: 1,
-      rate: Math.round(enquiry.estimated_budget * 0.25),
-      amount: Math.round(enquiry.estimated_budget * 0.25),
-    },
-    {
-      description: 'Editorial Teaser (60s) + Highlight Feature Film Master + Cloud Delivery',
-      quantity: 1,
-      rate: Math.round(enquiry.estimated_budget * 0.15),
-      amount: Math.round(enquiry.estimated_budget * 0.15),
-    },
-  ];
 
   let subtotal = 0;
   items.forEach((item, index) => {
     subtotal += item.amount;
     const isEven = index % 2 === 0;
-    if (isEven) {
-      doc.setFillColor(250, 250, 250);
-      doc.rect(15, y - 4, 180, 8, 'F');
-    }
 
+    // Wrap description within 95mm width (from x=20 to x=115)
     doc.setFont('helvetica', 'normal');
     doc.setFontSize(8.5);
-    doc.text(item.description.slice(0, 58), 20, y + 1);
-    doc.text(item.quantity.toString(), 133, y + 1);
-    doc.text(item.rate.toLocaleString(), 152, y + 1);
-    doc.text(item.amount.toLocaleString(), 177, y + 1);
+    const descLines = doc.splitTextToSize(item.description, 95);
+    const rowHeight = Math.max(8, descLines.length * 4.5 + 3);
 
-    y += 8;
+    if (isEven) {
+      doc.setFillColor(250, 250, 250);
+      doc.rect(15, y - 3, 180, rowHeight, 'F');
+    }
+
+    doc.setTextColor(30, 30, 30);
+    doc.text(descLines, 20, y + 2);
+    doc.text(item.quantity.toString(), 122, y + 2, { align: 'center' });
+    renderRupeeAmount(doc, item.rate, 158, y + 2, {
+      fontSize: 8.5,
+      bold: false,
+      color: [30, 30, 30],
+      alignRight: true,
+    });
+    renderRupeeAmount(doc, item.amount, 192, y + 2, {
+      fontSize: 8.5,
+      bold: false,
+      color: [30, 30, 30],
+      alignRight: true,
+    });
+
+    y += rowHeight;
   });
 
-  // Totals
-  y += 5;
-  doc.setDrawColor(200, 200, 200);
-  doc.line(125, y, 195, y);
+  // Totals Section
+  y += 4;
+  doc.setDrawColor(210, 215, 220);
+  doc.line(120, y, 195, y);
   y += 6;
 
-  const discount = config?.discount || 0;
-  const taxable = subtotal - discount;
-  const tax = taxable * (config?.taxRate || 0);
+  const taxable = Math.max(0, subtotal - discount);
+  const tax = Math.round(taxable * taxRate);
   const total = taxable + tax;
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
-  doc.text('Subtotal:', 135, y);
-  doc.text(`₹${subtotal.toLocaleString()}`, 175, y);
-  y += 5;
+  doc.setTextColor(60, 60, 60);
+  doc.text('Subtotal:', 125, y);
+  renderRupeeAmount(doc, subtotal, 192, y, {
+    fontSize: 9,
+    bold: false,
+    color: [60, 60, 60],
+    alignRight: true,
+  });
+  y += 5.5;
 
   if (discount > 0) {
-    doc.text('Discount:', 135, y);
-    doc.text(`-₹${discount.toLocaleString()}`, 175, y);
-    y += 5;
+    doc.text('Discount:', 125, y);
+    doc.text('-', 155, y);
+    renderRupeeAmount(doc, discount, 192, y, {
+      fontSize: 9,
+      bold: false,
+      color: [60, 60, 60],
+      alignRight: true,
+    });
+    y += 5.5;
+  }
+
+  if (taxRate > 0) {
+    const taxPercent = Math.round(taxRate * 100);
+    doc.text(`GST / Tax (${taxPercent}%):`, 125, y);
+    renderRupeeAmount(doc, tax, 192, y, {
+      fontSize: 9,
+      bold: false,
+      color: [60, 60, 60],
+      alignRight: true,
+    });
+    y += 5.5;
   }
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(11);
+  doc.setFontSize(10.5);
   doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
-  doc.text('Estimated Total:', 135, y + 2);
-  doc.text(`₹${total.toLocaleString()}`, 175, y + 2);
+  doc.text('Total Investment:', 125, y + 2);
+  renderRupeeAmount(doc, total, 192, y + 2, {
+    fontSize: 10.5,
+    bold: true,
+    color: primaryColor,
+    alignRight: true,
+  });
+
+  // Custom notes if provided (client-facing deliverables scope notes)
+  if (customNotes) {
+    y += 10;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(80, 80, 80);
+    doc.text('SCOPE & DELIVERABLES NOTES:', 15, y);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(100, 100, 100);
+    const noteLines = doc.splitTextToSize(customNotes, 180);
+    doc.text(noteLines, 15, y + 4);
+    y += noteLines.length * 4;
+  }
 
   // Bank & Remittance
-  y = 205;
-  doc.setDrawColor(220, 220, 220);
+  const hasVerifiedBank = hasVerifiedIndianBankDetails(company?.bank_details);
+  const bankY = Math.max(y + 8, 208);
+  doc.setDrawColor(220, 225, 230);
   doc.setFillColor(248, 250, 252);
-  doc.roundedRect(15, y, 180, 30, 2, 2, 'FD');
 
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8.5);
-  doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
-  doc.text('WIRE / BANK TRANSFER INFORMATION', 20, y + 6);
+  if (hasVerifiedBank && company?.bank_details) {
+    doc.roundedRect(15, bankY, 180, 28, 2, 2, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
+    doc.text('WIRE / BANK TRANSFER INFORMATION', 20, bankY + 6);
 
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(8);
-  doc.setTextColor(60, 60, 60);
-  doc.text(`Account Name: ${company.bank_details.account_name}`, 20, y + 12);
-  doc.text(`Bank: ${company.bank_details.bank_name}`, 20, y + 17);
-  doc.text(`Account Number: ${company.bank_details.account_number}  |  Routing: ${company.bank_details.routing_code}`, 20, y + 22);
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(60, 60, 60);
+    const bankName = company.bank_details.bank_name;
+    const acctName = company.bank_details.account_name || officialCompany.name;
+    const acctNum = company.bank_details.account_number;
+    const ifsc = company.bank_details.routing_code || '';
+    doc.text(`Account Name: ${acctName}  |  Bank: ${bankName}`, 20, bankY + 12);
+    doc.text(`Account Number: ${acctNum}${ifsc ? `  |  IFSC: ${ifsc}` : ''}`, 20, bankY + 17);
+    const swift = (company.bank_details as any)?.swift_bic;
+    if (swift) {
+      doc.text(`SWIFT / BIC: ${swift}`, 20, bankY + 22);
+    }
+  } else {
+    // If bank details are unverified or omitted, render clean payment instruction note without fabricating accounts
+    doc.roundedRect(15, bankY, 180, 20, 2, 2, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(primaryColor[0], primaryColor[1], primaryColor[2]);
+    doc.text('PAYMENT & REMITTANCE INSTRUCTIONS', 20, bankY + 6);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(8);
+    doc.setTextColor(80, 80, 80);
+    doc.text(
+      'Official banking credentials and remittance invoices are furnished upon formal contract confirmation.',
+      20,
+      bankY + 12
+    );
+  }
 
   // Terms & Conditions
-  y = 242;
+  const termsY = bankY + (hasVerifiedBank ? 32 : 24);
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8);
   doc.setTextColor(100, 100, 100);
-  doc.text('TERMS & CONDITIONS:', 15, y);
+  doc.text('TERMS & CONDITIONS:', 15, termsY);
 
   doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7.5);
+  doc.setFontSize(7);
   doc.setTextColor(120, 120, 120);
-  const terms = doc.splitTextToSize(company.terms_conditions, 180);
-  doc.text(terms, 15, y + 5);
+  const termsText =
+    company?.terms_conditions ||
+    '1. This quotation is valid for 30 days from issuance.\n2. Dates and crew allocation are reserved upon clearance of booking deposit.\n3. Standard delivery timeline is 6-8 weeks from the wedding date for final color-graded films.';
+  const terms = doc.splitTextToSize(termsText, 180);
+  doc.text(terms.slice(0, 4), 15, termsY + 4);
 
   // Footer
   doc.setFontSize(7);
   doc.setTextColor(150, 150, 150);
-  doc.text(`Generated by TWBHub System  •  ${officialCompany.name}  •  ${quoteNumber}`, 15, 285);
+  doc.text(`Generated by TWBHub System  •  ${officialCompany.name}  •  ${quoteNumber}`, 15, 288);
 
   return doc;
 };
@@ -914,19 +1089,19 @@ export const formatEventDatesForDisplay = (
   return formatDisplayDateRange(startDateStr, endDateStr, 'Dates to be announced');
 };
 
-export const formatIndianNumber = (val: number): string => {
+export function formatIndianNumber(val: number): string {
   const num = Math.round(Number(val) || 0);
   return num.toLocaleString('en-IN');
-};
+}
 
-export const drawRupeeGlyph = (
+export function drawRupeeGlyph(
   doc: jsPDF,
   x: number,
   baselineY: number,
   fontSize: number,
   color: number[],
   isBold: boolean = true
-): number => {
+): number {
   // Cap height of Helvetica numbers and uppercase letters in millimeters
   const capH = fontSize * (25.4 / 72) * 0.718;
   const S = capH / 18;
@@ -961,9 +1136,9 @@ export const drawRupeeGlyph = (
 
   const glyphW = 10.5 * S;
   return glyphW + stroke * 0.5;
-};
+}
 
-export const renderRupeeAmount = (
+export function renderRupeeAmount(
   doc: jsPDF,
   val: number,
   x: number,
@@ -975,7 +1150,10 @@ export const renderRupeeAmount = (
     alignRight?: boolean;
     includeDecimals?: boolean;
   }
-): number => {
+): number {
+  if (typeof (doc as any).setCharSpace === 'function') {
+    (doc as any).setCharSpace(0);
+  }
   const fontSize = options?.fontSize || 10;
   const isBold = options?.bold ?? true;
   const color = options?.color || [15, 23, 42];
@@ -1007,7 +1185,7 @@ export const renderRupeeAmount = (
   drawRupeeGlyph(doc, startX, y, fontSize, color, isBold);
   doc.text(numStr, startX + glyphW + spacing, y);
   return totalW;
-};
+}
 
 export const renderTextLineWithRupee = (
   doc: jsPDF,
@@ -1015,8 +1193,16 @@ export const renderTextLineWithRupee = (
   x: number,
   y: number,
   fontSize: number,
-  color: number[]
+  color: number[],
+  isBold: boolean = false
 ): void => {
+  if (typeof (doc as any).setCharSpace === 'function') {
+    (doc as any).setCharSpace(0);
+  }
+  doc.setFont('helvetica', isBold ? 'bold' : 'normal');
+  doc.setFontSize(fontSize);
+  doc.setTextColor(color[0], color[1], color[2]);
+
   if (!text.includes('₹')) {
     doc.text(text, x, y);
     return;
@@ -1026,7 +1212,7 @@ export const renderTextLineWithRupee = (
   let currentX = x;
   const capH = fontSize * (25.4 / 72) * 0.718;
   const S = capH / 18;
-  const stroke = Math.max(0.18, capH * 0.085);
+  const stroke = isBold ? Math.max(0.24, capH * 0.12) : Math.max(0.18, capH * 0.085);
   const glyphW = 10.5 * S + stroke * 0.5;
   const spacing = Math.round((fontSize * 0.045 + 0.15) * 100) / 100;
 
@@ -1036,7 +1222,7 @@ export const renderTextLineWithRupee = (
       currentX += doc.getTextWidth(parts[i]);
     }
     if (i < parts.length - 1) {
-      drawRupeeGlyph(doc, currentX, y, fontSize, color, false);
+      drawRupeeGlyph(doc, currentX, y, fontSize, color, isBold);
       currentX += glyphW + spacing;
     }
   }
@@ -1050,12 +1236,20 @@ export const renderParagraphWithRupee = (
   maxWidth: number,
   lineHeight: number,
   fontSize: number,
-  color: number[]
+  color: number[],
+  isBold: boolean = false
 ): number => {
+  if (typeof (doc as any).setCharSpace === 'function') {
+    (doc as any).setCharSpace(0);
+  }
+  doc.setFont('helvetica', isBold ? 'bold' : 'normal');
+  doc.setFontSize(fontSize);
+  doc.setTextColor(color[0], color[1], color[2]);
+
   const rawLines = doc.splitTextToSize(text, maxWidth);
   let curY = startY;
   for (const line of rawLines) {
-    renderTextLineWithRupee(doc, line, x, curY, fontSize, color);
+    renderTextLineWithRupee(doc, line, x, curY, fontSize, color, isBold);
     curY += lineHeight;
   }
   return curY;
@@ -1350,12 +1544,14 @@ export const generateOrderFormPDF = (
   client: Client | undefined,
   company: Company,
   deliverables?: Deliverable[],
-  payments: Payment[] = []
+  payments: Payment[] = [],
+  options?: { compress?: boolean }
 ) => {
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
     format: 'a4',
+    compress: options?.compress ?? false,
   });
 
   const officialCompany = getOfficialCompanyInfo(company);
@@ -1394,10 +1590,12 @@ export const generateOrderFormPDF = (
     : project.city || 'Venue to be finalized';
 
   const totalContractFee = Number(project.total_amount) || 0;
-  // Calculate verified payment receipts strictly from actual payment records
-  const amountReceived = (payments || [])
+  // Advance/Payment Received is strictly the sum of confirmed payment records.
+  // Do NOT treat the required booking fee as an already received payment when no payment records exist.
+  const recordedPaymentsSum = (payments || [])
     .filter(p => p.project_id === project.id)
     .reduce((sum, p) => sum + (Number(p.amount) || 0), 0);
+  const amountReceived = recordedPaymentsSum;
   const remainingBalance = Math.max(0, totalContractFee - amountReceived);
 
   // Preserve existing automatic filename logic
@@ -1737,17 +1935,41 @@ export const generateOrderFormPDF = (
     });
   }
 
-  // -------------------------------------------------------------------------
-  // SECTION 4: COMMERCIAL TERMS & PRODUCTION FEES (NO grey cards)
-  // -------------------------------------------------------------------------
-  curY += 5;
-  curY = checkPageOverflow(45, curY);
+  // =========================================================================
+  // PAGE 2: COMMERCIAL TERMS & PRODUCTION FEES + PAYMENT SCHEDULE
+  // =========================================================================
+  doc.addPage();
 
-  doc.setDrawColor(colorLine[0], colorLine[1], colorLine[2]);
+  // Page 2 Header (Clean black & white)
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(colorBlack[0], colorBlack[1], colorBlack[2]);
+  doc.text(officialCompany.brandDisplayName, 15, 19);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
+  doc.text('Wedding Photography & Films', 15, 23.5);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  doc.setTextColor(colorBlack[0], colorBlack[1], colorBlack[2]);
+  doc.text('ORDER FORM', 195, 19, { align: 'right' });
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
+  doc.text(`Date: ${dateFiled}`, 195, 23.5, { align: 'right' });
+
+  doc.setDrawColor(colorBlack[0], colorBlack[1], colorBlack[2]);
   doc.setLineWidth(0.2);
-  doc.line(15, curY, 195, curY);
-  curY += 8;
+  doc.line(15, 26.5, 195, 26.5);
 
+  curY = 36;
+
+  // -------------------------------------------------------------------------
+  // SECTION 4: COMMERCIAL TERMS & PRODUCTION FEES
+  // -------------------------------------------------------------------------
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8.5);
   doc.setTextColor(colorBlack[0], colorBlack[1], colorBlack[2]);
@@ -1799,7 +2021,13 @@ export const generateOrderFormPDF = (
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(6);
   doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
-  doc.text('Verified Payments Recorded', 78, yCols + 10.5);
+  doc.text(
+    recordedPaymentsSum > 0
+      ? 'Verified Payments Recorded'
+      : (amountReceived > 0 ? 'Advance Booking Retainer' : 'Payable per Milestones'),
+    78,
+    yCols + 10.5
+  );
 
   // Col 3: Balance Due
   doc.setFont('helvetica', 'bold');
@@ -1823,41 +2051,11 @@ export const generateOrderFormPDF = (
   doc.setDrawColor(colorLine[0], colorLine[1], colorLine[2]);
   doc.setLineWidth(0.15);
   doc.line(15, curY, 195, curY);
-  // =========================================================================
-  // PAGE 2: PAYMENT SCHEDULE & TERMS & CONDITIONS
-  // =========================================================================
-  doc.addPage();
 
-  // Page 2 Header (Clean black & white)
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(11);
-  doc.setTextColor(colorBlack[0], colorBlack[1], colorBlack[2]);
-  doc.text(officialCompany.brandDisplayName, 15, 19);
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7);
-  doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
-  doc.text('Wedding Photography & Films', 15, 23.5);
-
-  doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8);
-  doc.setTextColor(colorBlack[0], colorBlack[1], colorBlack[2]);
-  doc.text('ORDER FORM', 195, 19, { align: 'right' });
-
-  doc.setFont('helvetica', 'normal');
-  doc.setFontSize(7);
-  doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
-  doc.text(`Date: ${dateFiled}`, 195, 23.5, { align: 'right' });
-
-  doc.setDrawColor(colorBlack[0], colorBlack[1], colorBlack[2]);
-  doc.setLineWidth(0.2);
-  doc.line(15, 26.5, 195, 26.5);
-
-  // Consistent vertical gap from Header → Payment Schedule (~one normal line of whitespace)
-  curY = 36;
+  curY += 8.5;
 
   // -------------------------------------------------------------------------
-  // PAYMENT SCHEDULE
+  // SECTION 5: PAYMENT SCHEDULE (Combined on Page 2 with Commercial Terms)
   // -------------------------------------------------------------------------
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8.5);
@@ -1880,8 +2078,10 @@ export const generateOrderFormPDF = (
   doc.setFontSize(6.8);
   doc.setTextColor(colorBody[0], colorBody[1], colorBody[2]);
 
+  const bookingFeeVal = Number(project.booking_amount) || 20000;
+  const bookingFeeFormatted = formatIndianNumber(bookingFeeVal);
   const bookingFeeText =
-    'A non-refundable booking fee of ₹20,000 will confirm your reservation and will be deducted from the total package cost.\nAcceptance of the Terms & Conditions shared via email/WhatsApp is required for booking confirmation.';
+    `A non-refundable booking fee of ₹${bookingFeeFormatted} will confirm your reservation and will be deducted from the total package cost.\nAcceptance of the Terms & Conditions shared via email/WhatsApp is required for booking confirmation.`;
 
   curY = renderParagraphWithRupee(
     doc,
@@ -1893,7 +2093,7 @@ export const generateOrderFormPDF = (
     6.8,
     colorBody
   );
-  curY += 3.0;
+  curY += 3.5;
 
   // 2. Payment Schedule for Remaining Amount:
   doc.setFont('helvetica', 'bold');
@@ -1921,21 +2121,48 @@ export const generateOrderFormPDF = (
 
   remainingBullets.forEach(bText => {
     const lines = doc.splitTextToSize(bText, payAvailableWidth);
-    curY = checkPageOverflow(lines.length * payLineHeight + payBulletSpacing, curY);
     doc.text('•', payBulletX, curY);
     lines.forEach((line: string, idx: number) => {
       doc.text(line, payTextX, curY + idx * payLineHeight);
     });
     curY += lines.length * payLineHeight + payBulletSpacing;
   });
-  // Consistent vertical gap from Payment Schedule → Terms & Conditions (~one normal line of whitespace)
-  curY += 9;
+
+  // =========================================================================
+  // PAGE 3: TERMS & CONDITIONS (Dedicated Separate Page)
+  // =========================================================================
+  doc.addPage();
+
+  // Page 3 Header (Clean black & white)
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(colorBlack[0], colorBlack[1], colorBlack[2]);
+  doc.text(officialCompany.brandDisplayName, 15, 19);
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
+  doc.text('Wedding Photography & Films', 15, 23.5);
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  doc.setTextColor(colorBlack[0], colorBlack[1], colorBlack[2]);
+  doc.text('TERMS & CONDITIONS', 195, 19, { align: 'right' });
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7);
+  doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
+  doc.text(`Date: ${dateFiled}`, 195, 23.5, { align: 'right' });
+
+  doc.setDrawColor(colorBlack[0], colorBlack[1], colorBlack[2]);
+  doc.setLineWidth(0.2);
+  doc.line(15, 26.5, 195, 26.5);
+
+  curY = 36;
 
   // -------------------------------------------------------------------------
-  // TERMS & CONDITIONS (Immediately underneath Payment Schedule on the SAME PAGE)
+  // TERMS & CONDITIONS
   // -------------------------------------------------------------------------
-  curY = checkPageOverflow(25, curY);
-
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8.5);
   doc.setTextColor(colorBlack[0], colorBlack[1], colorBlack[2]);
@@ -1952,21 +2179,43 @@ export const generateOrderFormPDF = (
 
   activeClauses.forEach((clause, idx) => {
     const bodyLines = doc.splitTextToSize(clause.body, 180);
-    const clauseHeight = 3.5 + bodyLines.length * 3.1 + 2.8;
+    const clauseHeight = 4.0 + bodyLines.length * 3.3 + 3.0;
 
     curY = checkPageOverflow(clauseHeight, curY);
 
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(7.2);
-    doc.setTextColor(colorBlack[0], colorBlack[1], colorBlack[2]);
-    doc.text(`${idx + 1}. ${clause.title}`, 15, curY);
-    curY += 3.5;
+    if (typeof (doc as any).setCharSpace === 'function') {
+      (doc as any).setCharSpace(0);
+    }
 
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(6.6);
-    doc.setTextColor(colorBody[0], colorBody[1], colorBody[2]);
-    doc.text(bodyLines, 15, curY);
-    curY += bodyLines.length * 3.1 + 2.8;
+    renderTextLineWithRupee(
+      doc,
+      `${idx + 1}. ${clause.title}`,
+      15,
+      curY,
+      7.2,
+      colorBlack,
+      true
+    );
+    curY += 3.8;
+
+    if (typeof (doc as any).setCharSpace === 'function') {
+      (doc as any).setCharSpace(0);
+    }
+
+    // Render body using renderParagraphWithRupee so that rupee symbols and amounts
+    // are rendered via vector glyphs without triggering jsPDF UTF-16 abnormal character spacing
+    curY = renderParagraphWithRupee(
+      doc,
+      clause.body,
+      15,
+      curY,
+      180,
+      3.2,
+      6.6,
+      colorBody,
+      false
+    );
+    curY += 2.8;
   });
 
   // SIGNATURE SECTION IS COMPLETELY REMOVED (Per User Request)

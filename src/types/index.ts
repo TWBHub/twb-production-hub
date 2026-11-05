@@ -50,14 +50,61 @@ export interface Enquiry {
   phone: string;
   event_date: string;
   venue: string;
+  city?: string;
   lead_source: string;
   requirements: string;
   estimated_budget: number;
   status: EnquiryStatus;
   follow_up_date?: string;
+  consultation_date?: string;
+  assigned_to?: string;
+  services?: string[];
   notes?: string;
   quotation_status: QuotationStatus;
+  is_archived?: boolean;
+  currency?: 'INR' | 'USD';
   created_at: string;
+  updated_at?: string;
+}
+
+export type QuotationState = 'Draft' | 'Sent' | 'Approved' | 'Declined' | 'Superseded';
+
+export interface QuotationLineItem {
+  id: string;
+  description: string;
+  quantity: number;
+  rate: number;
+  amount: number;
+}
+
+export interface Quotation {
+  id: string;
+  quotation_number: string;
+  enquiry_id: string;
+  company_id: 'twb' | 'golden_june';
+  version: number;
+  issue_date: string;
+  valid_until_date?: string;
+  valid_until?: string;
+  client_name?: string;
+  partner_name?: string;
+  email?: string;
+  phone?: string;
+  event_date?: string;
+  venue?: string;
+  city?: string;
+  items: QuotationLineItem[];
+  subtotal: number;
+  discount: number;
+  tax_rate: number;
+  tax_amount: number;
+  total_amount?: number;
+  total?: number;
+  status: QuotationState;
+  payment_terms?: string;
+  notes?: string;
+  created_at: string;
+  updated_at?: string;
 }
 
 export interface Profile {

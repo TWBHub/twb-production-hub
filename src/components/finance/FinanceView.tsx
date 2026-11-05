@@ -24,7 +24,11 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Payment, PaymentMode, ExpenseCategory, Expense } from '../../types';
-import { generateReceiptPDF } from '../../utils/pdfGenerator';
+import {
+  generateReceiptPDF,
+  downloadPdfDoc,
+  getPaymentReceiptFilename,
+} from '../../utils/pdfGenerator';
 import {
   DateFilterOption,
   SortOrderOption,
@@ -255,14 +259,11 @@ const {
   const [receiptDownloadSuccessId, setReceiptDownloadSuccessId] = useState<string | null>(null);
   const [downloadingReceiptId, setDownloadingReceiptId] = useState<string | null>(null);
 
-  const handleDownloadReceipt = async (payment: any) => {
+  const handleDownloadReceipt = (payment: any) => {
     if (downloadingReceiptId) return;
     setReceiptDownloadError(null);
     setReceiptDownloadSuccessId(null);
     setDownloadingReceiptId(payment.id);
-
-    // Yield to allow the browser and React to render the loading state, matching Order Form flow
-    await new Promise(resolve => setTimeout(resolve, 50));
 
     try {
       const project = projects.find(p => p.id === payment.project_id) || filteredProjects.find(p => p.id === payment.project_id);
@@ -271,7 +272,8 @@ const {
       const projectPayments = (payments || filteredPayments || []).filter(p => p.project_id === payment.project_id);
 
       const doc = generateReceiptPDF(payment, project, client, company, projectPayments);
-      doc.save();
+      const filename = getPaymentReceiptFilename(payment, client, company, projectPayments);
+      downloadPdfDoc(doc, filename);
 
       setReceiptDownloadSuccessId(payment.id);
       setTimeout(() => {
@@ -282,6 +284,7 @@ const {
       setReceiptDownloadError(
         `Failed to download receipt for payment ${payment.receipt_number || payment.id}: ${err instanceof Error ? err.message : String(err)}`
       );
+      setReceiptDownloadSuccessId(null);
     } finally {
       setDownloadingReceiptId(null);
     }

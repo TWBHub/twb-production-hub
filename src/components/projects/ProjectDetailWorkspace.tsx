@@ -26,6 +26,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import {
   Project,
+  Company,
   ProjectEvent,
   ProjectStatus,
   PROJECT_PRODUCTION_STAGES,
@@ -51,7 +52,13 @@ import {
 } from '../../types';
 import { normalizeStorageRecord, getStorageStatusBadge } from '../../utils/storageUtils';
 import { apiService } from '../../services/api';
-import { generateOrderFormPDF, generateReceiptPDF } from '../../utils/pdfGenerator';
+import {
+  generateOrderFormPDF,
+  generateReceiptPDF,
+  downloadPdfDoc,
+  getOrderFormFilename,
+  getPaymentReceiptFilename,
+} from '../../utils/pdfGenerator';
 import { ProjectTermsEditor } from './ProjectTermsEditor';
 import { sortProjectEvents } from '../../utils/eventUtils';
 import { formatDisplayDate } from '../../utils/dateUtils';
@@ -315,18 +322,16 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
     setShowPaymentModal(true);
   };
 
-  const handleDownloadReceipt = async (p: Payment) => {
+  const handleDownloadReceipt = (p: Payment) => {
     if (downloadingReceiptId) return;
     setPdfDownloadError(null);
     setReceiptDownloadSuccessId(null);
     setDownloadingReceiptId(p.id);
 
-    // Yield to allow the browser and React to render the loading state, matching Order Form flow
-    await new Promise(resolve => setTimeout(resolve, 50));
-
     try {
       const doc = generateReceiptPDF(p, project, client, company, projectPayments);
-      doc.save();
+      const filename = getPaymentReceiptFilename(p, client, company, projectPayments);
+      downloadPdfDoc(doc, filename);
       setReceiptDownloadSuccessId(p.id);
       setTimeout(() => {
         setReceiptDownloadSuccessId(null);
@@ -336,6 +341,7 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
       setPdfDownloadError(
         `Failed to download receipt for payment ${p.receipt_number || p.id}: ${err instanceof Error ? err.message : String(err)}`
       );
+      setReceiptDownloadSuccessId(null);
     } finally {
       setDownloadingReceiptId(null);
     }
@@ -625,25 +631,49 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
   };
 
   // Generate Order Form PDF
-  const handleDownloadOrderForm = async () => {
+  const handleDownloadOrderForm = () => {
+    // Prevent multiple accidental downloads from rapid repeated clicks
+    if (isDownloadingPdf) return;
+    setIsDownloadingPdf(true);
     setPdfDownloadError(null);
     setPdfDownloadSuccess(false);
-    setIsDownloadingPdf(true);
-    // Yield to allow the browser and React to render the loading state
-    await new Promise(resolve => setTimeout(resolve, 50));
+
     try {
+      if (!project) {
+        throw new Error('Project details are not loaded yet.');
+      }
+
       const projectWithEvents: Project = {
         ...project,
-        events: projectEventsList.length > 0 ? projectEventsList : project.events,
+        events: projectEventsList.length > 0 ? projectEventsList : (project.events || []),
       };
+
+      const resolvedCompany =
+        company ||
+        companies.find(c => c.id === project.company_id || c.code === project.company_id) ||
+        ({
+          id: project.company_id || 'twb',
+          code: project.company_id === 'golden_june' ? 'golden_june' : 'twb',
+          name: project.company_id === 'golden_june' ? 'Golden June Films' : 'The Wedding Booth',
+        } as Company);
+
+      const resolvedClient =
+        client || (project.client_id ? clients.find(c => c.id === project.client_id) : undefined);
+
       const doc = generateOrderFormPDF(
         projectWithEvents,
-        client,
-        company,
+        resolvedClient,
+        resolvedCompany,
         projectDeliverablesList,
         projectPayments
       );
-      doc.save();
+
+      const filename = getOrderFormFilename(projectWithEvents, resolvedClient, resolvedCompany);
+
+      // Trigger download synchronously within the user's interaction event to avoid iframe security blocks
+      downloadPdfDoc(doc, filename);
+
+      // Show Downloaded only after the browser download has actually been triggered successfully
       setPdfDownloadSuccess(true);
       setTimeout(() => {
         setPdfDownloadSuccess(false);
@@ -653,6 +683,7 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
       setPdfDownloadError(
         `Failed to download Order Form PDF: ${err instanceof Error ? err.message : String(err)}`
       );
+      setPdfDownloadSuccess(false);
     } finally {
       setIsDownloadingPdf(false);
     }

@@ -64,7 +64,7 @@ export const Sidebar: React.FC<{ mobileOpen: boolean; setMobileOpen: (open: bool
   const navItems: NavItem[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'projects', label: 'Projects', icon: FolderKanban },
-    { id: 'enquiries', label: 'Enquiries / Leads', icon: UserPlus },
+    { id: 'enquiries', label: 'Leads', icon: UserPlus },
     { id: 'clients', label: 'Clients', icon: Users },
     { id: 'calendar', label: 'Calendar', icon: CalendarIcon },
     {

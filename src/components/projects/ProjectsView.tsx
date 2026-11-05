@@ -19,7 +19,11 @@ import {
 import { useApp } from '../../context/AppContext';
 import { Project, ProjectStatus, Client, ClientHddStatus, CLIENT_HDD_STATUS_OPTIONS } from '../../types';
 import { ProjectDetailWorkspace, PROJECT_PRODUCTION_STAGES } from './ProjectDetailWorkspace';
-import { generateOrderFormPDF } from '../../utils/pdfGenerator';
+import {
+  generateOrderFormPDF,
+  downloadPdfDoc,
+  getOrderFormFilename,
+} from '../../utils/pdfGenerator';
 import { sortProjectEvents } from '../../utils/eventUtils';
 import { formatDisplayDate, formatDisplayDateRange } from '../../utils/dateUtils';
 
@@ -862,11 +866,10 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
 
                 <button
                   disabled={downloadingProjectId === project.id}
-                  onClick={async () => {
+                  onClick={() => {
+                    if (downloadingProjectId === project.id) return;
                     setPdfDownloadError(null);
                     setDownloadingProjectId(project.id);
-                    // Yield so the browser and React render the spinner
-                    await new Promise(resolve => setTimeout(resolve, 50));
                     try {
                       const projectDeliverables = deliverables.filter(
                         d => d.project_id === project.id
@@ -883,7 +886,9 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
                         projectPayments
                       );
 
-                      doc.save();
+                      const filename = getOrderFormFilename(project, client, company);
+                      downloadPdfDoc(doc, filename);
+
                       setDownloadSuccessProjectId(project.id);
                       setTimeout(() => {
                         setDownloadSuccessProjectId(null);
@@ -893,6 +898,7 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
                       setPdfDownloadError(
                         `Failed to download Order Form for "${project.name}": ${err instanceof Error ? err.message : String(err)}`
                       );
+                      setDownloadSuccessProjectId(null);
                     } finally {
                       setDownloadingProjectId(null);
                     }

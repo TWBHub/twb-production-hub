@@ -3,6 +3,7 @@ import {
   Company,
   Client,
   Enquiry,
+  Quotation,
   TeamMember,
   Editor,
   Project,
@@ -32,6 +33,7 @@ import {
   INITIAL_COMPANIES,
   INITIAL_CLIENTS,
   INITIAL_ENQUIRIES,
+  INITIAL_QUOTATIONS,
   INITIAL_TEAM_MEMBERS,
   INITIAL_EDITORS,
   INITIAL_PROJECTS,
@@ -670,14 +672,17 @@ export const apiService = {
     return updatedClient;
   },
   
-  // ENQUIRIES
   async getEnquiries(): Promise<Enquiry[]> {
     const supabase = getSupabaseClient();
     if (supabase) {
       const { data, error } = await supabase.from('enquiries').select('*').order('created_at', { ascending: false });
       if (!error && data && data.length > 0) {
-        saveToStorage('enquiries', data);
-        return data as Enquiry[];
+        const normalized = data.map((d: any) => ({
+          ...d,
+          is_archived: Boolean(d.is_archived ?? d.archived ?? false),
+        }));
+        saveToStorage('enquiries', normalized);
+        return normalized as Enquiry[];
       }
     }
     return getStoredOrInitial('enquiries', INITIAL_ENQUIRIES);
@@ -688,10 +693,15 @@ export const apiService = {
       ...enquiry,
       id: 'enq-' + Date.now(),
       created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
     };
     const supabase = getSupabaseClient();
     if (supabase) {
-      await supabase.from('enquiries').insert(newEnquiry);
+      const payload: any = { ...newEnquiry };
+      if (typeof payload.is_archived === 'boolean') {
+        payload.archived = payload.is_archived;
+      }
+      await supabase.from('enquiries').insert(payload);
     }
     const current = await this.getEnquiries();
     const updated = [newEnquiry, ...current];
@@ -700,7 +710,7 @@ export const apiService = {
     // Auto generate notification
     await this.createNotification({
       title: 'New Wedding Lead Received',
-      message: `${newEnquiry.client_name} enquired for ${newEnquiry.venue} ($${newEnquiry.estimated_budget.toLocaleString()})`,
+      message: `${newEnquiry.client_name} enquired for ${newEnquiry.venue || 'Wedding'} (₹${newEnquiry.estimated_budget.toLocaleString()})`,
       type: 'new_enquiry',
       read: false,
       link: 'enquiries',
@@ -710,14 +720,118 @@ export const apiService = {
   },
 
   async updateEnquiry(enquiry: Enquiry): Promise<Enquiry> {
+    const updatedWithTimestamp: Enquiry = {
+      ...enquiry,
+      updated_at: new Date().toISOString(),
+    };
     const supabase = getSupabaseClient();
     if (supabase) {
-      await supabase.from('enquiries').update(enquiry).eq('id', enquiry.id);
+      const payload: any = { ...updatedWithTimestamp };
+      if (typeof payload.is_archived === 'boolean') {
+        payload.archived = payload.is_archived;
+      }
+      const { error } = await supabase.from('enquiries').update(payload).eq('id', enquiry.id);
+      if (error) {
+        console.warn('Supabase update enquiry warning:', error);
+      }
     }
     const current = await this.getEnquiries();
-    const updated = current.map(e => (e.id === enquiry.id ? enquiry : e));
+    const updated = current.map(e => (e.id === enquiry.id ? updatedWithTimestamp : e));
     saveToStorage('enquiries', updated);
-    return enquiry;
+    return updatedWithTimestamp;
+  },
+
+  async deleteEnquiry(id: string): Promise<void> {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      const { error } = await supabase.from('enquiries').delete().eq('id', id);
+      if (error) {
+        console.error('Failed to delete enquiry from Supabase:', error);
+        throw new Error(`Failed to delete enquiry: ${error.message}`);
+      }
+    }
+    const current = await this.getEnquiries();
+    const updated = current.filter(e => e.id !== id);
+    saveToStorage('enquiries', updated);
+  },
+
+  // QUOTATIONS
+  async getQuotations(enquiryId?: string): Promise<Quotation[]> {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        let query = supabase.from('quotations').select('*').order('created_at', { ascending: false });
+        if (enquiryId) {
+          query = query.eq('enquiry_id', enquiryId);
+        }
+        const { data, error } = await query;
+        if (!error && data && data.length > 0) {
+          saveToStorage('quotations', data);
+          return data as Quotation[];
+        }
+      } catch {
+        // Fallback to local storage if table is not yet provisioned
+      }
+    }
+    const all = getStoredOrInitial('quotations', INITIAL_QUOTATIONS);
+    if (enquiryId) {
+      return all.filter(q => q.enquiry_id === enquiryId);
+    }
+    return all;
+  },
+
+  async createQuotation(quotation: Omit<Quotation, 'id' | 'created_at'>): Promise<Quotation> {
+    const newQuotation: Quotation = {
+      ...quotation,
+      id: 'quote-' + Date.now(),
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    };
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        await supabase.from('quotations').insert(newQuotation);
+      } catch (err) {
+        console.warn('Supabase quotations insert optional fallback:', err);
+      }
+    }
+    const current = await this.getQuotations();
+    const updated = [newQuotation, ...current];
+    saveToStorage('quotations', updated);
+    return newQuotation;
+  },
+
+  async updateQuotation(quotation: Quotation): Promise<Quotation> {
+    const updatedWithTimestamp: Quotation = {
+      ...quotation,
+      updated_at: new Date().toISOString(),
+    };
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        await supabase.from('quotations').update(updatedWithTimestamp).eq('id', quotation.id);
+      } catch (err) {
+        console.warn('Supabase quotations update optional fallback:', err);
+      }
+    }
+    const current = await this.getQuotations();
+    const updated = current.map(q => (q.id === quotation.id ? updatedWithTimestamp : q));
+    saveToStorage('quotations', updated);
+    return updatedWithTimestamp;
+  },
+
+  async deleteQuotation(id: string): Promise<void> {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        await supabase.from('quotations').delete().eq('id', id);
+      } catch (err) {
+        console.warn('Supabase quotations delete optional fallback:', err);
+      }
+    }
+    const current = await this.getQuotations();
+    const updated = current.filter(q => q.id !== id);
+    saveToStorage('quotations', updated);
   },
 
   // PROJECTS
