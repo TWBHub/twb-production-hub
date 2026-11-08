@@ -17,6 +17,7 @@ import {
 import { Enquiry, Company, Quotation, QuotationLineItem, QuotationState } from '../../types';
 import { generateQuotationPDF, downloadPdfDoc, getOfficialCompanyInfo } from '../../utils/pdfGenerator';
 import { formatDisplayDate } from '../../utils/dateUtils';
+import { generateProposalReference, getProposalFilename } from '../../utils/proposalRevisionUtils';
 
 interface QuotationBuilderModalProps {
   isOpen: boolean;
@@ -24,6 +25,7 @@ interface QuotationBuilderModalProps {
   enquiry: Enquiry;
   company: Company;
   existingQuotation?: Quotation | null;
+  allQuotations?: Quotation[];
   onSaveQuotation: (quotation: Omit<Quotation, 'id' | 'created_at' | 'updated_at'> | Quotation) => Promise<void>;
 }
 
@@ -44,11 +46,14 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
   enquiry,
   company,
   existingQuotation,
+  allQuotations = [],
   onSaveQuotation,
 }) => {
   const [items, setItems] = useState<QuotationLineItem[]>([]);
   const [quotationNumber, setQuotationNumber] = useState('');
+  const [proposalId, setProposalId] = useState('');
   const [version, setVersion] = useState(1);
+  const [baseVersion, setBaseVersion] = useState<number | null>(null);
   const [status, setStatus] = useState<QuotationState>('Draft');
   const [issueDate, setIssueDate] = useState('');
   const [validUntil, setValidUntil] = useState('');
@@ -63,18 +68,33 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
   const [activeTab, setActiveTab] = useState<'editor' | 'preview'>('editor');
 
   useEffect(() => {
+    if (!isOpen) return;
+
     if (existingQuotation) {
+      // Editing an existing proposal:
+      // Preserve persistent parent identity and unique Proposal Reference
+      const pId = existingQuotation.proposal_id || existingQuotation.quotation_number;
+      setProposalId(pId);
       setQuotationNumber(existingQuotation.quotation_number);
-      setVersion(existingQuotation.version || 1);
-      setStatus(existingQuotation.status || 'Draft');
-      setIssueDate(existingQuotation.issue_date || new Date().toISOString().slice(0, 10));
-      setValidUntil(
-        existingQuotation.valid_until ||
-          existingQuotation.valid_until_date ||
-          new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+      setBaseVersion(existingQuotation.version || 1);
+
+      // Automatically calculate next revision: highest existing revision for that proposal + 1
+      const matchingRevisions = (allQuotations || []).filter(
+        q => (q.proposal_id && q.proposal_id === pId) || q.quotation_number === existingQuotation.quotation_number
       );
-      setItems(existingQuotation.items || []);
-      // If quotation has existing subtotal or total, preserve it
+      const maxExistingVersion = Math.max(
+        ...matchingRevisions.map(r => Number(r.version) || 1),
+        Number(existingQuotation.version) || 1,
+        1
+      );
+      setVersion(maxExistingVersion + 1);
+
+      setStatus('Draft');
+      setIssueDate(new Date().toISOString().slice(0, 10));
+      setValidUntil(
+        new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+      );
+      setItems((existingQuotation.items || []).map(i => ({ ...i })));
       const existingAmount = existingQuotation.subtotal || existingQuotation.total || existingQuotation.total_amount || 0;
       setPackageInvestment(existingAmount);
       setDiscount(existingQuotation.discount || 0);
@@ -85,9 +105,11 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
           'Dates and crew allocation are reserved upon receipt of advance booking retainer.'
       );
     } else {
-      const code = (company?.code || 'TWB').toUpperCase();
-      const randomSeq = enquiry.id.replace('enq-', '').slice(-4).toUpperCase() || '101';
-      setQuotationNumber(`QT-${code}-2026-${randomSeq}`);
+      // Genuinely new proposal: generate a unique Proposal Reference and start at v1
+      const newRef = generateProposalReference(company?.code || 'TWB', allQuotations);
+      setQuotationNumber(newRef);
+      setProposalId(`prop-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`);
+      setBaseVersion(null);
       setVersion(1);
       setStatus('Draft');
       setIssueDate(new Date().toISOString().slice(0, 10));
@@ -135,11 +157,9 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
         ]);
       }
 
-      // Keep package investment unset/empty initially.
-      // The internal estimated budget is never auto-exposed as the proposal amount.
       setPackageInvestment(0);
     }
-  }, [existingQuotation, enquiry, company, isOpen]);
+  }, [existingQuotation, enquiry, company, isOpen, allQuotations]);
 
   if (!isOpen) return null;
 
@@ -170,17 +190,13 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
     setItems(prev => prev.filter(i => i.id !== id));
   };
 
-  const handleCreateRevision = () => {
-    setVersion(prev => prev + 1);
-    setStatus('Draft');
-  };
-
   const handleSave = async () => {
     try {
       setIsSubmitting(true);
       const payload = {
+        proposal_id: proposalId,
         enquiry_id: enquiry.id,
-        company_id: company.id,
+        company_id: (company?.code === 'golden_june' ? 'golden_june' : 'twb') as 'twb' | 'golden_june',
         quotation_number: quotationNumber,
         version,
         status,
@@ -198,21 +214,9 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
         payment_terms: paymentTerms.trim() || undefined,
       };
 
-      if (existingQuotation) {
-        if (version > (existingQuotation.version || 1)) {
-          await onSaveQuotation({
-            ...payload,
-            version,
-          });
-        } else {
-          await onSaveQuotation({
-            ...existingQuotation,
-            ...payload,
-          });
-        }
-      } else {
-        await onSaveQuotation(payload);
-      }
+      // Always create a new revision record under the same proposal_id and quotation_number.
+      // This strictly preserves all previously saved revisions in database and history without mutating them.
+      await onSaveQuotation(payload);
       onClose();
     } catch (err) {
       console.error('Failed to save quotation:', err);
@@ -224,8 +228,9 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
   const handleDownloadPDF = () => {
     const currentQuoteObject: Quotation = {
       id: existingQuotation?.id || 'temp-quote',
+      proposal_id: proposalId,
       enquiry_id: enquiry.id,
-      company_id: company.id,
+      company_id: (company?.code === 'golden_june' ? 'golden_june' : 'twb') as 'twb' | 'golden_june',
       quotation_number: quotationNumber,
       version,
       status,
@@ -245,7 +250,7 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
     };
 
     const doc = generateQuotationPDF(enquiry, company, currentQuoteObject);
-    const filename = `${company.code.toUpperCase()}-Proposal-${quotationNumber.replace(/[^a-zA-Z0-9-]/g, '_')}_v${version}.pdf`;
+    const filename = getProposalFilename(company, enquiry, currentQuoteObject);
     downloadPdfDoc(doc, filename);
   };
 
@@ -280,16 +285,22 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
                 <h2 className="text-base font-bold text-slate-900">
                   Commissioned Production Proposal & Scope
                 </h2>
-                <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-slate-100 text-slate-800 border border-slate-200">
-                  Rev v{version}
+                <span
+                  className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                    baseVersion !== null
+                      ? 'bg-amber-50 text-amber-800 border border-amber-200'
+                      : 'bg-blue-50 text-blue-800 border border-blue-200'
+                  }`}
+                >
+                  {baseVersion !== null ? `Revision v${version}` : 'Revision v1 (Initial)'}
                 </span>
                 <span
                   className={`px-2 py-0.5 rounded text-[11px] font-bold ${
                     status === 'Sent'
                       ? 'bg-blue-100 text-blue-800'
-                      : status === 'Accepted'
+                      : status === 'Approved'
                       ? 'bg-emerald-100 text-emerald-800'
-                      : status === 'Rejected'
+                      : status === 'Declined'
                       ? 'bg-red-100 text-red-800'
                       : 'bg-slate-100 text-slate-700'
                   }`}
@@ -298,8 +309,11 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
                 </span>
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
-                Prepared for <strong className="text-slate-800">{leadTitle}</strong>
-                {enquiry.venue ? ` • ${enquiry.venue}` : ''}
+                Prepared for <strong className="text-slate-800">{leadTitle}</strong> • Ref:{' '}
+                <span className="font-mono font-semibold text-slate-700">{quotationNumber}</span>
+                {baseVersion !== null && (
+                  <span className="text-amber-700 ml-1.5 font-medium">(Base: v{baseVersion})</span>
+                )}
               </p>
             </div>
           </div>
@@ -774,25 +788,13 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
         {/* Footer Actions */}
         <div className="flex flex-wrap items-center justify-between gap-3 pt-4 border-t border-slate-100 shrink-0">
           <div className="flex items-center gap-2">
-            {existingQuotation && (
-              <button
-                type="button"
-                onClick={handleCreateRevision}
-                className="px-3 py-2 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg transition-colors flex items-center gap-1.5"
-                title="Create a new revision number for this quotation"
-              >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>New Revision (v{version + 1})</span>
-              </button>
-            )}
-
             <button
               type="button"
               onClick={handleDownloadPDF}
               className="px-4 py-2 text-xs font-semibold bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg transition-colors flex items-center gap-1.5"
             >
               <Download className="w-3.5 h-3.5" />
-              <span>Download Official PDF</span>
+              <span>Download Official PDF (v{version})</span>
             </button>
           </div>
 
@@ -812,7 +814,13 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
               className="px-5 py-2 text-xs font-semibold bg-red-600 hover:bg-red-700 text-white rounded-lg shadow-xs transition-colors flex items-center gap-1.5 disabled:opacity-50"
             >
               <CheckCircle2 className="w-4 h-4" />
-              <span>{isSubmitting ? 'Saving...' : 'Save Quotation Record'}</span>
+              <span>
+                {isSubmitting
+                  ? 'Saving...'
+                  : baseVersion !== null
+                  ? `Save as Revision v${version}`
+                  : 'Save Proposal (v1)'}
+              </span>
             </button>
           </div>
         </div>

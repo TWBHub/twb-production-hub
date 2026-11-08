@@ -96,6 +96,7 @@ export interface QuotationLineItem {
 
 export interface Quotation {
   id: string;
+  proposal_id?: string;
   quotation_number: string;
   enquiry_id: string;
   company_id: 'twb' | 'golden_june';

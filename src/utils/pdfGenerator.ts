@@ -4,6 +4,9 @@ import { getProjectClauses } from './termsLibrary';
 import { sortProjectEvents } from './eventUtils';
 import { formatDisplayDate, formatDisplayDateRange } from './dateUtils';
 import { isGoldenJune, isTWB } from './companyUtils';
+import { getProposalFilename, sanitizeProjectNameForFilename } from './proposalRevisionUtils';
+
+export { getProposalFilename, sanitizeProjectNameForFilename };
 
 /**
  * Downloads a jsPDF document safely in both standard browser and sandboxed iFrame environments.
@@ -633,7 +636,7 @@ export const generateQuotationPDF = (
   }
 
   // Attach safe download helpers
-  const properFilename = `${officialCompany.code.toUpperCase()}-Proposal-${quoteNumber.replace(/[^a-zA-Z0-9-]/g, '_')}.pdf`;
+  const properFilename = getProposalFilename(company, enquiry, quotationOrConfig as any);
   const originalSave = doc.save.bind(doc);
   (doc as any).__originalSave = originalSave;
   (doc as any).save = (filename?: string, options?: any) => {

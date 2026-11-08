@@ -32,7 +32,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { Enquiry, EnquiryStatus, Company, Quotation } from '../../types';
 import { formatDisplayDate } from '../../utils/dateUtils';
-import { generateQuotationPDF, downloadPdfDoc } from '../../utils/pdfGenerator';
+import { groupQuotationsIntoProposals } from '../../utils/proposalRevisionUtils';
 import { LeadFormModal } from './LeadFormModal';
 import { LeadDetailsModal } from './LeadDetailsModal';
 import { QuotationBuilderModal } from './QuotationBuilderModal';
@@ -639,14 +639,20 @@ export const EnquiriesView: React.FC = () => {
                     {/* Actions */}
                     <td className="py-3 px-4 text-right" onClick={e => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => handleOpenQuotationBuilder(lead, null)}
-                          className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                          title="Generate Quotation PDF"
-                        >
-                          <FileText className="w-3.5 h-3.5" />
-                        </button>
+                        {(() => {
+                          const leadQuotes = quotations.filter(q => q.enquiry_id === lead.id);
+                          const latestQuote = leadQuotes.length > 0 ? groupQuotationsIntoProposals(leadQuotes)[0]?.latestQuotation : null;
+                          return (
+                            <button
+                              type="button"
+                              onClick={() => handleOpenQuotationBuilder(lead, latestQuote)}
+                              className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
+                              title={latestQuote ? `Revise Proposal (${latestQuote.quotation_number} v${latestQuote.version})` : 'Create Quotation Proposal'}
+                            >
+                              <FileText className="w-3.5 h-3.5" />
+                            </button>
+                          );
+                        })()}
                         <button
                           type="button"
                           onClick={() => handleOpenEdit(lead)}
@@ -771,6 +777,7 @@ export const EnquiriesView: React.FC = () => {
           enquiry={quoteModalEnquiry}
           company={resolveCompanyForEnquiry(quoteModalEnquiry.company_id)}
           existingQuotation={quoteToEdit}
+          allQuotations={quotations}
           onSaveQuotation={handleSaveQuotation}
         />
       )}

@@ -26,10 +26,12 @@ import {
   Instagram,
   Check,
   CheckCheck,
+  History,
 } from 'lucide-react';
 import { Enquiry, Company, Quotation, EnquiryStatus, TeamMember } from '../../types';
 import { formatDisplayDate } from '../../utils/dateUtils';
 import { generateQuotationPDF, downloadPdfDoc } from '../../utils/pdfGenerator';
+import { groupQuotationsIntoProposals, getProposalFilename } from '../../utils/proposalRevisionUtils';
 
 interface LeadDetailsModalProps {
   isOpen: boolean;
@@ -74,8 +76,9 @@ export const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({
   const isTWB = enquiry.company_id === 'twb';
   const displayTitle = enquiry.title || enquiry.client_name || 'Wedding Lead';
 
-  // Filter quotations for this lead
+  // Filter quotations for this lead & group into distinct proposals with revision history
   const leadQuotes = quotations.filter(q => q.enquiry_id === enquiry.id);
+  const proposalGroups = groupQuotationsIntoProposals(leadQuotes);
 
   // Check follow-up status
   const todayStr = new Date().toISOString().slice(0, 10);
@@ -100,7 +103,7 @@ export const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({
 
   const handleDownloadQuote = (quote: Quotation) => {
     const doc = generateQuotationPDF(enquiry, company, quote);
-    const filename = `${company.code.toUpperCase()}-Quotation-${quote.quotation_number.replace(/[^a-zA-Z0-9-]/g, '_')}_v${quote.version}.pdf`;
+    const filename = getProposalFilename(company, enquiry, quote);
     downloadPdfDoc(doc, filename);
   };
 
@@ -354,7 +357,7 @@ export const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({
           >
             <span>Quotations</span>
             <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-slate-100 text-slate-700">
-              {leadQuotes.length}
+              {proposalGroups.length}
             </span>
           </button>
 
@@ -624,22 +627,27 @@ export const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({
 
           {/* 4. Quotations / Proposals */}
           {activeTab === 'quotations' && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <h4 className="font-bold text-slate-800 text-[11px] uppercase tracking-wider">
-                  Proposals & Revision History
-                </h4>
+            <div className="space-y-4">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+                <div>
+                  <h4 className="font-bold text-slate-800 text-[11px] uppercase tracking-wider">
+                    Proposals & Revision History
+                  </h4>
+                  <p className="text-[10px] text-slate-500">
+                    Each proposal retains its unique Proposal Reference with all historical revisions saved.
+                  </p>
+                </div>
                 <button
                   type="button"
                   onClick={() => onOpenQuotationBuilder(enquiry, null)}
-                  className="px-3 py-1.5 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer"
+                  className="px-3 py-1.5 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg transition-colors flex items-center gap-1.5 cursor-pointer shadow-xs self-start sm:self-auto"
                 >
                   <Plus className="w-3.5 h-3.5" />
                   <span>Create Proposal</span>
                 </button>
               </div>
 
-              {leadQuotes.length === 0 ? (
+              {proposalGroups.length === 0 ? (
                 <div className="p-8 bg-slate-50 border border-dashed border-slate-200 rounded-xl text-center space-y-2">
                   <FileText className="w-8 h-8 text-slate-300 mx-auto" />
                   <p className="text-xs font-medium text-slate-700">No proposals drafted yet</p>
@@ -656,64 +664,172 @@ export const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({
                   </button>
                 </div>
               ) : (
-                <div className="space-y-2.5">
-                  {leadQuotes.map(quote => {
-                    const totalVal = quote.total_amount || quote.total || 0;
+                <div className="space-y-4">
+                  {proposalGroups.map(group => {
+                    const latest = group.latestQuotation;
+                    const latestTotal = latest.total_amount || latest.total || 0;
                     return (
                       <div
-                        key={quote.id}
-                        className="p-3.5 bg-white border border-slate-200 rounded-xl shadow-2xs flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 text-xs"
+                        key={group.proposalId}
+                        className="bg-white border border-slate-200 rounded-xl shadow-xs overflow-hidden"
                       >
-                        <div className="space-y-1">
-                          <div className="flex items-center gap-2">
-                            <span className="font-bold text-slate-900">{quote.quotation_number}</span>
-                            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-slate-100 text-slate-700">
-                              v{quote.version}
-                            </span>
-                            <span
-                              className={`text-[10px] font-bold px-2 py-0.5 rounded ${
-                                quote.status === 'Approved'
-                                  ? 'bg-emerald-100 text-emerald-800'
-                                  : quote.status === 'Sent'
-                                  ? 'bg-blue-100 text-blue-800'
-                                  : quote.status === 'Declined'
-                                  ? 'bg-red-100 text-red-800'
-                                  : 'bg-slate-100 text-slate-700'
-                              }`}
-                            >
-                              {quote.status}
-                            </span>
+                        {/* Parent Proposal Header & Latest Revision Summary */}
+                        <div className="p-4 bg-slate-50/70 border-b border-slate-200/80 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                          <div className="space-y-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-bold text-slate-900 text-sm font-mono tracking-tight">
+                                {group.quotationNumber}
+                              </span>
+                              <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-slate-900 text-white shadow-2xs">
+                                Revision v{group.highestVersion} (Latest)
+                              </span>
+                              <span
+                                className={`text-[10px] font-bold px-2 py-0.5 rounded ${
+                                  latest.status === 'Approved'
+                                    ? 'bg-emerald-100 text-emerald-800'
+                                    : latest.status === 'Sent'
+                                    ? 'bg-blue-100 text-blue-800'
+                                    : latest.status === 'Declined'
+                                    ? 'bg-red-100 text-red-800'
+                                    : 'bg-slate-200 text-slate-700'
+                                }`}
+                              >
+                                {latest.status}
+                              </span>
+                            </div>
+                            <div className="text-[11px] text-slate-500 flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                              <span>Issued: <strong>{formatDisplayDate(latest.issue_date)}</strong></span>
+                              <span>•</span>
+                              <span>{latest.items?.length || 0} scope items</span>
+                              <span>•</span>
+                              <span>{group.revisions.length} revision{group.revisions.length > 1 ? 's' : ''} saved</span>
+                            </div>
                           </div>
-                          <div className="text-[11px] text-slate-500">
-                            Issued: {formatDisplayDate(quote.issue_date)} • {quote.items?.length || 0} scope items
+
+                          <div className="flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-200/60">
+                            <div className="text-left sm:text-right">
+                              <span className="text-[10px] text-slate-400 block font-normal uppercase tracking-wider">
+                                Current Investment
+                              </span>
+                              <span className="font-mono font-bold text-slate-900 text-base">
+                                ₹{latestTotal.toLocaleString('en-IN')}
+                              </span>
+                            </div>
+
+                            <div className="flex items-center gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleDownloadQuote(latest)}
+                                className="px-2.5 py-1.5 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg text-slate-700 font-semibold text-xs transition-colors flex items-center gap-1.5 shadow-2xs cursor-pointer"
+                                title={`Download PDF (${getProposalFilename(company, enquiry, latest)})`}
+                              >
+                                <Download className="w-3.5 h-3.5 text-slate-600" />
+                                <span>Download PDF</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => onOpenQuotationBuilder(enquiry, latest)}
+                                className="px-2.5 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg font-semibold text-xs transition-colors flex items-center gap-1.5 shadow-xs cursor-pointer"
+                                title="Create next revision under this proposal reference"
+                              >
+                                <Edit2 className="w-3.5 h-3.5" />
+                                <span>Revise Proposal</span>
+                              </button>
+                            </div>
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-3">
-                          <div className="text-right">
-                            <span className="text-[10px] text-slate-400 block font-normal">Package Investment</span>
-                            <span className="font-mono font-bold text-slate-900 text-sm">
-                              ₹{totalVal.toLocaleString('en-IN')}
+                        {/* All Historical Revisions listed under one proposal entry */}
+                        <div className="p-3 bg-white space-y-2">
+                          <div className="flex items-center justify-between px-1 text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                            <span className="flex items-center gap-1.5">
+                              <History className="w-3.5 h-3.5 text-slate-400" />
+                              <span>Revision History ({group.revisions.length})</span>
+                            </span>
+                            <span className="text-[10px] normal-case text-slate-400">
+                              All versions preserved
                             </span>
                           </div>
 
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              onClick={() => handleDownloadQuote(quote)}
-                              className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
-                              title="Download Proposal PDF"
-                            >
-                              <Download className="w-4 h-4" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => onOpenQuotationBuilder(enquiry, quote)}
-                              className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
-                              title="Edit / Revise Proposal"
-                            >
-                              <Edit2 className="w-4 h-4" />
-                            </button>
+                          <div className="divide-y divide-slate-100 border border-slate-100 rounded-lg overflow-hidden">
+                            {group.revisions.map(rev => {
+                              const revTotal = rev.total_amount || rev.total || 0;
+                              const isLatest = rev.version === group.highestVersion;
+                              return (
+                                <div
+                                  key={rev.id || `${rev.quotation_number}-v${rev.version}`}
+                                  className={`p-2.5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 text-xs transition-colors ${
+                                    isLatest ? 'bg-slate-50/50' : 'bg-white hover:bg-slate-50/30'
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-2">
+                                    <span
+                                      className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                        isLatest
+                                          ? 'bg-blue-100 text-blue-900 font-mono'
+                                          : 'bg-slate-100 text-slate-700 font-mono'
+                                      }`}
+                                    >
+                                      v{rev.version}
+                                    </span>
+
+                                    <div className="text-[11px] text-slate-600">
+                                      <span className="font-medium text-slate-800">
+                                        {formatDisplayDate(rev.issue_date || rev.created_at)}
+                                      </span>
+                                      <span className="mx-1.5 text-slate-300">•</span>
+                                      <span>{rev.items?.length || 0} scope items</span>
+                                      {rev.discount ? (
+                                        <>
+                                          <span className="mx-1.5 text-slate-300">•</span>
+                                          <span className="text-emerald-700">₹{rev.discount.toLocaleString('en-IN')} disc.</span>
+                                        </>
+                                      ) : null}
+                                    </div>
+
+                                    <span
+                                      className={`text-[9px] font-bold px-1.5 py-0.2 rounded ml-1 ${
+                                        rev.status === 'Approved'
+                                          ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                          : rev.status === 'Sent'
+                                          ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                                          : rev.status === 'Declined'
+                                          ? 'bg-red-50 text-red-700 border border-red-200'
+                                          : 'bg-slate-100 text-slate-600'
+                                      }`}
+                                    >
+                                      {rev.status}
+                                    </span>
+                                  </div>
+
+                                  <div className="flex items-center justify-between sm:justify-end gap-3">
+                                    <span className="font-mono font-semibold text-slate-800 text-xs">
+                                      ₹{revTotal.toLocaleString('en-IN')}
+                                    </span>
+
+                                    <div className="flex items-center gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDownloadQuote(rev)}
+                                        className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors cursor-pointer"
+                                        title={`Download PDF v${rev.version} (${getProposalFilename(company, enquiry, rev)})`}
+                                      >
+                                        <Download className="w-3.5 h-3.5" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => onOpenQuotationBuilder(enquiry, rev)}
+                                        className="p-1.5 text-slate-600 hover:text-slate-900 hover:bg-slate-100 rounded-md transition-colors cursor-pointer"
+                                        title={`Create new revision based on v${rev.version}`}
+                                      >
+                                        <Edit2 className="w-3.5 h-3.5" />
+                                      </button>
+                                    </div>
+                                  </div>
+                                </div>
+                              );
+                            })}
                           </div>
                         </div>
                       </div>
