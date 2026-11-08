@@ -19,6 +19,7 @@ import {
   CalendarEvent,
   AppNotification,
   DeliverableStatus,
+  ServiceCatalogueItem,
 } from '../types';
 import { apiService } from '../services/api';
 import { INITIAL_PROFILES } from '../services/seedData';
@@ -79,6 +80,7 @@ interface AppContextType {
   calendarEvents: CalendarEvent[];
   notifications: AppNotification[];
   unreadNotificationCount: number;
+  services: ServiceCatalogueItem[];
 
   // Filtered views based on current Brand and User Role
   filteredProjects: Project[];
@@ -98,6 +100,9 @@ interface AppContextType {
   createEnquiry: (enquiry: Omit<Enquiry, 'id' | 'created_at'>) => Promise<Enquiry>;
   updateEnquiry: (enquiry: Enquiry) => Promise<Enquiry>;
   deleteEnquiry: (id: string) => Promise<void>;
+  createService: (service: Omit<ServiceCatalogueItem, 'id'>) => Promise<ServiceCatalogueItem>;
+  updateService: (service: ServiceCatalogueItem) => Promise<ServiceCatalogueItem>;
+  deleteService: (id: string) => Promise<void>;
   quotations: Quotation[];
   createQuotation: (quotation: Omit<Quotation, 'id' | 'created_at'>) => Promise<Quotation>;
   updateQuotation: (quotation: Quotation) => Promise<Quotation>;
@@ -142,6 +147,7 @@ assignTeamMember: (
   updatePayment: (payment: Payment) => Promise<Payment>;
   deletePayment: (id: string) => Promise<void>;
   createCalendarEvent: (event: Omit<CalendarEvent, 'id'>) => Promise<CalendarEvent>;
+  updateCalendarEvent: (event: CalendarEvent) => Promise<CalendarEvent>;
   deleteCalendarEvent: (id: string) => Promise<void>;
   markNotificationRead: (id: string) => Promise<void>;
   markAllNotificationsRead: () => Promise<void>;
@@ -204,6 +210,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [quotations, setQuotations] = useState<Quotation[]>([]);
+  const [services, setServices] = useState<ServiceCatalogueItem[]>([]);
 
   // Persist brand filter
   const handleSetBrandFilter = (brand: BrandId) => {
@@ -240,6 +247,7 @@ const refreshAllData = useCallback(async () => {
       apiService.getCalendarEvents(),
       apiService.getNotifications(),
       apiService.getQuotations(),
+      apiService.getServices(),
     ]);
 
     const names = [
@@ -257,6 +265,7 @@ const refreshAllData = useCallback(async () => {
       'calendar events',
       'notifications',
       'quotations',
+      'services',
     ];
 
     results.forEach((result, index) => {
@@ -283,6 +292,7 @@ const refreshAllData = useCallback(async () => {
       evts,
       notifs,
       quots,
+      srvs,
     ] = results;
 
     if (comps.status === 'fulfilled') setCompanies(comps.value);
@@ -299,6 +309,7 @@ const refreshAllData = useCallback(async () => {
     if (evts.status === 'fulfilled') setCalendarEvents(evts.value);
     if (notifs.status === 'fulfilled') setNotifications(notifs.value);
     if (quots && quots.status === 'fulfilled') setQuotations(quots.value);
+    if (srvs && srvs.status === 'fulfilled') setServices(srvs.value);
   } catch (err) {
     console.error('Failed to load TWBHub data:', err);
   }
@@ -618,6 +629,24 @@ const matchBrand = (companyId: string) => {
     await refreshAllData();
   };
 
+  const createService = async (item: Omit<ServiceCatalogueItem, 'id'>) => {
+    const created = await apiService.createService(item);
+    await refreshAllData();
+    return created;
+  };
+
+  const updateService = async (item: ServiceCatalogueItem) => {
+    const updated = await apiService.updateService(item);
+    await refreshAllData();
+    return updated;
+  };
+
+  const deleteService = async (id: string) => {
+    setServices(prev => prev.filter(s => s.id !== id));
+    await apiService.deleteService(id);
+    await refreshAllData();
+  };
+
   const createQuotation = async (quotation: Omit<Quotation, 'id' | 'created_at' | 'updated_at'>) => {
     const created = await apiService.createQuotation(quotation);
     await refreshAllData();
@@ -840,6 +869,12 @@ const deleteExpense = async (id: string) => {
     return created;
   };
 
+  const updateCalendarEvent = async (event: CalendarEvent) => {
+    const updated = await apiService.updateCalendarEvent(event);
+    await refreshAllData();
+    return updated;
+  };
+
   const deleteCalendarEvent = async (id: string) => {
     await apiService.deleteCalendarEvent(id);
     await refreshAllData();
@@ -908,6 +943,10 @@ const deleteExpense = async (id: string) => {
         createEnquiry,
         updateEnquiry,
         deleteEnquiry,
+        services,
+        createService,
+        updateService,
+        deleteService,
         quotations,
         createQuotation,
         updateQuotation,
@@ -935,6 +974,7 @@ assignTeamMember,
         updatePayment,
         deletePayment,
         createCalendarEvent,
+        updateCalendarEvent,
         deleteCalendarEvent,
         markNotificationRead,
         markAllNotificationsRead,

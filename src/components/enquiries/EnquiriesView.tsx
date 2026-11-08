@@ -62,6 +62,7 @@ export const EnquiriesView: React.FC = () => {
     brandFilter,
     teamMembers,
     clients,
+    projects,
     createClient,
     createProject,
     setActiveTab,
@@ -118,6 +119,7 @@ export const EnquiriesView: React.FC = () => {
         // Multi-attribute search
         if (searchQuery.trim()) {
           const q = searchQuery.toLowerCase();
+          const matchTitle = e.title?.toLowerCase().includes(q);
           const matchClient = e.client_name?.toLowerCase().includes(q);
           const matchPartner = e.partner_name?.toLowerCase().includes(q);
           const matchEmail = e.email?.toLowerCase().includes(q);
@@ -129,6 +131,7 @@ export const EnquiriesView: React.FC = () => {
           const matchNotes = e.notes?.toLowerCase().includes(q);
 
           if (
+            !matchTitle &&
             !matchClient &&
             !matchPartner &&
             !matchEmail &&
@@ -522,8 +525,11 @@ export const EnquiriesView: React.FC = () => {
                   lead.status !== 'Won' &&
                   lead.status !== 'Lost';
                 const couple = lead.partner_name
-                  ? `${lead.client_name} & ${lead.partner_name}`
-                  : lead.client_name;
+                  ? `${lead.client_name || 'Client'} & ${lead.partner_name}`
+                  : lead.client_name || '';
+                const leadDisplayName = lead.title || couple || 'Untitled Lead';
+                const hasSeparateCouple = Boolean(lead.title && couple && lead.title !== couple);
+                const contactParts = [lead.email, lead.phone].filter(Boolean);
 
                 return (
                   <tr
@@ -531,20 +537,25 @@ export const EnquiriesView: React.FC = () => {
                     onClick={() => handleOpenDetails(lead)}
                     className="hover:bg-slate-50/80 cursor-pointer transition-colors"
                   >
-                    {/* Couple & Contact */}
+                    {/* Couple / Title & Contact */}
                     <td className="py-3 px-4">
                       <div className="font-bold text-slate-900 hover:text-red-600 transition-colors flex items-center gap-1.5">
-                        <span>{couple}</span>
+                        <span>{leadDisplayName}</span>
                         {lead.is_archived && (
                           <span className="text-[9px] font-bold px-1.5 py-0.2 bg-slate-200 text-slate-700 rounded">
                             Archived
                           </span>
                         )}
                       </div>
+                      {hasSeparateCouple && (
+                        <div className="text-[11px] font-medium text-slate-700 truncate">{couple}</div>
+                      )}
                       <div className="text-[11px] text-slate-500 mt-0.5 flex items-center gap-2">
-                        <span className="truncate">{lead.email}</span>
-                        <span>•</span>
-                        <span>{lead.phone}</span>
+                        {contactParts.length > 0 ? (
+                          <span>{contactParts.join(' • ')}</span>
+                        ) : (
+                          <span className="text-slate-400 italic">No contact details yet</span>
+                        )}
                       </div>
                     </td>
 
@@ -564,16 +575,30 @@ export const EnquiriesView: React.FC = () => {
                     {/* Wedding Date & Venue */}
                     <td className="py-3 px-3">
                       <div className="font-semibold text-slate-800">
-                        {formatDisplayDate(lead.event_date)}
+                        {lead.event_date ? (
+                          formatDisplayDate(lead.event_date)
+                        ) : lead.events && lead.events.length > 0 ? (
+                          `${lead.events.length} event${lead.events.length > 1 ? 's' : ''} scheduled`
+                        ) : (
+                          <span className="text-slate-400 italic font-normal">No dates set</span>
+                        )}
                       </div>
                       <div className="text-[11px] text-slate-500 truncate max-w-[200px]">
-                        {lead.venue} {lead.city ? `(${lead.city})` : ''}
+                        {lead.venue || lead.city ? (
+                          [lead.venue, lead.city].filter(Boolean).join(', ')
+                        ) : (
+                          <span className="text-slate-400 italic">Location unconfirmed</span>
+                        )}
                       </div>
                     </td>
 
                     {/* Budget in INR */}
                     <td className="py-3 px-3 text-right font-mono font-bold text-slate-900">
-                      ₹{lead.estimated_budget?.toLocaleString('en-IN')}
+                      {lead.estimated_budget && lead.estimated_budget > 0 ? (
+                        `₹${lead.estimated_budget.toLocaleString('en-IN')}`
+                      ) : (
+                        <span className="text-slate-400 font-normal text-xs">—</span>
+                      )}
                     </td>
 
                     {/* Stage Dropdown */}
@@ -757,6 +782,7 @@ export const EnquiriesView: React.FC = () => {
           onClose={() => setConvertModalEnquiry(null)}
           enquiry={convertModalEnquiry}
           clients={clients}
+          projects={projects}
           company={resolveCompanyForEnquiry(convertModalEnquiry.company_id)}
           onCreateClient={createClient}
           onCreateProject={createProject}

@@ -17,6 +17,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { Client } from '../../types';
 import { formatDisplayDate } from '../../utils/dateUtils';
+import { resolveCompanyUuid, isTWB } from '../../utils/companyUtils';
 
 export const ClientsView: React.FC = () => {
   const {
@@ -80,10 +81,7 @@ const openEditClient = (client: Client) => {
   if (!name || !email) return;
 
   const clientData = {
-    company_id:
-  companyId === 'golden_june'
-    ? '3a19bbe1-a2bc-46db-bbbc-44ef7f5036ec'
-    : '5736bf57-b1db-4896-a4df-4963ded1c4c6',
+    company_id: resolveCompanyUuid(companyId),
     name,
     partner_name: partnerName,
     email,
@@ -185,16 +183,14 @@ const openEditClient = (client: Client) => {
               <div className="space-y-3">
                 <div className="flex items-center justify-between">
                   <span
-  className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${
-    client.company_id === '5736bf57-b1db-4896-a4df-4963ded1c4c6'
-      ? 'bg-blue-100 text-blue-800'
-      : 'bg-[#F1D099]/25 text-[#5e430c] border border-[#F1D099]/40'
-  }`}
->
-  {client.company_id === '5736bf57-b1db-4896-a4df-4963ded1c4c6'
-    ? 'TWB'
-    : 'Golden June'}
-</span>
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded uppercase tracking-wider ${
+                      isTWB(client.company_id)
+                        ? 'bg-blue-100 text-blue-800'
+                        : 'bg-[#F1D099]/25 text-[#5e430c] border border-[#F1D099]/40'
+                    }`}
+                  >
+                    {isTWB(client.company_id) ? 'TWB' : 'Golden June'}
+                  </span>
                   <span className="text-[11px] text-slate-400 font-medium">
                     {clientProjects.length} Projects
                   </span>
@@ -228,7 +224,7 @@ const openEditClient = (client: Client) => {
               <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
                 <div>
                   <div className="text-xs font-bold text-emerald-700">
-                    ₹{totalPaid.toLocaleString()}
+                    ₹{(totalPaid || 0).toLocaleString()}
                   </div>
                   <div className="text-[10px] text-slate-400">Total Billed Paid</div>
                 </div>
@@ -305,7 +301,7 @@ const openEditClient = (client: Client) => {
                         </div>
                       </div>
                       <div className="text-right">
-                        <div className="font-bold text-slate-900">₹{p.total_amount.toLocaleString()}</div>
+                        <div className="font-bold text-slate-900">₹{(p.total_amount || 0).toLocaleString()}</div>
                         <span className="text-[10px] text-blue-600 font-semibold">Open Project →</span>
                       </div>
                     </div>

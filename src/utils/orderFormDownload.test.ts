@@ -199,9 +199,9 @@ describe('Order Form PDF Generation and Download Suite', () => {
     );
     assert.ok(doc, 'Should generate cleanly with empty payments array');
 
-    // Page count must preserve the separate Terms & Conditions page (3 pages)
+    // Page count must prioritize a two-page layout (2 pages)
     const totalPages = doc.getNumberOfPages();
-    assert.strictEqual(totalPages, 3, 'Document must have exactly 3 pages preserving dedicated Terms & Conditions page');
+    assert.strictEqual(totalPages, 2, 'Document must have exactly 2 pages for standard project');
 
     // Verify uncompressed PDF stream does not contain wide character spacing glitch
     const uncompressedDoc = generateOrderFormPDF(
@@ -236,7 +236,7 @@ describe('Order Form PDF Generation and Download Suite', () => {
     );
   });
 
-  it('generates exactly 3 pages with Commercial Terms & Payment Schedule combined on Page 2', () => {
+  it('generates strictly 2 pages with Commercial Summary on Page 1, and Payment Schedule & Terms on Page 2', () => {
     const testProject: Project = {
       ...mockProject,
       total_amount: 340000,
@@ -253,20 +253,113 @@ describe('Order Form PDF Generation and Download Suite', () => {
     );
 
     const totalPages = doc.getNumberOfPages();
-    assert.strictEqual(totalPages, 3, 'Order form must be strictly 3 pages');
+    assert.strictEqual(totalPages, 2, 'Order form must be strictly 2 pages for standard project');
 
     const pdfContent = doc.output();
 
     // Verify sections exist in document
     assert.ok(pdfContent.includes('CLIENT & EVENT PROFILE'), 'Page 1 must contain Client Profile');
+    assert.ok(pdfContent.includes('PACKAGE & PRODUCTION SCOPE'), 'Page 1 must contain Package Scope');
     assert.ok(pdfContent.includes('DELIVERABLES'), 'Page 1 must contain Deliverables');
-    assert.ok(pdfContent.includes('COMMERCIAL TERMS & PRODUCTION FEES'), 'Must contain Commercial Terms');
-    assert.ok(pdfContent.includes('PAYMENT SCHEDULE'), 'Must contain Payment Schedule');
-    assert.ok(pdfContent.includes('TERMS & CONDITIONS'), 'Must contain Terms & Conditions');
+    assert.ok(pdfContent.includes('COMMERCIAL SUMMARY'), 'Page 1 must contain Commercial Summary');
+    assert.ok(pdfContent.includes('TOTAL ORDER AMOUNT'), 'Page 1 must contain Total Order Amount');
+    assert.ok(pdfContent.includes('ADVANCE / PAYMENT RECEIVED'), 'Page 1 must contain Advance Received');
+    assert.ok(pdfContent.includes('BALANCE DUE'), 'Page 1 must contain Balance Due');
+    assert.ok(pdfContent.includes('PAYMENT SCHEDULE'), 'Page 2 must contain Payment Schedule');
+    assert.ok(pdfContent.includes('TERMS & CONDITIONS'), 'Page 2 must contain Terms & Conditions');
 
-    // Page 2 must have footer "Page 2 of 3"
-    assert.ok(pdfContent.includes('Page 2 of 3'), 'Must contain Page 2 of 3 footer');
-    assert.ok(pdfContent.includes('Page 3 of 3'), 'Must contain Page 3 of 3 footer');
+    // Page footers
+    assert.ok(pdfContent.includes('Page 1 of 2'), 'Must contain Page 1 of 2 footer');
+    assert.ok(pdfContent.includes('Page 2 of 2'), 'Must contain Page 2 of 2 footer');
+  });
+
+  it('correctly handles project with missing venue and city (never inserts Principal Venue or India)', () => {
+    const noLocationProject: Project = {
+      ...mockProject,
+      venue: '',
+      city: '',
+      events: [
+        {
+          id: 'ev-no-loc',
+          project_id: 'proj-no-loc',
+          event_name: 'Reception',
+          event_date: '2026-11-20',
+          sort_order: 1,
+        },
+      ],
+    };
+
+    const doc = generateOrderFormPDF(
+      noLocationProject,
+      mockClient,
+      mockCompany,
+      mockDeliverables,
+      [],
+      { compress: false }
+    );
+
+    const pdfContent = doc.output();
+    assert.ok(
+      !pdfContent.includes('Principal Venue'),
+      'Must never contain "Principal Venue" placeholder'
+    );
+    assert.ok(
+      !pdfContent.includes('Principal Venue, India'),
+      'Must never contain "Principal Venue, India"'
+    );
+    assert.ok(
+      pdfContent.includes('Not specified'),
+      'Must display "Not specified" for missing venue/city'
+    );
+  });
+
+  it('preserves individual event addresses without project-level override', () => {
+    const multiEventProject: Project = {
+      ...mockProject,
+      venue: 'Main Palace Grounds',
+      city: 'Udaipur',
+      events: [
+        {
+          id: 'ev-1',
+          project_id: 'proj-456',
+          event_name: 'Mehendi & Sangeet',
+          event_date: '2026-11-20',
+          event_address: 'Mewar Courtyard Special Lawn',
+          sort_order: 1,
+        },
+        {
+          id: 'ev-2',
+          project_id: 'proj-456',
+          event_name: 'Haldi & Pheras',
+          event_date: '2026-11-21',
+          event_address: 'Lily Pond Lawn',
+          sort_order: 2,
+        },
+      ],
+    };
+
+    const doc = generateOrderFormPDF(
+      multiEventProject,
+      mockClient,
+      mockCompany,
+      mockDeliverables,
+      [],
+      { compress: false }
+    );
+
+    const pdfContent = doc.output();
+    assert.ok(
+      pdfContent.includes('Mewar Courtyard Special Lawn'),
+      'Must preserve event 1 individual address'
+    );
+    assert.ok(
+      pdfContent.includes('Lily Pond Lawn'),
+      'Must preserve event 2 individual address'
+    );
+    assert.ok(
+      !pdfContent.includes('Principal Venue'),
+      'Must not contain Principal Venue'
+    );
   });
 
   it('calculates payments correctly when recorded payments exist', () => {

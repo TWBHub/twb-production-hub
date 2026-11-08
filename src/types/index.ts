@@ -24,7 +24,7 @@ export interface Company {
 
 export interface Client {
   id: string;
-  company_id: 'twb' | 'golden_june';
+  company_id: 'twb' | 'golden_june' | string;
   name: string;
   partner_name?: string;
   email: string;
@@ -41,25 +41,42 @@ export interface Client {
 export type EnquiryStatus = 'New' | 'Contacted' | 'Meeting Scheduled' | 'Proposal Sent' | 'Won' | 'Lost';
 export type QuotationStatus = 'Draft' | 'Sent' | 'Approved' | 'Declined' | 'Expired';
 
+export interface ServiceCatalogueItem {
+  id: string;
+  name: string;
+  description?: string;
+  category?: 'Cinematography' | 'Photography' | 'Specialty' | 'Add-on';
+  applicable_brand: 'all' | 'twb' | 'golden_june';
+  is_active: boolean;
+  sort_order?: number;
+  created_at?: string;
+}
+
 export interface Enquiry {
   id: string;
   company_id: 'twb' | 'golden_june';
-  client_name: string;
+  title?: string; // Project / Lead Title (Required in New Lead form)
+  client_name?: string; // Primary Contact Name (optional, defaults to title)
   partner_name?: string;
-  email: string;
-  phone: string;
-  event_date: string;
-  venue: string;
+  email?: string;
+  phone?: string;
+  instagram?: string;
+  event_date?: string;
+  venue?: string;
   city?: string;
-  lead_source: string;
-  requirements: string;
-  estimated_budget: number;
+  lead_source?: string;
+  requirements?: string;
+  package_interest?: string;
+  estimated_budget?: number;
   status: EnquiryStatus;
   follow_up_date?: string;
   consultation_date?: string;
   assigned_to?: string;
   services?: string[];
+  events?: ProjectEvent[];
   notes?: string;
+  client_preferences?: string;
+  logistics_notes?: string;
   quotation_status: QuotationStatus;
   is_archived?: boolean;
   currency?: 'INR' | 'USD';
@@ -212,8 +229,9 @@ export const CLIENT_HDD_STATUS_OPTIONS: ClientHddStatus[] = [
 
 export interface Project {
   id: string;
-  company_id: 'twb' | 'golden_june';
+  company_id: 'twb' | 'golden_june' | string;
   client_id: string;
+  enquiry_id?: string;
   events?: ProjectEvent[];
   name: string;
   wedding_date_start: string;

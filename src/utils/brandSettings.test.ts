@@ -9,6 +9,8 @@ import {
   VERIFIED_BRAND_DETAILS,
   extractSupabaseCompanyPayload,
   mergeSupabaseCompanyRow,
+  resolveCompanyUuid,
+  resolveBrandCode,
 } from './companyUtils';
 import {
   getOfficialCompanyInfo,
@@ -113,6 +115,18 @@ function runTests() {
   // resolveCompany fallback when list is empty
   const fallbackTwb = resolveCompany([], 'twb', INITIAL_COMPANIES[0]);
   assert(fallbackTwb?.code === 'twb', 'resolveCompany: falls back to provided default on empty array', fallbackTwb?.code, 'twb');
+
+  // resolveCompanyUuid tests
+  assert(resolveCompanyUuid('twb') === TWB_COMPANY_UUID, 'resolveCompanyUuid: resolves "twb" to TWB UUID', resolveCompanyUuid('twb'), TWB_COMPANY_UUID);
+  assert(resolveCompanyUuid('golden_june') === GJ_COMPANY_UUID, 'resolveCompanyUuid: resolves "golden_june" to GJ UUID', resolveCompanyUuid('golden_june'), GJ_COMPANY_UUID);
+  assert(resolveCompanyUuid(TWB_COMPANY_UUID) === TWB_COMPANY_UUID, 'resolveCompanyUuid: preserves already-valid TWB UUID', resolveCompanyUuid(TWB_COMPANY_UUID), TWB_COMPANY_UUID);
+  assert(resolveCompanyUuid(GJ_COMPANY_UUID) === GJ_COMPANY_UUID, 'resolveCompanyUuid: preserves already-valid GJ UUID', resolveCompanyUuid(GJ_COMPANY_UUID), GJ_COMPANY_UUID);
+  assert(resolveCompanyUuid({ code: 'golden_june' }) === GJ_COMPANY_UUID, 'resolveCompanyUuid: resolves company object to GJ UUID');
+  assert(resolveCompanyUuid({ code: 'twb' }) === TWB_COMPANY_UUID, 'resolveCompanyUuid: resolves company object to TWB UUID');
+  assert(resolveBrandCode('twb') === 'twb', 'resolveBrandCode: resolves "twb" code');
+  assert(resolveBrandCode(TWB_COMPANY_UUID) === 'twb', 'resolveBrandCode: resolves TWB UUID to "twb"');
+  assert(resolveBrandCode('golden_june') === 'golden_june', 'resolveBrandCode: resolves "golden_june" code');
+  assert(resolveBrandCode(GJ_COMPANY_UUID) === 'golden_june', 'resolveBrandCode: resolves GJ UUID to "golden_june"');
 
   // =========================================================================
   // Suite 3: Preserving Database Primary Keys & Banking Details on Updates
@@ -322,9 +336,9 @@ function runTests() {
     accent_color: '#2563eb',
     bank_details: {
       account_name: 'The Wedding Book Media LLC',
-      account_number: '9840-2391-4402',
-      bank_name: 'Silicon Valley Bank / First Republic',
-      routing_code: '121000358',
+      account_number: '50200012345678',
+      bank_name: 'HDFC Bank',
+      routing_code: 'HDFC0000123',
     },
     terms_conditions: 'Retainer terms test',
   };
@@ -342,9 +356,9 @@ function runTests() {
     accent_color: '#d97706',
     bank_details: {
       account_name: 'Golden June Creative Inc.',
-      account_number: '4410-8829-1093',
-      bank_name: 'Chase Manhattan Commercial',
-      routing_code: '021000021',
+      account_number: '50200098765432',
+      bank_name: 'ICICI Bank',
+      routing_code: 'ICIC0000456',
     },
     terms_conditions: 'GJ terms test',
   };

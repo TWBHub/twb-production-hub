@@ -28,6 +28,7 @@ import {
   AppNotification,
   DeliverableStatus,
   UserRole,
+  ServiceCatalogueItem,
 } from '../types';
 import {
   INITIAL_COMPANIES,
@@ -44,6 +45,7 @@ import {
   INITIAL_EXPENSES,
   INITIAL_CALENDAR_EVENTS,
   INITIAL_NOTIFICATIONS,
+  INITIAL_SERVICES,
 } from './seedData';
 import { sortProjectEvents } from '../utils/eventUtils';
 import { normalizeStorageRecord } from '../utils/storageUtils';
@@ -53,7 +55,13 @@ import {
   prepareDeliverableForCreate,
 } from '../utils/deliverableMilestones';
 import { isDeliverableEditor } from '../utils/teamMemberFilters';
-import { sanitizeCompany } from '../utils/companyUtils';
+import {
+  sanitizeCompany,
+  resolveCompanyUuid,
+  resolveBrandCode,
+  isGoldenJune,
+  isTWB,
+} from '../utils/companyUtils';
 
 // Cache keys for resilient persistent storage when offline or before Supabase sync
 const STORAGE_PREFIX = 'twbhub_';
@@ -132,7 +140,7 @@ export const mapSupabaseProjectToModel = (row: any): Project => {
       row.wedding_date_end ||
       row.start_date ||
       '',
-    venue: row.venue || 'Principal Venue',
+    venue: row.venue || '',
     city: row.city || '',
     client_contact:
       meta.client_contact ||
@@ -205,10 +213,7 @@ export const mapModelToSupabaseProject = (prj: Project | Omit<Project, 'created_
 };
 
 export const toCompanyUuid = (cid: 'twb' | 'golden_june' | string) => {
-  if (cid === 'golden_june' || cid === '3a19bbe1-a2bc-46db-bbbc-44ef7f5036ec') {
-    return '3a19bbe1-a2bc-46db-bbbc-44ef7f5036ec';
-  }
-  return '5736bf57-b1db-4896-a4df-4963ded1c4c6';
+  return resolveCompanyUuid(cid);
 };
 
 export const mapSupabaseDeliverableToModel = (row: any): Deliverable => {
@@ -580,51 +585,115 @@ export const apiService = {
 },
 
   async createClient(client: Omit<Client, 'id' | 'created_at'>): Promise<Client> {
-  const supabase = getSupabaseClient();
+    const supabase = getSupabaseClient();
+    const companyUuid = resolveCompanyUuid(client.company_id);
+    const brandCode = resolveBrandCode(client.company_id);
 
-  if (supabase) {
-    const { data, error } = await supabase
-      .from('clients')
-      .insert(client)
-      .select()
-      .single();
+    if (supabase) {
+      // 1. Idempotency / Duplicate Prevention:
+      // If a client already exists with this exact email or phone in Supabase, reuse it!
+      const email = client.email?.trim();
+      if (email && !email.toLowerCase().includes('example.com')) {
+        try {
+          const { data: existingEmailClients } = await supabase
+            .from('clients')
+            .select('*')
+            .ilike('email', email)
+            .limit(1);
 
-    if (error) {
-      console.error('Failed to create client in Supabase:', error);
-      throw new Error(`Could not create client: ${error.message}`);
+          if (existingEmailClients && existingEmailClients.length > 0) {
+            console.log('[createClient] Found existing client with matching email in Supabase:', email);
+            const matched = existingEmailClients[0] as Client;
+            return matched;
+          }
+        } catch (searchErr) {
+          console.warn('[createClient] Error querying existing client by email:', searchErr);
+        }
+      }
+
+      const phone = client.phone?.trim();
+      if (phone) {
+        const cleanPhone = phone.replace(/\D/g, '');
+        if (cleanPhone.length >= 10) {
+          try {
+            const { data: phoneMatches } = await supabase
+              .from('clients')
+              .select('*')
+              .limit(100);
+
+            if (phoneMatches) {
+              const found = phoneMatches.find(
+                c => c.phone && c.phone.replace(/\D/g, '').slice(-10) === cleanPhone.slice(-10)
+              );
+              if (found) {
+                console.log('[createClient] Found existing client with matching phone in Supabase:', phone);
+                return found as Client;
+              }
+            }
+          } catch (phoneErr) {
+            console.warn('[createClient] Error querying existing client by phone:', phoneErr);
+          }
+        }
+      }
+
+      const clientPayload = {
+        company_id: companyUuid,
+        name: client.name.trim(),
+        partner_name: client.partner_name?.trim() || null,
+        email: client.email?.trim() || null,
+        phone: client.phone?.trim() || null,
+        alternate_phone: client.alternate_phone?.trim() || null,
+        address: client.address?.trim() || null,
+        city: client.city?.trim() || null,
+        notes: client.notes?.trim() || null,
+        instagram: client.instagram?.trim() || null,
+        instagram_2: client.instagram_2?.trim() || null,
+      };
+
+      const { data, error } = await supabase
+        .from('clients')
+        .insert(clientPayload)
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Failed to create client in Supabase:', error);
+        throw new Error(`Could not create client: ${error.message}`);
+      }
+
+      const newClient = data as Client;
+
+      const current = await this.getClients();
+      const updated = [newClient, ...current.filter(c => c.id !== newClient.id)];
+      saveToStorage('clients', updated);
+
+      return newClient;
     }
 
-    const newClient = data as Client;
+    // Local fallback only when Supabase isn't configured
+    const newClient: Client = {
+      ...client,
+      company_id: brandCode,
+      id: crypto.randomUUID(),
+      created_at: new Date().toISOString(),
+    };
 
     const current = await this.getClients();
     const updated = [newClient, ...current.filter(c => c.id !== newClient.id)];
     saveToStorage('clients', updated);
 
     return newClient;
-  }
-
-  // Local fallback only when Supabase isn't configured
-  const newClient: Client = {
-    ...client,
-    id: crypto.randomUUID(),
-    created_at: new Date().toISOString(),
-  };
-
-  const current = await this.getClients();
-  const updated = [newClient, ...current.filter(c => c.id !== newClient.id)];
-  saveToStorage('clients', updated);
-
-  return newClient;
-},
+  },
 
   async updateClient(client: Client): Promise<Client> {
     const supabase = getSupabaseClient();
+    const companyUuid = resolveCompanyUuid(client.company_id);
 
     if (supabase) {
       const { data, error } = await supabase
         .from('clients')
         .update({
-          company_id: client.company_id,
+          company_id: companyUuid,
           name: client.name,
           partner_name: client.partner_name,
           email: client.email,
@@ -697,20 +766,26 @@ export const apiService = {
     };
     const supabase = getSupabaseClient();
     if (supabase) {
-      const payload: any = { ...newEnquiry };
-      if (typeof payload.is_archived === 'boolean') {
-        payload.archived = payload.is_archived;
+      try {
+        const payload: any = { ...newEnquiry };
+        if (typeof payload.is_archived === 'boolean') {
+          payload.archived = payload.is_archived;
+        }
+        await supabase.from('enquiries').insert(payload);
+      } catch (err) {
+        console.warn('Supabase enquiry insert warning:', err);
       }
-      await supabase.from('enquiries').insert(payload);
     }
     const current = await this.getEnquiries();
     const updated = [newEnquiry, ...current];
     saveToStorage('enquiries', updated);
 
     // Auto generate notification
+    const displayName = newEnquiry.title || newEnquiry.client_name || 'New Wedding Lead';
+    const budgetStr = newEnquiry.estimated_budget ? ` (₹${newEnquiry.estimated_budget.toLocaleString('en-IN')})` : '';
     await this.createNotification({
       title: 'New Wedding Lead Received',
-      message: `${newEnquiry.client_name} enquired for ${newEnquiry.venue || 'Wedding'} (₹${newEnquiry.estimated_budget.toLocaleString()})`,
+      message: `${displayName} enquired for ${newEnquiry.venue || 'Wedding'}${budgetStr}`,
       type: 'new_enquiry',
       read: false,
       link: 'enquiries',
@@ -726,13 +801,17 @@ export const apiService = {
     };
     const supabase = getSupabaseClient();
     if (supabase) {
-      const payload: any = { ...updatedWithTimestamp };
-      if (typeof payload.is_archived === 'boolean') {
-        payload.archived = payload.is_archived;
-      }
-      const { error } = await supabase.from('enquiries').update(payload).eq('id', enquiry.id);
-      if (error) {
-        console.warn('Supabase update enquiry warning:', error);
+      try {
+        const payload: any = { ...updatedWithTimestamp };
+        if (typeof payload.is_archived === 'boolean') {
+          payload.archived = payload.is_archived;
+        }
+        const { error } = await supabase.from('enquiries').update(payload).eq('id', enquiry.id);
+        if (error) {
+          console.warn('Supabase update enquiry warning:', error);
+        }
+      } catch (err) {
+        console.warn('Supabase update enquiry exception:', err);
       }
     }
     const current = await this.getEnquiries();
@@ -744,15 +823,84 @@ export const apiService = {
   async deleteEnquiry(id: string): Promise<void> {
     const supabase = getSupabaseClient();
     if (supabase) {
-      const { error } = await supabase.from('enquiries').delete().eq('id', id);
-      if (error) {
-        console.error('Failed to delete enquiry from Supabase:', error);
-        throw new Error(`Failed to delete enquiry: ${error.message}`);
+      try {
+        const { error } = await supabase.from('enquiries').delete().eq('id', id);
+        if (error) {
+          console.error('Failed to delete enquiry from Supabase:', error);
+        }
+      } catch (err) {
+        console.warn('Supabase delete enquiry exception:', err);
       }
     }
     const current = await this.getEnquiries();
     const updated = current.filter(e => e.id !== id);
     saveToStorage('enquiries', updated);
+  },
+
+  // SERVICE CATALOGUE (What the studio offers and sells — separate from Deliverables)
+  async getServices(): Promise<ServiceCatalogueItem[]> {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        const { data, error } = await supabase.from('service_catalogue').select('*').order('sort_order', { ascending: true });
+        if (!error && data && data.length > 0) {
+          saveToStorage('service_catalogue', data);
+          return data as ServiceCatalogueItem[];
+        }
+      } catch {
+        // Fallback to local storage if table is not yet provisioned
+      }
+    }
+    return getStoredOrInitial('service_catalogue', INITIAL_SERVICES);
+  },
+
+  async createService(service: Omit<ServiceCatalogueItem, 'id'>): Promise<ServiceCatalogueItem> {
+    const newService: ServiceCatalogueItem = {
+      ...service,
+      id: 'srv-' + Date.now(),
+      created_at: new Date().toISOString(),
+    };
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        await supabase.from('service_catalogue').insert(newService);
+      } catch (err) {
+        console.warn('Supabase service insert fallback:', err);
+      }
+    }
+    const current = await this.getServices();
+    const updated = [...current, newService];
+    saveToStorage('service_catalogue', updated);
+    return newService;
+  },
+
+  async updateService(service: ServiceCatalogueItem): Promise<ServiceCatalogueItem> {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        await supabase.from('service_catalogue').update(service).eq('id', service.id);
+      } catch (err) {
+        console.warn('Supabase service update fallback:', err);
+      }
+    }
+    const current = await this.getServices();
+    const updated = current.map(s => (s.id === service.id ? service : s));
+    saveToStorage('service_catalogue', updated);
+    return service;
+  },
+
+  async deleteService(id: string): Promise<void> {
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        await supabase.from('service_catalogue').delete().eq('id', id);
+      } catch (err) {
+        console.warn('Supabase service delete fallback:', err);
+      }
+    }
+    const current = await this.getServices();
+    const updated = current.filter(s => s.id !== id);
+    saveToStorage('service_catalogue', updated);
   },
 
   // QUOTATIONS
@@ -1032,20 +1180,37 @@ export const apiService = {
     const supabase = getSupabaseClient();
 
     const projectId = crypto.randomUUID();
-
-    const companyUuid =
-      project.company_id === 'golden_june'
-        ? '3a19bbe1-a2bc-46db-bbbc-44ef7f5036ec'
-        : '5736bf57-b1db-4896-a4df-4963ded1c4c6';
+    const companyUuid = resolveCompanyUuid(project.company_id);
+    const brandCode = resolveBrandCode(project.company_id);
 
     const newProject: Project = {
       ...project,
       id: projectId,
-      company_id: project.company_id,
+      company_id: brandCode,
       created_at: new Date().toISOString(),
     };
 
     if (supabase) {
+      // Idempotency check: prevent duplicate project if retrying after partial failure
+      if (project.client_id) {
+        try {
+          const { data: existingProjects } = await supabase
+            .from('projects')
+            .select('*')
+            .eq('client_id', project.client_id)
+            .eq('project_name', project.name.trim())
+            .limit(1);
+
+          if (existingProjects && existingProjects.length > 0) {
+            console.log('[createProject] Reusing existing project in Supabase for client and name:', existingProjects[0].id);
+            const existingProj = mapSupabaseProjectToModel(existingProjects[0]);
+            return existingProj;
+          }
+        } catch (checkErr) {
+          console.warn('[createProject] Error checking existing projects in Supabase:', checkErr);
+        }
+      }
+
       const projectPayload = {
         id: projectId,
         company_id: companyUuid,
@@ -1139,14 +1304,15 @@ export const apiService = {
       if (Number(project.booking_amount) > 0) {
         try {
           console.log('[createProject] recording booking retainer with payment_mode: "Bank Transfer"');
+          const brandPrefix = isGoldenJune(project.company_id) ? 'GJ' : 'TWB';
           await this.createPayment({
             project_id: projectId,
-            company_id: project.company_id,
+            company_id: brandCode,
             amount: Number(project.booking_amount),
             payment_date: new Date().toISOString().split('T')[0],
             payment_mode: 'Bank Transfer',
             description: 'Booking Retainer',
-            receipt_number: `REC-${project.company_id === 'golden_june' ? 'GJ' : 'TWB'}-${Date.now().toString().slice(-4)}`,
+            receipt_number: `REC-${brandPrefix}-${Date.now().toString().slice(-4)}`,
           });
         } catch (payErr: any) {
           console.error('[createProject] Failed to record booking retainer payment in Supabase:', payErr);
@@ -1166,14 +1332,15 @@ export const apiService = {
 
       if (Number(project.booking_amount) > 0) {
         try {
+          const brandPrefix = isGoldenJune(project.company_id) ? 'GJ' : 'TWB';
           await this.createPayment({
             project_id: projectId,
-            company_id: project.company_id,
+            company_id: brandCode,
             amount: Number(project.booking_amount),
             payment_date: new Date().toISOString().split('T')[0],
             payment_mode: 'Bank Transfer',
             description: 'Booking Retainer',
-            receipt_number: `REC-${project.company_id === 'golden_june' ? 'GJ' : 'TWB'}-${Date.now().toString().slice(-4)}`,
+            receipt_number: `REC-${brandPrefix}-${Date.now().toString().slice(-4)}`,
           });
         } catch (payErr: any) {
           console.error('[createProject local] Failed to record booking retainer payment:', payErr);
@@ -1222,10 +1389,7 @@ export const apiService = {
   const supabase = getSupabaseClient();
 
   if (supabase) {
-    const companyUuid =
-      project.company_id === 'golden_june'
-        ? '3a19bbe1-a2bc-46db-bbbc-44ef7f5036ec'
-        : '5736bf57-b1db-4896-a4df-4963ded1c4c6';
+    const companyUuid = resolveCompanyUuid(project.company_id);
 
     const updatePayload = {
       company_id: companyUuid,
@@ -3277,24 +3441,78 @@ async getExpenses(): Promise<Expense[]> {
   },
 
   async createCalendarEvent(event: Omit<CalendarEvent, 'id'>): Promise<CalendarEvent> {
+    const brandCode = resolveBrandCode(event.company_id);
     const newEvent: CalendarEvent = {
       ...event,
+      company_id: brandCode,
       id: 'evt-' + Date.now(),
     };
     const supabase = getSupabaseClient();
     if (supabase) {
-      await supabase.from('calendar_events').insert(newEvent);
+      try {
+        await supabase.from('calendar_events').insert({
+          id: newEvent.id,
+          company_id: resolveCompanyUuid(event.company_id),
+          project_id: newEvent.project_id || null,
+          title: newEvent.title,
+          event_type: newEvent.event_type,
+          start_time: newEvent.start_time,
+          end_time: newEvent.end_time || newEvent.start_time,
+          location: newEvent.location || null,
+          notes: newEvent.notes || null,
+          assigned_member_id: newEvent.assigned_member_id || null,
+        });
+      } catch (err) {
+        console.warn('Supabase calendar_events insert error:', err);
+      }
     }
     const current = await this.getCalendarEvents();
-    const updated = [...current, newEvent];
+    const updated = [...current.filter(e => e.id !== newEvent.id), newEvent];
     saveToStorage('calendar_events', updated);
     return newEvent;
+  },
+
+  async updateCalendarEvent(event: CalendarEvent): Promise<CalendarEvent> {
+    const brandCode = resolveBrandCode(event.company_id);
+    const updatedEvent: CalendarEvent = {
+      ...event,
+      company_id: brandCode,
+    };
+    const supabase = getSupabaseClient();
+    if (supabase) {
+      try {
+        await supabase
+          .from('calendar_events')
+          .update({
+            company_id: resolveCompanyUuid(event.company_id),
+            project_id: event.project_id || null,
+            title: event.title,
+            event_type: event.event_type,
+            start_time: event.start_time,
+            end_time: event.end_time || event.start_time,
+            location: event.location || null,
+            notes: event.notes || null,
+            assigned_member_id: event.assigned_member_id || null,
+          })
+          .eq('id', event.id);
+      } catch (err) {
+        console.warn('Supabase calendar_events update error:', err);
+      }
+    }
+    const current = await this.getCalendarEvents();
+    const updated = current.map(e => (e.id === event.id ? updatedEvent : e));
+    saveToStorage('calendar_events', updated);
+    return updatedEvent;
   },
 
   async deleteCalendarEvent(id: string): Promise<void> {
     const supabase = getSupabaseClient();
     if (supabase) {
-      await supabase.from('calendar_events').delete().eq('id', id);
+      try {
+        await supabase.from('calendar_events').delete().eq('id', id);
+      } catch (err) {
+        console.warn('Supabase calendar_events delete error:', err);
+      }
     }
     const current = await this.getCalendarEvents();
     saveToStorage('calendar_events', current.filter(e => e.id !== id));

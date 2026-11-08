@@ -26,6 +26,7 @@ import {
 } from '../../utils/pdfGenerator';
 import { sortProjectEvents } from '../../utils/eventUtils';
 import { formatDisplayDate, formatDisplayDateRange } from '../../utils/dateUtils';
+import { resolveCompanyUuid } from '../../utils/companyUtils';
 
 export const ProjectsView: React.FC = () => {
   const {
@@ -242,10 +243,7 @@ useEffect(() => {
       setIsSubmittingClient(true);
 
       const created = await createClient({
-        company_id:
-  newCompanyId === 'golden_june'
-    ? '3a19bbe1-a2bc-46db-bbbc-44ef7f5036ec'
-    : '5736bf57-b1db-4896-a4df-4963ded1c4c6',
+        company_id: resolveCompanyUuid(newCompanyId),
         name: newClientName.trim(),
         partner_name: newClientPartnerName.trim() || undefined,
         phone: newClientPhone.trim(),
@@ -821,7 +819,7 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
                   <span className="text-slate-500">Contract Total:</span>
 
                   <span className="font-bold text-slate-900">
-                    ₹{project.total_amount.toLocaleString()}
+                    ₹{(project.total_amount || 0).toLocaleString()}
                   </span>
                 </div>
 

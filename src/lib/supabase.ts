@@ -169,19 +169,41 @@ create table if not exists team_members (
 create table if not exists enquiries (
   id uuid default uuid_generate_v4() primary key,
   company_id text references companies(id) on delete cascade,
+  title text,
   client_name text not null,
   partner_name text,
-  email text not null,
-  phone text not null,
-  event_date date not null,
-  venue text not null,
+  email text,
+  phone text,
+  instagram text,
+  event_date date,
+  venue text,
+  city text,
   lead_source text,
   requirements text,
+  package_interest text,
   estimated_budget numeric default 0,
   status text check (status in ('New', 'Contacted', 'Meeting Scheduled', 'Proposal Sent', 'Won', 'Lost')) default 'New',
   follow_up_date date,
+  consultation_date date,
+  assigned_to text,
+  services jsonb default '[]'::jsonb,
+  events jsonb default '[]'::jsonb,
   notes text,
+  client_preferences text,
+  logistics_notes text,
   quotation_status text check (quotation_status in ('Draft', 'Sent', 'Approved', 'Declined', 'Expired')) default 'Draft',
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+);
+
+-- 5b. SERVICE CATALOGUE
+create table if not exists service_catalogue (
+  id text primary key,
+  name text not null,
+  description text,
+  category text default 'Cinematography',
+  applicable_brand text default 'all',
+  is_active boolean default true,
+  sort_order integer default 0,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 

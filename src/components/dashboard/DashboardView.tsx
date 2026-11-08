@@ -253,7 +253,7 @@ export const DashboardView: React.FC = () => {
                 <DollarSign className="w-4 h-4 text-slate-400" />
               </div>
               <div className="text-xl sm:text-2xl font-bold text-slate-900 mt-2">
-                ₹{financialMetrics.contractPipeline.toLocaleString()}
+                ₹{(financialMetrics.contractPipeline || 0).toLocaleString()}
               </div>
               <div className="text-[11px] text-slate-400 mt-1">
                 {filteredProjects.length} active weddings (lifetime)
@@ -266,7 +266,7 @@ export const DashboardView: React.FC = () => {
                 <CheckCircle2 className="w-4 h-4 text-emerald-500" />
               </div>
               <div className="text-xl sm:text-2xl font-bold text-emerald-700 mt-2">
-                ₹{financialMetrics.periodPaymentsReceived.toLocaleString()}
+                ₹{(financialMetrics.periodPaymentsReceived || 0).toLocaleString()}
               </div>
               <div className="text-[11px] text-slate-400 mt-1">
                 {resolvedDateRange.isActive
@@ -281,7 +281,7 @@ export const DashboardView: React.FC = () => {
                 <Clock className="w-4 h-4 text-[#8c672b]" />
               </div>
               <div className="text-xl sm:text-2xl font-bold text-[#8c672b] mt-2">
-                ₹{financialMetrics.pendingReceivables.toLocaleString()}
+                ₹{(financialMetrics.pendingReceivables || 0).toLocaleString()}
               </div>
               <div className="text-[11px] text-[#8c672b] font-medium mt-1">
                 True lifetime balance remaining
@@ -294,7 +294,7 @@ export const DashboardView: React.FC = () => {
                 <TrendingUp className="w-4 h-4 text-rose-400" />
               </div>
               <div className="text-xl sm:text-2xl font-bold text-rose-700 mt-2">
-                ₹{financialMetrics.periodExpenses.toLocaleString()}
+                ₹{(financialMetrics.periodExpenses || 0).toLocaleString()}
               </div>
               <div className="text-[11px] text-slate-400 mt-1">
                 {resolvedDateRange.isActive
@@ -309,7 +309,7 @@ export const DashboardView: React.FC = () => {
                 <Sparkles className="w-4 h-4 text-[#F1D099]" />
               </div>
               <div className="text-xl sm:text-2xl font-bold text-[#F1D099] mt-2">
-                ₹{financialMetrics.operatingProfit.toLocaleString()}
+                ₹{(financialMetrics.operatingProfit || 0).toLocaleString()}
               </div>
               <div className="text-[11px] text-slate-300 mt-1">
                 {resolvedDateRange.isActive
@@ -389,8 +389,17 @@ export const DashboardView: React.FC = () => {
                           <Calendar className="w-3.5 h-3.5 text-slate-400" />
                           {formatDisplayDate(project.wedding_date_start)}
                         </span>
-                        <span>{project.venue}, {project.city}</span>
-                        <span className="text-slate-400">•</span>
+                        {(() => {
+                          const v = project.venue && project.venue !== 'Principal Venue' ? project.venue.trim() : '';
+                          const c = project.city ? project.city.trim() : '';
+                          const loc = v && c ? `${v}, ${c}` : v || c;
+                          return loc ? (
+                            <>
+                              <span>{loc}</span>
+                              <span className="text-slate-400">•</span>
+                            </>
+                          ) : null;
+                        })()}
                         <span>{project.package_name}</span>
                       </div>
 
@@ -417,7 +426,7 @@ export const DashboardView: React.FC = () => {
 
                     <div className="flex sm:flex-col items-center sm:items-end justify-between sm:justify-center border-t sm:border-t-0 pt-2 sm:pt-0 border-slate-100">
                       <div className="text-xs font-semibold text-slate-900">
-                        ₹{project.total_amount.toLocaleString()}
+                        ₹{(project.total_amount || 0).toLocaleString()}
                       </div>
                       <div className="text-[11px] text-slate-400">Contract Total</div>
                     </div>
@@ -446,31 +455,49 @@ export const DashboardView: React.FC = () => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {pendingEnquiries.slice(0, 4).map(enq => (
-                <div
-                  key={enq.id}
-                  onClick={() => setActiveTab('enquiries')}
-                  className="p-3.5 rounded-lg border border-slate-200 bg-slate-50/50 hover:bg-slate-50 hover:border-slate-300 transition-colors cursor-pointer space-y-2"
-                >
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <div className="font-semibold text-xs text-slate-900">
-                        {enq.client_name} {enq.partner_name ? `& ${enq.partner_name}` : ''}
+              {pendingEnquiries.slice(0, 4).map(enq => {
+                const leadDisplayName =
+                  enq.title ||
+                  (enq.partner_name
+                    ? `${enq.client_name || 'Client'} & ${enq.partner_name}`
+                    : enq.client_name || 'Untitled Lead');
+                const locationAndDate = [
+                  enq.venue || enq.city,
+                  enq.event_date ? formatDisplayDate(enq.event_date) : (enq.events && enq.events.length > 0 ? `${enq.events.length} event(s)` : 'No dates set')
+                ].filter(Boolean).join(' • ');
+
+                return (
+                  <div
+                    key={enq.id}
+                    onClick={() => setActiveTab('enquiries')}
+                    className="p-3.5 rounded-lg border border-slate-200 bg-slate-50/50 hover:bg-slate-50 hover:border-slate-300 transition-colors cursor-pointer space-y-2"
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="min-w-0 pr-2">
+                        <div className="font-semibold text-xs text-slate-900 truncate">
+                          {leadDisplayName}
+                        </div>
+                        <div className="text-[11px] text-slate-500 mt-0.5 truncate">
+                          {locationAndDate || 'Details pending'}
+                        </div>
                       </div>
-                      <div className="text-[11px] text-slate-500 mt-0.5">
-                        {enq.venue} • {formatDisplayDate(enq.event_date)}
-                      </div>
+                      {enq.estimated_budget != null && enq.estimated_budget > 0 ? (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200 shrink-0 font-mono">
+                          ₹{enq.estimated_budget.toLocaleString('en-IN')}
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-medium bg-slate-100 text-slate-600 border border-slate-200 shrink-0">
+                          Budget TBD
+                        </span>
+                      )}
                     </div>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700 border border-blue-200">
-                      ₹{enq.estimated_budget.toLocaleString()}
-                    </span>
+                    <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-200/60">
+                      <span>Status: <strong className="text-slate-700">{enq.status}</strong></span>
+                      <span className="text-[#8c672b] font-medium">Quote: {enq.quotation_status}</span>
+                    </div>
                   </div>
-                  <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-200/60">
-                    <span>Status: <strong className="text-slate-700">{enq.status}</strong></span>
-                    <span className="text-[#8c672b] font-medium">Quote: {enq.quotation_status}</span>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         </div>

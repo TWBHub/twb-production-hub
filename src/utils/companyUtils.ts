@@ -10,11 +10,17 @@ export const isUuid = (val?: string | null): boolean =>
  * Checks whether an identifier, code, or name corresponds to Golden June.
  */
 export const isGoldenJune = (
-  company?: Partial<Company> | { code?: string; id?: string; name?: string } | null
+  company?: Partial<Company> | { code?: string; id?: string; name?: string } | string | null
 ): boolean => {
   if (!company) return false;
+  if (typeof company === 'string') {
+    const s = company.trim().toLowerCase();
+    if (s === 'golden_june' || s === GJ_COMPANY_UUID.toLowerCase()) return true;
+    if (s === 'twb' || s === TWB_COMPANY_UUID.toLowerCase()) return false;
+    return s.includes('golden');
+  }
   if (company.code === 'golden_june') return true;
-  if (company.id === 'golden_june' || company.id === GJ_COMPANY_UUID) return true;
+  if (company.id === 'golden_june' || (company.id && company.id.toLowerCase() === GJ_COMPANY_UUID.toLowerCase())) return true;
   const idLower = (company.id || '').toLowerCase();
   const nameLower = (company.name || '').toLowerCase();
   return idLower.includes('golden') || nameLower.includes('golden');
@@ -24,15 +30,80 @@ export const isGoldenJune = (
  * Checks whether an identifier, code, or name corresponds to TWB (The Wedding Booth).
  */
 export const isTWB = (
-  company?: Partial<Company> | { code?: string; id?: string; name?: string } | null
+  company?: Partial<Company> | { code?: string; id?: string; name?: string } | string | null
 ): boolean => {
   if (!company) return false;
+  if (isGoldenJune(company)) return false;
+  if (typeof company === 'string') {
+    const s = company.trim().toLowerCase();
+    if (s === 'twb' || s === TWB_COMPANY_UUID.toLowerCase()) return true;
+    return s.includes('twb') || s.includes('booth') || s.includes('wedding book');
+  }
   if (company.code === 'twb') return true;
-  if (company.id === 'twb' || company.id === TWB_COMPANY_UUID) return true;
+  if (company.id === 'twb' || (company.id && company.id.toLowerCase() === TWB_COMPANY_UUID.toLowerCase())) return true;
   const idLower = (company.id || '').toLowerCase();
   const nameLower = (company.name || '').toLowerCase();
-  if (isGoldenJune(company)) return false;
   return idLower.includes('twb') || nameLower.includes('booth') || nameLower.includes('wedding book');
+};
+
+/**
+ * Resolves any company object, UUID, brand code ('twb' | 'golden_june'),
+ * or display name to the canonical Supabase companies database UUID.
+ */
+export const resolveCompanyUuid = (
+  companyOrIdOrCode?: string | Partial<Company> | { code?: string; id?: string; name?: string } | null,
+  companies?: Company[]
+): string => {
+  if (!companyOrIdOrCode) return TWB_COMPANY_UUID;
+
+  // If passed an object
+  if (typeof companyOrIdOrCode === 'object') {
+    if (isGoldenJune(companyOrIdOrCode)) return GJ_COMPANY_UUID;
+    if (companyOrIdOrCode.id && isUuid(companyOrIdOrCode.id)) return companyOrIdOrCode.id;
+    return TWB_COMPANY_UUID;
+  }
+
+  const str = String(companyOrIdOrCode).trim();
+  if (!str) return TWB_COMPANY_UUID;
+
+  if (isUuid(str)) {
+    if (str.toLowerCase() === GJ_COMPANY_UUID.toLowerCase()) return GJ_COMPANY_UUID;
+    if (str.toLowerCase() === TWB_COMPANY_UUID.toLowerCase()) return TWB_COMPANY_UUID;
+    if (companies?.length) {
+      const match = companies.find(c => c.id?.toLowerCase() === str.toLowerCase());
+      if (match?.id) return match.id;
+    }
+    return str;
+  }
+
+  const lower = str.toLowerCase();
+  if (lower === 'golden_june' || lower.includes('golden')) {
+    return GJ_COMPANY_UUID;
+  }
+  if (lower === 'twb' || lower.includes('booth') || lower.includes('wedding book')) {
+    return TWB_COMPANY_UUID;
+  }
+
+  if (companies?.length) {
+    const match = companies.find(
+      c => c.code?.toLowerCase() === lower || c.name?.toLowerCase().includes(lower)
+    );
+    if (match?.id && isUuid(match.id)) {
+      return match.id;
+    }
+  }
+
+  return TWB_COMPANY_UUID;
+};
+
+/**
+ * Resolves any company identifier or UUID to the brand code 'twb' | 'golden_june'.
+ */
+export const resolveBrandCode = (
+  companyOrIdOrCode?: string | Partial<Company> | { code?: string; id?: string; name?: string } | null
+): 'twb' | 'golden_june' => {
+  if (!companyOrIdOrCode) return 'twb';
+  return isGoldenJune(companyOrIdOrCode) ? 'golden_june' : 'twb';
 };
 
 export const VERIFIED_BRAND_DETAILS = {

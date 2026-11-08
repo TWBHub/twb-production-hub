@@ -49,6 +49,7 @@ import {
   ExpenseCategory,
   Payment,
   Expense,
+  CalendarEvent,
 } from '../../types';
 import { normalizeStorageRecord, getStorageStatusBadge } from '../../utils/storageUtils';
 import { apiService } from '../../services/api';
@@ -66,6 +67,15 @@ import {
   filterProductionTeamMembers,
   filterDeliverableEditors,
 } from '../../utils/teamMemberFilters';
+import {
+  getProjectCalendarEntries,
+  CALENDAR_CATEGORIES,
+  CalendarCategory,
+  UnifiedCalendarEntry,
+  calculateDeadlineStatus,
+  serializeCalendarNotes,
+} from '../../utils/calendarUtils';
+import { CalendarEntryModal } from '../calendar/CalendarEntryModal';
 
 interface ProjectWorkspaceProps {
   projectId: string;
@@ -108,6 +118,9 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
   updateExpense,
   deleteExpense,
   calendarEvents,
+  createCalendarEvent,
+  updateCalendarEvent,
+  deleteCalendarEvent,
   currentUser,
   isAdmin,
   isManager,
@@ -210,6 +223,14 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const [deletingAssignment, setDeletingAssignment] = useState<ProjectTeamAssignment | null>(null);
   const [deleteAssignmentError, setDeleteAssignmentError] = useState<string | null>(null);
   const [isDeletingAssignment, setIsDeletingAssignment] = useState(false);
+
+  // Project Calendar tab state
+  const [isCalendarModalOpen, setIsCalendarModalOpen] = useState(false);
+  const [editingCalendarEntry, setEditingCalendarEntry] = useState<UnifiedCalendarEntry | null>(null);
+  const [calendarCategoryFilter, setCalendarCategoryFilter] = useState<string>('all');
+  const [deletingCalendarId, setDeletingCalendarId] = useState<string | null>(null);
+  const [isDeletingCalendarEntry, setIsDeletingCalendarEntry] = useState(false);
+  const [calendarActionError, setCalendarActionError] = useState<string | null>(null);
 
   // Helper to format date cleanly for options
   const formatEventDateOption = (dateStr: string) => {
@@ -474,7 +495,112 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const projectDataList = projectData.filter(d => d.project_id === project.id);
   const projectPayments = payments.filter(p => p.project_id === project.id);
   const projectExpenses = expenses.filter(e => e.project_id === project.id);
-  const projectEvents = calendarEvents.filter(e => e.project_id === project.id);
+
+  // Unified calendar entries: automatic merging of project schedule and attached calendar events
+  const projectCalendarEntries = useMemo(() => {
+    if (!project) return [];
+    return getProjectCalendarEntries(
+      {
+        ...project,
+        events: projectEventsList.length > 0 ? projectEventsList : project.events,
+      },
+      calendarEvents,
+      teamMembers
+    );
+  }, [project, projectEventsList, calendarEvents, teamMembers]);
+
+  const filteredProjectCalendarEntries = useMemo(() => {
+    if (calendarCategoryFilter === 'all') return projectCalendarEntries;
+    return projectCalendarEntries.filter(e => e.category === calendarCategoryFilter);
+  }, [projectCalendarEntries, calendarCategoryFilter]);
+
+  const projectCalendarCategoryCounts = useMemo(() => {
+    const counts: Record<string, number> = {
+      all: projectCalendarEntries.length,
+      Events: 0,
+      Payments: 0,
+      Deadlines: 0,
+      Meetings: 0,
+    };
+    projectCalendarEntries.forEach(e => {
+      if (counts[e.category] !== undefined) {
+        counts[e.category]++;
+      }
+    });
+    return counts;
+  }, [projectCalendarEntries]);
+
+  const handleSaveProjectCalendarEntry = async (payload: Omit<CalendarEvent, 'id'>, existingId?: string) => {
+    if (existingId) {
+      const existing = calendarEvents.find(e => e.id === existingId);
+      if (existing) {
+        await updateCalendarEvent({
+          ...existing,
+          ...payload,
+        });
+      } else {
+        await createCalendarEvent({
+          ...payload,
+          project_id: project?.id,
+        });
+      }
+    } else {
+      await createCalendarEvent({
+        ...payload,
+        project_id: project?.id,
+      });
+    }
+  };
+
+  const handleDeleteProjectCalendarEntry = async (id: string) => {
+    setIsDeletingCalendarEntry(true);
+    setCalendarActionError(null);
+    try {
+      await deleteCalendarEvent(id);
+      setDeletingCalendarId(null);
+    } catch (err: any) {
+      setCalendarActionError(err.message || 'Failed to delete calendar entry');
+    } finally {
+      setIsDeletingCalendarEntry(false);
+    }
+  };
+
+  const handleTogglePaymentStatus = async (entry: UnifiedCalendarEntry) => {
+    if (!entry.calendarEventId) return;
+    const existing = calendarEvents.find(e => e.id === entry.calendarEventId);
+    if (!existing) return;
+    const nextStatus = entry.payment_status === 'Paid' ? 'Pending' : 'Paid';
+    const newNotes = serializeCalendarNotes(
+      {
+        category: 'Payments',
+        amount_due: entry.amount_due,
+        payment_status: nextStatus,
+      },
+      entry.notes
+    );
+    await updateCalendarEvent({
+      ...existing,
+      notes: newNotes,
+    });
+  };
+
+  const handleToggleDeadlineStatus = async (entry: UnifiedCalendarEntry) => {
+    if (!entry.calendarEventId) return;
+    const existing = calendarEvents.find(e => e.id === entry.calendarEventId);
+    if (!existing) return;
+    const nextStatus = entry.deadline_status === 'Completed' ? 'Pending' : 'Completed';
+    const newNotes = serializeCalendarNotes(
+      {
+        category: 'Deadlines',
+        deadline_status: nextStatus,
+      },
+      entry.notes
+    );
+    await updateCalendarEvent({
+      ...existing,
+      notes: newNotes,
+    });
+  };
 
   // Financial calculations
   const paymentsSum = projectPayments.reduce((sum, p) => sum + p.amount, 0);
@@ -830,7 +956,12 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
               <span>•</span>
               <span className="flex items-center gap-1">
                 <MapPin className="w-3.5 h-3.5" />
-                {project.venue}, {project.city}
+                {(() => {
+                  const v = project.venue && project.venue !== 'Principal Venue' ? project.venue.trim() : '';
+                  const c = project.city ? project.city.trim() : '';
+                  if (v && c) return `${v}, ${c}`;
+                  return v || c || 'Not specified';
+                })()}
               </span>
             </div>
           </div>
@@ -882,7 +1013,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
             { id: 'finance', label: 'Finance & Profit', icon: DollarSign },
             { id: 'data', label: `Project Data (${projectDataList.length})`, icon: HardDrive },
             { id: 'deliverables', label: `Deliverables (${projectDeliverablesList.length})`, icon: CheckSquare },
-            { id: 'calendar', label: `Calendar (${projectEvents.length})`, icon: Calendar },
+            { id: 'calendar', label: `Calendar (${projectCalendarEntries.length})`, icon: Calendar },
             { id: 'notes', label: 'Notes & Policy', icon: Tag },
           ].map(tab => {
             const Icon = tab.icon;
@@ -933,7 +1064,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                   </h4>
                   <p className="text-xs text-amber-800">
                     The initial booking retainer payment of{' '}
-                    <strong className="font-semibold">₹{project.booking_amount.toLocaleString()}</strong> was not
+                    <strong className="font-semibold">₹{(project.booking_amount || 0).toLocaleString()}</strong> was not
                     recorded in the payments ledger.
                   </p>
                   <div className="text-[11px] font-mono bg-amber-100/70 text-amber-900 px-2.5 py-1 rounded border border-amber-200 mt-1">
@@ -972,11 +1103,11 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                 </div>
 
                 <div className="flex items-center gap-3 text-xs text-slate-500">
-                  <span>Contract: <strong>₹{project.total_amount.toLocaleString()}</strong></span>
+                  <span>Contract: <strong>₹{(project.total_amount || 0).toLocaleString()}</strong></span>
                   <span>•</span>
-                  <span>Paid: <strong className="text-emerald-600">₹{totalPaid.toLocaleString()}</strong></span>
+                  <span>Paid: <strong className="text-emerald-600">₹{(totalPaid || 0).toLocaleString()}</strong></span>
                   <span>•</span>
-                  <span>Pending: <strong className="text-[#8c672b]">₹{pendingBalance.toLocaleString()}</strong></span>
+                  <span>Pending: <strong className="text-[#8c672b]">₹{(pendingBalance || 0).toLocaleString()}</strong></span>
                 </div>
               </div>
 
@@ -2709,28 +2840,356 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
 
           {/* TAB 6: CALENDAR */}
           {activeTab === 'calendar' && (
-            <div className="space-y-4">
-              <h3 className="text-sm font-bold text-slate-900">Project Calendar Events</h3>
-              <div className="space-y-2">
-                {projectEvents.map(evt => (
-                  <div key={evt.id} className="bg-white p-3 rounded-lg border border-slate-200 flex items-center justify-between text-xs">
-                    <div>
-                      <span className="font-semibold text-slate-900">{evt.title}</span>
-                      <div className="text-[11px] text-slate-500">
-                        {evt.start_time.slice(0, 10)} • {evt.location || 'Studio'}
+            <div className="space-y-6">
+              {/* Header with Title and Add Button */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 rounded-xl border border-slate-200">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                    <Calendar className="w-4 h-4 text-purple-600" />
+                    Project Schedule & Calendar Milestones
+                  </h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Unified calendar entries linked to this project — production events, payment reminders, deliverable deadlines, and client meetings.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEditingCalendarEntry(null);
+                    setIsCalendarModalOpen(true);
+                  }}
+                  className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-800 transition shadow-xs"
+                >
+                  <Plus className="w-4 h-4" />
+                  Add Calendar Entry
+                </button>
+              </div>
+
+              {calendarActionError && (
+                <div className="p-3 bg-red-50 border border-red-200 text-red-700 rounded-lg text-xs flex items-center justify-between">
+                  <span>{calendarActionError}</span>
+                  <button onClick={() => setCalendarActionError(null)} className="text-red-500 font-bold hover:text-red-700">✕</button>
+                </div>
+              )}
+
+              {/* 4 Strict Categories Filter Pills */}
+              <div className="flex items-center gap-2 overflow-x-auto pb-1">
+                <button
+                  type="button"
+                  onClick={() => setCalendarCategoryFilter('all')}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition border ${
+                    calendarCategoryFilter === 'all'
+                      ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  All ({projectCalendarCategoryCounts.all})
+                </button>
+                {(
+                  [
+                    { key: 'Events', label: 'Events', color: '#9333EA', bg: 'bg-purple-50 text-purple-700 border-purple-200' },
+                    { key: 'Payments', label: 'Payments', color: '#16A34A', bg: 'bg-green-50 text-green-700 border-green-200' },
+                    { key: 'Deadlines', label: 'Deadlines', color: '#EA580C', bg: 'bg-orange-50 text-orange-700 border-orange-200' },
+                    { key: 'Meetings', label: 'Meetings', color: '#EAB308', bg: 'bg-yellow-50 text-yellow-800 border-yellow-200' },
+                  ] as const
+                ).map(cat => {
+                  const isSelected = calendarCategoryFilter === cat.key;
+                  return (
+                    <button
+                      key={cat.key}
+                      type="button"
+                      onClick={() => setCalendarCategoryFilter(cat.key)}
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition border ${
+                        isSelected
+                          ? 'ring-2 ring-offset-1 shadow-xs font-bold text-white'
+                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                      }`}
+                      style={isSelected ? { backgroundColor: cat.color, borderColor: cat.color } : {}}
+                    >
+                      <span
+                        className="w-2 h-2 rounded-full"
+                        style={{ backgroundColor: isSelected ? '#ffffff' : cat.color }}
+                      />
+                      <span>{cat.label}</span>
+                      <span
+                        className={`text-[10px] px-1.5 py-0.2 rounded-full ${
+                          isSelected ? 'bg-white/30 text-white' : 'bg-slate-100 text-slate-600'
+                        }`}
+                      >
+                        {projectCalendarCategoryCounts[cat.key] || 0}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Entries List */}
+              <div className="space-y-3">
+                {filteredProjectCalendarEntries.map(entry => {
+                  const isPayment = entry.category === 'Payments';
+                  const isDeadline = entry.category === 'Deadlines';
+                  const isEvent = entry.category === 'Events';
+                  const isMeeting = entry.category === 'Meetings';
+
+                  return (
+                    <div
+                      key={entry.id}
+                      className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs hover:border-slate-300 transition flex flex-col md:flex-row md:items-center justify-between gap-3"
+                    >
+                      <div className="flex items-start gap-3 flex-1 min-w-0">
+                        {/* Category Left Color Bar */}
+                        <div
+                          className="w-1.5 self-stretch rounded-full shrink-0"
+                          style={{ backgroundColor: entry.color }}
+                        />
+
+                        <div className="flex-1 min-w-0 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span
+                              className="px-2 py-0.5 rounded text-[10px] font-bold tracking-wide uppercase border text-white"
+                              style={{ backgroundColor: entry.color, borderColor: entry.color }}
+                            >
+                              {entry.category}
+                            </span>
+
+                            <h4 className="text-xs font-bold text-slate-900 truncate">
+                              {entry.title}
+                            </h4>
+
+                            {/* Specific Category Badges */}
+                            {isPayment && (
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                  entry.payment_status === 'Paid'
+                                    ? 'bg-green-100 text-green-800 border border-green-200'
+                                    : entry.payment_status === 'Cancelled'
+                                    ? 'bg-slate-100 text-slate-600 border border-slate-200'
+                                    : 'bg-amber-100 text-amber-800 border border-amber-200'
+                                }`}
+                              >
+                                {entry.payment_status || 'Pending'}
+                              </span>
+                            )}
+
+                            {isDeadline && (
+                              <span
+                                className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                                  entry.deadline_status === 'Overdue'
+                                    ? 'bg-red-100 text-red-800 border border-red-200 font-extrabold'
+                                    : entry.deadline_status === 'Completed'
+                                    ? 'bg-green-100 text-green-800 border border-green-200'
+                                    : entry.deadline_status === 'In Progress'
+                                    ? 'bg-blue-100 text-blue-800 border border-blue-200'
+                                    : 'bg-slate-100 text-slate-700 border border-slate-200'
+                                }`}
+                              >
+                                {entry.deadline_status || 'Pending'}
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
+                            <span className="flex items-center gap-1 font-medium text-slate-700">
+                              <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                              {formatDisplayDate(entry.start_time)}
+                            </span>
+
+                            {entry.start_time && typeof entry.start_time === 'string' && entry.start_time.includes('T') && (
+                              <span className="flex items-center gap-1">
+                                <Clock className="w-3 h-3 text-slate-400" />
+                                {entry.start_time.split('T')[1]?.slice(0, 5)}
+                                {!isMeeting && entry.end_time && typeof entry.end_time === 'string' && entry.end_time.includes('T') && ` - ${entry.end_time.split('T')[1]?.slice(0, 5)}`}
+                              </span>
+                            )}
+
+                            {entry.location && (
+                              <span className="flex items-center gap-1">
+                                <MapPin className="w-3 h-3 text-slate-400" />
+                                <span className="truncate max-w-[200px]">{entry.location}</span>
+                              </span>
+                            )}
+
+                            {entry.assigned_member_name && (
+                              <span className="flex items-center gap-1">
+                                <Users className="w-3 h-3 text-slate-400" />
+                                <span className="truncate max-w-[150px]">{entry.assigned_member_name}</span>
+                              </span>
+                            )}
+                          </div>
+
+                          {/* Extra category-specific details */}
+                          {isPayment && entry.amount_due !== undefined && (
+                            <div className="mt-1 text-xs font-semibold text-emerald-700 flex items-center gap-1">
+                              <span>Amount Due:</span>
+                              <span className="text-slate-900 font-bold">
+                                ₹{Number(entry.amount_due).toLocaleString('en-IN')}
+                              </span>
+                              <span className="text-[10px] text-slate-400 font-normal italic ml-2">
+                                (Tracking reminder only • Does not impact Finance ledgers)
+                              </span>
+                            </div>
+                          )}
+
+                          {isMeeting && entry.participants && (
+                            <div className="mt-1 text-xs text-slate-600 flex flex-wrap items-center gap-2">
+                              <span className="text-[11px]">
+                                <strong className="text-slate-700">Attendees:</strong> {entry.participants}
+                              </span>
+                            </div>
+                          )}
+
+                          {entry.notes && (
+                            <p className="text-[11px] text-slate-500 italic mt-0.5 line-clamp-2">
+                              {entry.notes}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Right Quick Actions */}
+                      <div className="flex items-center gap-2 shrink-0 self-end md:self-center pt-2 md:pt-0 border-t md:border-t-0 border-slate-100 w-full md:w-auto justify-end">
+                        {isPayment && entry.calendarEventId && (
+                          <button
+                            type="button"
+                            onClick={() => handleTogglePaymentStatus(entry)}
+                            className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg border transition ${
+                              entry.payment_status === 'Paid'
+                                ? 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200'
+                                : 'bg-emerald-50 text-emerald-700 border-emerald-300 hover:bg-emerald-100'
+                            }`}
+                          >
+                            {entry.payment_status === 'Paid' ? 'Mark Pending' : 'Mark Paid'}
+                          </button>
+                        )}
+
+                        {isDeadline && entry.calendarEventId && (
+                          <button
+                            type="button"
+                            onClick={() => handleToggleDeadlineStatus(entry)}
+                            className={`px-2.5 py-1 text-[11px] font-semibold rounded-lg border transition ${
+                              entry.deadline_status === 'Completed'
+                                ? 'bg-slate-100 text-slate-700 border-slate-200 hover:bg-slate-200'
+                                : 'bg-orange-50 text-orange-700 border-orange-300 hover:bg-orange-100'
+                            }`}
+                          >
+                            {entry.deadline_status === 'Completed' ? 'Mark Pending' : 'Mark Completed'}
+                          </button>
+                        )}
+
+                        {entry.calendarEventId ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingCalendarEntry(entry);
+                                setIsCalendarModalOpen(true);
+                              }}
+                              className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition"
+                              title="Edit Entry"
+                            >
+                              <Pencil className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setDeletingCalendarId(entry.calendarEventId!)}
+                              className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition"
+                              title="Delete Entry"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </>
+                        ) : (
+                          <span className="text-[10px] font-medium text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
+                            Wedding Schedule
+                          </span>
+                        )}
                       </div>
                     </div>
-                    <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-blue-50 text-blue-700">
-                      {evt.event_type}
-                    </span>
-                  </div>
-                ))}
-                {projectEvents.length === 0 && (
-                  <div className="p-8 text-center bg-white rounded-xl border border-dashed border-slate-300 text-xs text-slate-500">
-                    No calendar events specifically attached to this project.
+                  );
+                })}
+
+                {filteredProjectCalendarEntries.length === 0 && (
+                  <div className="p-8 text-center bg-white rounded-xl border border-dashed border-slate-300 text-xs text-slate-500 space-y-3">
+                    <Calendar className="w-8 h-8 text-slate-300 mx-auto" />
+                    <p className="font-medium text-slate-700">
+                      {calendarCategoryFilter === 'all'
+                        ? 'No calendar entries recorded for this project yet.'
+                        : `No ${calendarCategoryFilter} found for this project.`}
+                    </p>
+                    <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
+                      Events from the wedding itinerary, payment reminders, deliverable deadlines, and team meetings all appear here and sync with the Master Operations Calendar.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingCalendarEntry(null);
+                        setIsCalendarModalOpen(true);
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 text-white rounded-lg text-xs font-semibold hover:bg-slate-800 transition"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      Add Calendar Entry
+                    </button>
                   </div>
                 )}
               </div>
+
+              {/* Inline Delete Confirmation Dialog */}
+              {deletingCalendarId && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4 backdrop-blur-xs">
+                  <div className="bg-white rounded-xl border border-slate-200 shadow-xl max-w-md w-full p-5 space-y-4">
+                    <div className="flex items-center gap-3 text-red-600">
+                      <div className="p-2 rounded-full bg-red-100">
+                        <AlertTriangle className="w-5 h-5 text-red-600" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-900">Delete Calendar Entry</h4>
+                        <p className="text-xs text-slate-500">
+                          Are you sure you want to remove this calendar entry?
+                        </p>
+                      </div>
+                    </div>
+                    <p className="text-xs text-slate-600">
+                      This entry will be permanently removed from both this project and the Master Operations Calendar.
+                    </p>
+                    <div className="flex justify-end gap-2 pt-2">
+                      <button
+                        type="button"
+                        disabled={isDeletingCalendarEntry}
+                        onClick={() => setDeletingCalendarId(null)}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 hover:bg-slate-100 border border-slate-200 transition"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isDeletingCalendarEntry}
+                        onClick={() => handleDeleteProjectCalendarEntry(deletingCalendarId)}
+                        className="px-3 py-1.5 rounded-lg text-xs font-semibold text-white bg-red-600 hover:bg-red-700 transition flex items-center gap-1.5"
+                      >
+                        {isDeletingCalendarEntry && <Loader2 className="w-3 h-3 animate-spin" />}
+                        Delete Entry
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Calendar Entry Modal */}
+              <CalendarEntryModal
+                isOpen={isCalendarModalOpen}
+                onClose={() => {
+                  setIsCalendarModalOpen(false);
+                  setEditingCalendarEntry(null);
+                }}
+                entryToEdit={editingCalendarEntry}
+                preselectedProject={project}
+                projects={projects}
+                teamMembers={teamMembers}
+                brandFilter={(project?.company_id === 'golden_june' ? 'golden_june' : 'twb') as any}
+                onSave={handleSaveProjectCalendarEntry}
+                onDelete={handleDeleteProjectCalendarEntry}
+              />
             </div>
           )}
 

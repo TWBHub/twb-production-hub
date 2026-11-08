@@ -182,3 +182,38 @@ export function formatTurnaroundDays(
   if (days === 1) return '1 calendar day';
   return `${days} calendar days`;
 }
+
+/**
+ * Returns today's date in local 'YYYY-MM-DD' format.
+ * Prevents UTC timezone shifts caused by Date.toISOString().
+ *
+ * @param refDate Optional reference date (defaults to current system/browser local time)
+ */
+export function getLocalTodayDateString(refDate: Date = new Date()): string {
+  const y = refDate.getFullYear();
+  const m = String(refDate.getMonth() + 1).padStart(2, '0');
+  const d = String(refDate.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+/**
+ * Checks whether a given calendar year, 0-indexed month, and day number
+ * match the local today's date.
+ *
+ * @param year Full year (e.g. 2026)
+ * @param month 0-indexed month (0 = January, 10 = November)
+ * @param dayNum Day of the month (1-31)
+ * @param refDate Optional reference date (defaults to current system/browser local time)
+ */
+export function isLocalToday(
+  year: number,
+  month: number,
+  dayNum: number,
+  refDate: Date = new Date()
+): boolean {
+  return (
+    dayNum === refDate.getDate() &&
+    month === refDate.getMonth() &&
+    year === refDate.getFullYear()
+  );
+}
