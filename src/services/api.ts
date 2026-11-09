@@ -65,23 +65,34 @@ import {
 
 // Cache keys for resilient persistent storage when offline or before Supabase sync
 const STORAGE_PREFIX = 'twbhub_';
+const memoryStore: Record<string, string> = {};
 
 function getStoredOrInitial<T>(key: string, initial: T): T {
-  if (typeof window === 'undefined') return initial;
   try {
-    const raw = localStorage.getItem(STORAGE_PREFIX + key);
+    const raw =
+      typeof window !== 'undefined'
+        ? localStorage.getItem(STORAGE_PREFIX + key)
+        : memoryStore[STORAGE_PREFIX + key];
     if (!raw) {
       const initToStore =
         key === 'companies' && Array.isArray(initial)
           ? (initial as any[]).map(c => sanitizeCompany(c))
           : initial;
-      localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(initToStore));
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(initToStore));
+      } else {
+        memoryStore[STORAGE_PREFIX + key] = JSON.stringify(initToStore);
+      }
       return initToStore as T;
     }
     const parsed = JSON.parse(raw);
     if (key === 'companies' && Array.isArray(parsed)) {
       const sanitized = parsed.map(c => sanitizeCompany(c));
-      localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(sanitized));
+      if (typeof window !== 'undefined') {
+        localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(sanitized));
+      } else {
+        memoryStore[STORAGE_PREFIX + key] = JSON.stringify(sanitized);
+      }
       return sanitized as unknown as T;
     }
     return parsed as T;
@@ -91,9 +102,12 @@ function getStoredOrInitial<T>(key: string, initial: T): T {
 }
 
 function saveToStorage<T>(key: string, data: T) {
-  if (typeof window === 'undefined') return;
   try {
-    localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(data));
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(data));
+    } else {
+      memoryStore[STORAGE_PREFIX + key] = JSON.stringify(data);
+    }
   } catch (err) {
     console.warn('LocalStorage save error:', err);
   }
@@ -781,11 +795,11 @@ export const apiService = {
     saveToStorage('enquiries', updated);
 
     // Auto generate notification
-    const displayName = newEnquiry.title || newEnquiry.client_name || 'New Wedding Lead';
+    const displayName = newEnquiry.title || newEnquiry.client_name || 'New Project Lead';
     const budgetStr = newEnquiry.estimated_budget ? ` (₹${newEnquiry.estimated_budget.toLocaleString('en-IN')})` : '';
     await this.createNotification({
-      title: 'New Wedding Lead Received',
-      message: `${displayName} enquired for ${newEnquiry.venue || 'Wedding'}${budgetStr}`,
+      title: 'New Project Lead Received',
+      message: `${displayName} enquired for ${newEnquiry.venue || 'Production'}${budgetStr}`,
       type: 'new_enquiry',
       read: false,
       link: 'enquiries',
@@ -3540,13 +3554,16 @@ async getExpenses(): Promise<Expense[]> {
     const supabase = getSupabaseClient();
     if (supabase) {
       try {
-        await supabase.from('notifications').insert({
+        const { data, error } = await supabase.from('notifications').insert({
           title: notif.title,
           message: notif.message,
           type: notif.type,
           read: notif.read ?? false,
           link: notif.link || null,
-        });
+        }).select();
+        if (!error && data && data.length > 0 && data[0].id) {
+          newNotif.id = data[0].id;
+        }
       } catch (err) {
         console.warn('Could not save notification to Supabase:', err);
       }
@@ -3563,7 +3580,11 @@ async getExpenses(): Promise<Expense[]> {
     saveToStorage('notifications', updated);
     const supabase = getSupabaseClient();
     if (supabase) {
-      await supabase.from('notifications').update({ read: true }).eq('id', id);
+      try {
+        await supabase.from('notifications').update({ read: true }).eq('id', id);
+      } catch (err) {
+        console.warn('Supabase markNotificationRead error:', err);
+      }
     }
   },
 
@@ -3573,7 +3594,11 @@ async getExpenses(): Promise<Expense[]> {
     saveToStorage('notifications', updated);
     const supabase = getSupabaseClient();
     if (supabase) {
-      await supabase.from('notifications').update({ read: true });
+      try {
+        await supabase.from('notifications').update({ read: true }).neq('read', true);
+      } catch (err) {
+        console.warn('Supabase markAllNotificationsRead error:', err);
+      }
     }
   },
 };

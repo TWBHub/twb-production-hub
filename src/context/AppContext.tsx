@@ -60,6 +60,8 @@ interface AppContextType {
   setActiveTab: (tab: string) => void;
   selectedProjectId: string | null;
   setSelectedProjectId: (id: string | null) => void;
+  selectedEnquiryId: string | null;
+  setSelectedEnquiryId: (id: string | null) => void;
 
   // Supabase Connection
   supabaseStatus: { connected: boolean; message: string; checking: boolean };
@@ -150,6 +152,7 @@ assignTeamMember: (
   updateCalendarEvent: (event: CalendarEvent) => Promise<CalendarEvent>;
   deleteCalendarEvent: (id: string) => Promise<void>;
   markNotificationRead: (id: string) => Promise<void>;
+  markNotificationAsRead: (id: string) => Promise<void>;
   markAllNotificationsRead: () => Promise<void>;
   updateCompany: (company: Company) => Promise<void>;
 
@@ -182,6 +185,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
+  const [selectedEnquiryId, setSelectedEnquiryId] = useState<string | null>(null);
 
   // Supabase Auth states (no hardcoded current user)
   const [currentUser, setCurrentUser] = useState<Profile | null>(null);
@@ -912,6 +916,8 @@ const deleteExpense = async (id: string) => {
         setActiveTab,
         selectedProjectId,
         setSelectedProjectId,
+        selectedEnquiryId,
+        setSelectedEnquiryId,
         supabaseStatus,
         checkSupabase,
         companies,
@@ -977,6 +983,7 @@ assignTeamMember,
         updateCalendarEvent,
         deleteCalendarEvent,
         markNotificationRead,
+        markNotificationAsRead: markNotificationRead,
         markAllNotificationsRead,
         updateCompany,
         canAccessSection,

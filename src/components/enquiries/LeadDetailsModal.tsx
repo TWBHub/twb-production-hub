@@ -74,7 +74,7 @@ export const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({
   if (!isOpen) return null;
 
   const isTWB = enquiry.company_id === 'twb';
-  const displayTitle = enquiry.title || enquiry.client_name || 'Wedding Lead';
+  const displayTitle = enquiry.title || enquiry.client_name || 'Project Lead';
 
   // Filter quotations for this lead & group into distinct proposals with revision history
   const leadQuotes = quotations.filter(q => q.enquiry_id === enquiry.id);
@@ -652,7 +652,7 @@ export const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({
                   <FileText className="w-8 h-8 text-slate-300 mx-auto" />
                   <p className="text-xs font-medium text-slate-700">No proposals drafted yet</p>
                   <p className="text-[11px] text-slate-400">
-                    Proposals use the services selected for this lead and show one overall package investment figure.
+                    Proposals use the services selected for this lead and show one total package amount.
                   </p>
                   <button
                     type="button"
@@ -709,7 +709,7 @@ export const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({
                           <div className="flex items-center justify-between sm:justify-end gap-3 pt-2 sm:pt-0 border-t sm:border-t-0 border-slate-200/60">
                             <div className="text-left sm:text-right">
                               <span className="text-[10px] text-slate-400 block font-normal uppercase tracking-wider">
-                                Current Investment
+                                Package Amount
                               </span>
                               <span className="font-mono font-bold text-slate-900 text-base">
                                 ₹{latestTotal.toLocaleString('en-IN')}

@@ -9,6 +9,8 @@
  * - Handles null, undefined, invalid, and reversed dates gracefully.
  */
 
+import { Enquiry, ProjectEvent } from '../types';
+
 /**
  * Formats any date input (YYYY-MM-DD string, ISO timestamp, Date object)
  * into standard 'dd-mm-yyyy' format.
@@ -216,4 +218,284 @@ export function isLocalToday(
     month === refDate.getMonth() &&
     year === refDate.getFullYear()
   );
+}
+
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const FULL_MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+];
+
+export interface ParsedDateParts {
+  day: number;
+  monthIdx: number;
+  monthShort: string;
+  monthFull: string;
+  year: number;
+}
+
+export function parseDateParts(dateInput?: string | Date | null): ParsedDateParts | null {
+  if (!dateInput) return null;
+  if (dateInput instanceof Date) {
+    if (isNaN(dateInput.getTime())) return null;
+    return {
+      day: dateInput.getDate(),
+      monthIdx: dateInput.getMonth(),
+      monthShort: SHORT_MONTHS[dateInput.getMonth()],
+      monthFull: FULL_MONTHS[dateInput.getMonth()],
+      year: dateInput.getFullYear(),
+    };
+  }
+  const str = String(dateInput).trim();
+  if (!str) return null;
+
+  // 1. ISO YYYY-MM-DD
+  const isoMatch = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if (isoMatch) {
+    const year = parseInt(isoMatch[1], 10);
+    const monthIdx = parseInt(isoMatch[2], 10) - 1;
+    const day = parseInt(isoMatch[3], 10);
+    if (monthIdx >= 0 && monthIdx < 12 && day >= 1 && day <= 31) {
+      return {
+        day,
+        monthIdx,
+        monthShort: SHORT_MONTHS[monthIdx],
+        monthFull: FULL_MONTHS[monthIdx],
+        year,
+      };
+    }
+  }
+
+  // 2. DD-MM-YYYY or DD/MM/YYYY
+  const dmyMatch = str.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})/);
+  if (dmyMatch) {
+    const day = parseInt(dmyMatch[1], 10);
+    const monthIdx = parseInt(dmyMatch[2], 10) - 1;
+    const year = parseInt(dmyMatch[3], 10);
+    if (monthIdx >= 0 && monthIdx < 12 && day >= 1 && day <= 31) {
+      return {
+        day,
+        monthIdx,
+        monthShort: SHORT_MONTHS[monthIdx],
+        monthFull: FULL_MONTHS[monthIdx],
+        year,
+      };
+    }
+  }
+
+  // Fallback to Date constructor
+  const d = new Date(str);
+  if (!isNaN(d.getTime())) {
+    return {
+      day: d.getDate(),
+      monthIdx: d.getMonth(),
+      monthShort: SHORT_MONTHS[d.getMonth()],
+      monthFull: FULL_MONTHS[d.getMonth()],
+      year: d.getFullYear(),
+    };
+  }
+
+  return null;
+}
+
+/**
+ * Formats a date into "20 December 2026" long format for proposals.
+ */
+export function formatProposalEventDate(dateInput?: string | Date | null): string {
+  if (!dateInput) return '';
+  const parsed = parseDateParts(dateInput);
+  if (parsed) {
+    return `${parsed.day} ${parsed.monthFull} ${parsed.year}`;
+  }
+  return formatDisplayDate(dateInput, '');
+}
+
+export interface ProposalScheduleItem {
+  dateStr: string;
+  eventName?: string;
+  formattedLine: string;
+}
+
+/**
+ * Reads all event records belonging to the lead and generates the Commissioned Event Schedule.
+ * - Preserves original event order.
+ * - Supports non-consecutive dates.
+ * - If event name is unavailable, displays its date without inventing a name.
+ * - If no events array exists, falls back to enquiry.event_date.
+ */
+export function getCommissionedEventSchedule(enquiry: Enquiry): ProposalScheduleItem[] {
+  const events = enquiry.events;
+  if (events && events.length > 0) {
+    const items: ProposalScheduleItem[] = [];
+    events.forEach(ev => {
+      const rawDate = ev.event_date ? ev.event_date.trim() : '';
+      const rawName = ev.event_name ? ev.event_name.trim() : '';
+
+      if (rawDate) {
+        const dateStr = formatProposalEventDate(rawDate);
+        const formattedLine = rawName ? `${dateStr} — ${rawName}` : dateStr;
+        items.push({ dateStr, eventName: rawName || undefined, formattedLine });
+      } else if (rawName) {
+        items.push({ dateStr: '', eventName: rawName, formattedLine: rawName });
+      }
+    });
+
+    if (items.length > 0) {
+      return items;
+    }
+  }
+
+  if (enquiry.event_date && enquiry.event_date.trim()) {
+    const dateStr = formatProposalEventDate(enquiry.event_date);
+    return [{ dateStr, formattedLine: dateStr }];
+  }
+
+  return [{ dateStr: 'Date TBD', formattedLine: 'Date TBD' }];
+}
+
+export interface LeadsTableDateDisplay {
+  text: string;
+  isSet: boolean;
+  count: number;
+}
+
+/**
+ * Formats the Wedding Date & Venue column date display for the Leads table:
+ * - Single event: simple date display, e.g. "20 Dec 2026"
+ * Formats the Wedding Date & Venue column date display for the Leads table:
+ * - 1 event: 10 Nov 2026
+ * - 2 events: 10 & 12 Nov 2026
+ * - 3 events: 10, 11 & 12 Nov 2026
+ * - 4 events: 10, 11, 12 & 13 Nov 2026
+ * - Across different months: 28 Nov, 2 & 5 Dec 2026
+ * - Across different years: 28 Dec 2026 & 2 Jan 2027 or 28 Dec 2026, 2 & 5 Jan 2027
+ * - Preserves event order without inventing or inferring dates.
+ */
+function formatDaysList(days: number[]): string {
+  if (days.length === 0) return '';
+  if (days.length === 1) return String(days[0]);
+  if (days.length === 2) return `${days[0]} & ${days[1]}`;
+  return `${days.slice(0, -1).join(', ')} & ${days[days.length - 1]}`;
+}
+
+export function formatLeadsTableEventDates(enquiry: Enquiry): LeadsTableDateDisplay {
+  const eventsWithDates = (enquiry.events || []).filter(
+    e => e.event_date && e.event_date.trim()
+  );
+
+  if (eventsWithDates.length === 0) {
+    if (enquiry.event_date && enquiry.event_date.trim()) {
+      const parsed = parseDateParts(enquiry.event_date);
+      const text = parsed
+        ? `${parsed.day} ${parsed.monthShort} ${parsed.year}`
+        : formatDisplayDate(enquiry.event_date);
+      return { text, isSet: true, count: 1 };
+    }
+    return { text: 'No dates set', isSet: false, count: 0 };
+  }
+
+  // Parse all dates
+  interface ParsedEventEntry {
+    parsed: ParsedDateParts | null;
+    raw: string;
+  }
+  const parsedEntries: ParsedEventEntry[] = eventsWithDates.map(ev => ({
+    parsed: parseDateParts(ev.event_date),
+    raw: ev.event_date!.trim(),
+  }));
+
+  // If any date could not be parsed, fallback safely to standard format
+  if (parsedEntries.some(e => !e.parsed)) {
+    const pieces = parsedEntries.map(e =>
+      e.parsed ? `${e.parsed.day} ${e.parsed.monthShort} ${e.parsed.year}` : formatDisplayDate(e.raw)
+    );
+    return {
+      text: pieces.join(', '),
+      isSet: true,
+      count: eventsWithDates.length,
+    };
+  }
+
+  // Group events into month-year clusters while preserving encounter order
+  interface MonthCluster {
+    year: number;
+    monthIdx: number;
+    monthShort: string;
+    days: number[];
+  }
+
+  const monthClusters: MonthCluster[] = [];
+  for (const entry of parsedEntries) {
+    const p = entry.parsed!;
+    const lastCluster = monthClusters[monthClusters.length - 1];
+    if (lastCluster && lastCluster.year === p.year && lastCluster.monthIdx === p.monthIdx) {
+      if (!lastCluster.days.includes(p.day)) {
+        lastCluster.days.push(p.day);
+      }
+    } else {
+      monthClusters.push({
+        year: p.year,
+        monthIdx: p.monthIdx,
+        monthShort: p.monthShort,
+        days: [p.day],
+      });
+    }
+  }
+
+  // Group month clusters into year clusters
+  interface YearCluster {
+    year: number;
+    months: MonthCluster[];
+  }
+
+  const yearClusters: YearCluster[] = [];
+  for (const mc of monthClusters) {
+    const lastYc = yearClusters[yearClusters.length - 1];
+    if (lastYc && lastYc.year === mc.year) {
+      lastYc.months.push(mc);
+    } else {
+      yearClusters.push({
+        year: mc.year,
+        months: [mc],
+      });
+    }
+  }
+
+  // Format each YearCluster
+  const formattedYears: string[] = yearClusters.map(yc => {
+    if (yc.months.length === 1) {
+      const m = yc.months[0];
+      return `${formatDaysList(m.days)} ${m.monthShort} ${yc.year}`;
+    }
+
+    // Multiple months in the same year: e.g. "28 Nov, 2 & 5 Dec 2026" or "28 Nov & 2 Dec 2026"
+    const monthTexts = yc.months.map(m => `${formatDaysList(m.days)} ${m.monthShort}`);
+    const anyHasAnd = monthTexts.some(t => t.includes('&'));
+
+    if (anyHasAnd) {
+      return `${monthTexts.join(', ')} ${yc.year}`;
+    }
+    // If none contain '&', format like "28 Nov & 2 Dec 2026" or "15 Oct, 28 Nov & 2 Dec 2026"
+    return `${monthTexts.slice(0, -1).join(', ')} & ${monthTexts[monthTexts.length - 1]} ${yc.year}`;
+  });
+
+  // Combine across multiple years
+  let finalText: string;
+  if (formattedYears.length === 1) {
+    finalText = formattedYears[0];
+  } else {
+    // Check if any year string has '&'
+    const anyYearHasAnd = formattedYears.some(y => y.includes('&'));
+    if (formattedYears.length === 2 && !anyYearHasAnd) {
+      finalText = `${formattedYears[0]} & ${formattedYears[1]}`;
+    } else {
+      finalText = formattedYears.join(', ');
+    }
+  }
+
+  return {
+    text: finalText,
+    isSet: true,
+    count: eventsWithDates.length,
+  };
 }

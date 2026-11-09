@@ -379,8 +379,8 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
         <div className="flex items-center justify-between pb-4 border-b border-slate-100 shrink-0">
           <div>
             <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-              <Sparkles className="w-5 h-5 text-red-600" />
-              <span>{editingEnquiry ? 'Edit Wedding Lead' : 'New Wedding Lead'}</span>
+              <Sparkles className="w-5 h-5 text-slate-900" />
+              <span>{editingEnquiry ? 'Edit Project Lead' : 'New Project Lead'}</span>
             </h2>
             <p className="text-xs text-slate-500 mt-0.5">
               Flexible enquiry record. Only Project / Lead Title is required — all other details can be added anytime.
@@ -1089,9 +1089,9 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
             type="button"
             onClick={handleSubmit}
             disabled={isSubmitting}
-            className="px-5 py-2 text-xs font-semibold bg-red-600 hover:bg-red-700 text-white rounded-lg shadow-xs transition-colors flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+            className="px-5 py-2 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg shadow-xs transition-colors flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
           >
-            <span>{isSubmitting ? 'Saving Lead...' : editingEnquiry ? 'Save Changes' : 'Create Wedding Lead'}</span>
+            <span>{isSubmitting ? 'Saving Lead...' : editingEnquiry ? 'Save Changes' : 'Create Project Lead'}</span>
           </button>
         </div>
       </div>

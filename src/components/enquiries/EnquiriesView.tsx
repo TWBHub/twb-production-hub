@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   UserPlus,
   Search,
@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Enquiry, EnquiryStatus, Company, Quotation } from '../../types';
-import { formatDisplayDate } from '../../utils/dateUtils';
+import { formatDisplayDate, formatLeadsTableEventDates } from '../../utils/dateUtils';
 import { groupQuotationsIntoProposals } from '../../utils/proposalRevisionUtils';
 import { LeadFormModal } from './LeadFormModal';
 import { LeadDetailsModal } from './LeadDetailsModal';
@@ -66,6 +66,8 @@ export const EnquiriesView: React.FC = () => {
     createClient,
     createProject,
     setActiveTab,
+    selectedEnquiryId,
+    setSelectedEnquiryId,
   } = useApp();
 
   // Filter states
@@ -80,6 +82,16 @@ export const EnquiriesView: React.FC = () => {
   const [editingEnquiry, setEditingEnquiry] = useState<Enquiry | null>(null);
 
   const [detailsEnquiry, setDetailsEnquiry] = useState<Enquiry | null>(null);
+
+  useEffect(() => {
+    if (selectedEnquiryId) {
+      const match = filteredEnquiries.find(e => e.id === selectedEnquiryId);
+      if (match) {
+        setDetailsEnquiry(match);
+      }
+      setSelectedEnquiryId(null);
+    }
+  }, [selectedEnquiryId, filteredEnquiries, setSelectedEnquiryId]);
 
   const [quoteModalEnquiry, setQuoteModalEnquiry] = useState<Enquiry | null>(null);
   const [quoteToEdit, setQuoteToEdit] = useState<Quotation | null>(null);
@@ -337,7 +349,7 @@ export const EnquiriesView: React.FC = () => {
           <button
             type="button"
             onClick={handleOpenCreate}
-            className="px-4 py-2 text-xs font-semibold bg-red-600 hover:bg-red-700 text-white rounded-lg shadow-xs transition-colors flex items-center justify-center gap-2"
+            className="px-4 py-2 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer"
           >
             <Plus className="w-4 h-4" />
             <span>New Lead</span>
@@ -574,15 +586,20 @@ export const EnquiriesView: React.FC = () => {
 
                     {/* Wedding Date & Venue */}
                     <td className="py-3 px-3">
-                      <div className="font-semibold text-slate-800">
-                        {lead.event_date ? (
-                          formatDisplayDate(lead.event_date)
-                        ) : lead.events && lead.events.length > 0 ? (
-                          `${lead.events.length} event${lead.events.length > 1 ? 's' : ''} scheduled`
-                        ) : (
-                          <span className="text-slate-400 italic font-normal">No dates set</span>
-                        )}
-                      </div>
+                      {(() => {
+                        const dateInfo = formatLeadsTableEventDates(lead);
+                        return (
+                          <div className="font-semibold text-slate-800">
+                            {dateInfo.isSet ? (
+                              <span title={dateInfo.count > 1 ? `Full schedule with ${dateInfo.count} events visible in Lead Details` : undefined}>
+                                {dateInfo.text}
+                              </span>
+                            ) : (
+                              <span className="text-slate-400 italic font-normal">{dateInfo.text}</span>
+                            )}
+                          </div>
+                        );
+                      })()}
                       <div className="text-[11px] text-slate-500 truncate max-w-[200px]">
                         {lead.venue || lead.city ? (
                           [lead.venue, lead.city].filter(Boolean).join(', ')
@@ -638,7 +655,7 @@ export const EnquiriesView: React.FC = () => {
 
                     {/* Actions */}
                     <td className="py-3 px-4 text-right" onClick={e => e.stopPropagation()}>
-                      <div className="flex items-center justify-end gap-1.5">
+                      <div className="flex items-center justify-end gap-1.5 whitespace-nowrap">
                         {(() => {
                           const leadQuotes = quotations.filter(q => q.enquiry_id === lead.id);
                           const latestQuote = leadQuotes.length > 0 ? groupQuotationsIntoProposals(leadQuotes)[0]?.latestQuotation : null;
@@ -646,8 +663,8 @@ export const EnquiriesView: React.FC = () => {
                             <button
                               type="button"
                               onClick={() => handleOpenQuotationBuilder(lead, latestQuote)}
-                              className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors"
-                              title={latestQuote ? `Revise Proposal (${latestQuote.quotation_number} v${latestQuote.version})` : 'Create Quotation Proposal'}
+                              className="p-1.5 text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                              title={latestQuote ? `Revise Proposal (${latestQuote.quotation_number} v${latestQuote.version})` : 'Generate Proposal'}
                             >
                               <FileText className="w-3.5 h-3.5" />
                             </button>
@@ -656,8 +673,8 @@ export const EnquiriesView: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => handleOpenEdit(lead)}
-                          className="p-1.5 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
-                          title="Edit Lead"
+                          className="p-1.5 text-slate-600 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
+                          title="Edit Lead Details"
                         >
                           <Edit2 className="w-3.5 h-3.5" />
                         </button>
@@ -671,7 +688,7 @@ export const EnquiriesView: React.FC = () => {
                                 )
                               }
                               className="p-1.5 text-slate-300 cursor-not-allowed rounded-lg"
-                              title="Lead is archived - unarchive to convert"
+                              title="Lead is archived — unarchive to convert"
                             >
                               <FolderKanban className="w-3.5 h-3.5" />
                             </button>
@@ -679,8 +696,8 @@ export const EnquiriesView: React.FC = () => {
                             <button
                               type="button"
                               onClick={() => handleOpenConvert(lead)}
-                              className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
-                              title="Convert to Project"
+                              className="p-1.5 text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors cursor-pointer"
+                              title="Convert to Active Project"
                             >
                               <FolderKanban className="w-3.5 h-3.5" />
                             </button>
@@ -689,7 +706,7 @@ export const EnquiriesView: React.FC = () => {
                         <button
                           type="button"
                           onClick={() => handleToggleArchive(lead)}
-                          className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors"
+                          className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
                           title={lead.is_archived ? 'Restore (Unarchive) Lead' : 'Archive Lead'}
                         >
                           {lead.is_archived ? (
@@ -698,10 +715,11 @@ export const EnquiriesView: React.FC = () => {
                             <Archive className="w-3.5 h-3.5" />
                           )}
                         </button>
+                        <div className="w-px h-4 bg-slate-200 mx-0.5" aria-hidden="true" />
                         <button
                           type="button"
                           onClick={() => setDeleteModalEnquiry(lead)}
-                          className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                          className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
                           title="Delete Lead"
                         >
                           <Trash2 className="w-3.5 h-3.5" />

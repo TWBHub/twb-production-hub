@@ -16,7 +16,7 @@ import {
 } from 'lucide-react';
 import { Enquiry, Company, Quotation, QuotationLineItem, QuotationState } from '../../types';
 import { generateQuotationPDF, downloadPdfDoc, getOfficialCompanyInfo } from '../../utils/pdfGenerator';
-import { formatDisplayDate } from '../../utils/dateUtils';
+import { formatDisplayDate, getCommissionedEventSchedule } from '../../utils/dateUtils';
 import { generateProposalReference, getProposalFilename } from '../../utils/proposalRevisionUtils';
 
 interface QuotationBuilderModalProps {
@@ -531,13 +531,13 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
                   </div>
                 </div>
 
-                {/* Overall Package Investment Box */}
+                {/* Total Package Amount Box */}
                 <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 space-y-3">
                   <div>
                     <div className="flex items-center justify-between mb-1">
                       <label className="font-bold text-slate-900 flex items-center gap-1.5 text-xs">
                         <Coins className="w-4 h-4 text-blue-600" />
-                        <span>Overall Package Investment (₹)</span>
+                        <span>Total Package Amount (₹)</span>
                       </label>
                       {enquiry.estimated_budget && enquiry.estimated_budget > 0 && subtotal !== enquiry.estimated_budget && (
                         <button
@@ -558,7 +558,7 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
                         min="0"
                         value={packageInvestment || ''}
                         onChange={e => setPackageInvestment(Number(e.target.value) || 0)}
-                        placeholder="Enter agreed package investment (e.g. 350000)"
+                        placeholder="Enter agreed package amount (e.g. 350000)"
                         className="w-full pl-8 pr-3 py-2 bg-white border border-slate-300 rounded-lg text-sm font-mono font-bold text-slate-900 focus:ring-1 focus:ring-slate-900 focus:outline-hidden"
                       />
                     </div>
@@ -600,7 +600,7 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
                   </div>
 
                   <div className="pt-2 border-t border-slate-300 flex items-center justify-between text-slate-900 font-bold text-sm">
-                    <span>Total Proposal Investment</span>
+                    <span>Total Package Amount</span>
                     <span className="text-base text-red-600 font-mono">
                       ₹{grandTotal.toLocaleString('en-IN')}
                     </span>
@@ -627,7 +627,7 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
                   </div>
                   <div className="text-right text-xs">
                     <div className="font-bold text-black text-sm uppercase tracking-wide">
-                      PROPOSAL / QUOTATION
+                      PROPOSAL
                     </div>
                     <div className="text-slate-700 text-xs mt-0.5 font-medium">Ref: {quotationNumber}</div>
                     <div className="text-slate-500 text-[10px] mt-0.5">
@@ -663,10 +663,14 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
                     <div className="space-y-2">
                       <div>
                         <div className="text-[9px] font-bold text-slate-500 uppercase tracking-wider">
-                          Commissioned Event Dates
+                          Commissioned Event Schedule
                         </div>
-                        <div className="font-bold text-slate-900 text-xs mt-0.5">
-                          {enquiry.event_date ? formatDisplayDate(enquiry.event_date) : 'Date TBD'}
+                        <div className="font-bold text-slate-900 text-xs mt-0.5 space-y-0.5">
+                          {getCommissionedEventSchedule(enquiry).map((item, idx) => (
+                            <div key={idx} className="leading-snug">
+                              {item.formattedLine}
+                            </div>
+                          ))}
                         </div>
                       </div>
                       <div>
@@ -706,11 +710,11 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
                   </table>
                 </div>
 
-                {/* Section 3: Commercial Investment */}
+                {/* Section 3: Package Details */}
                 <div className="space-y-2 pt-1">
                   <div className="border-b border-slate-200 pb-1">
                     <span className="font-bold text-xs tracking-wider uppercase text-black">
-                      Commercial Investment
+                      Package Details
                     </span>
                   </div>
 
@@ -736,10 +740,10 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
                     </div>
                   )}
 
-                  {/* Total Package Investment - FULL WIDTH, label on left, amount on right, never cramped */}
+                  {/* Total Package Amount - FULL WIDTH, label on left, amount on right, never cramped */}
                   <div className="pt-2 border-t border-slate-300 flex items-center justify-between">
                     <span className="font-bold text-xs sm:text-sm tracking-wide uppercase text-black">
-                      Total Package Investment
+                      Total Package Amount
                     </span>
                     <span className="font-mono font-bold text-base sm:text-lg text-black">
                       ₹{grandTotal.toLocaleString('en-IN')}

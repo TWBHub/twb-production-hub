@@ -2,7 +2,7 @@ import { jsPDF } from 'jspdf';
 import { Company, Enquiry, Payment, Project, ProjectEvent, Client, Deliverable, Quotation } from '../types';
 import { getProjectClauses } from './termsLibrary';
 import { sortProjectEvents } from './eventUtils';
-import { formatDisplayDate, formatDisplayDateRange } from './dateUtils';
+import { formatDisplayDate, formatDisplayDateRange, getCommissionedEventSchedule } from './dateUtils';
 import { isGoldenJune, isTWB } from './companyUtils';
 import { getProposalFilename, sanitizeProjectNameForFilename } from './proposalRevisionUtils';
 
@@ -262,7 +262,7 @@ export const generateQuotationPDF = (
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(7);
       doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
-      doc.text('PROPOSAL / QUOTATION (CONTINUED)', 195, 18, { align: 'right' });
+      doc.text('PROPOSAL (CONTINUED)', 195, 18, { align: 'right' });
 
       doc.setDrawColor(colorBlack[0], colorBlack[1], colorBlack[2]);
       doc.setLineWidth(0.2);
@@ -296,7 +296,7 @@ export const generateQuotationPDF = (
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(12.5);
   doc.setTextColor(colorBlack[0], colorBlack[1], colorBlack[2]);
-  doc.text('PROPOSAL / QUOTATION', 195, 19, { align: 'right' });
+  doc.text('PROPOSAL', 195, 19, { align: 'right' });
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
@@ -378,16 +378,19 @@ export const generateQuotationPDF = (
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(6);
   doc.setTextColor(colorMuted[0], colorMuted[1], colorMuted[2]);
-  doc.text('COMMISSIONED WEDDING / EVENT DATES', rightX, rightY);
+  doc.text('COMMISSIONED EVENT SCHEDULE', rightX, rightY);
   rightY += 3.8;
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(8.5);
+  doc.setFontSize(8);
   doc.setTextColor(colorBlack[0], colorBlack[1], colorBlack[2]);
-  const eventDateStr = enquiry.event_date ? formatDisplayDate(enquiry.event_date) : 'Date TBD';
-  const dateLines = doc.splitTextToSize(eventDateStr, rightColWidth);
-  doc.text(dateLines, rightX, rightY);
-  rightY += dateLines.length * 3.6 + 1.5;
+  const scheduleItems = getCommissionedEventSchedule(enquiry);
+  scheduleItems.forEach(item => {
+    const dateLines = doc.splitTextToSize(item.formattedLine, rightColWidth);
+    doc.text(dateLines, rightX, rightY);
+    rightY += dateLines.length * 3.6 + 1;
+  });
+  rightY += 1.5;
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(6);
@@ -472,7 +475,7 @@ export const generateQuotationPDF = (
   curY += 7;
 
   // -------------------------------------------------------------------------
-  // SECTION 3: COMMERCIAL INVESTMENT
+  // SECTION 3: PACKAGE DETAILS
   // Full width alignment: Label on left, formatted amount on right, never cramped
   // -------------------------------------------------------------------------
   curY = checkPageOverflow(30, curY);
@@ -480,7 +483,7 @@ export const generateQuotationPDF = (
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(8.5);
   doc.setTextColor(colorBlack[0], colorBlack[1], colorBlack[2]);
-  doc.text('COMMERCIAL INVESTMENT', 15, curY);
+  doc.text('PACKAGE DETAILS', 15, curY);
 
   doc.setDrawColor(colorLine[0], colorLine[1], colorLine[2]);
   doc.setLineWidth(0.2);
@@ -537,11 +540,11 @@ export const generateQuotationPDF = (
     curY += 4.5;
   }
 
-  // TOTAL PACKAGE INVESTMENT: Full width prominent presentation
+  // TOTAL PACKAGE AMOUNT: Full width prominent presentation
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(10.5);
   doc.setTextColor(colorBlack[0], colorBlack[1], colorBlack[2]);
-  doc.text('TOTAL PACKAGE INVESTMENT', 15, curY + 1);
+  doc.text('TOTAL PACKAGE AMOUNT', 15, curY + 1);
 
   renderRupeeAmount(doc, total, 195, curY + 1, {
     fontSize: 11,

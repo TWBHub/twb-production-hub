@@ -100,14 +100,14 @@ describe('Proposal PDF Correction and Redesign Suite', () => {
 
     // Document header
     assert.ok(pdfOutput.includes('THE WEDDING BOOTH'), 'Header contains uppercase brand display name');
-    assert.ok(pdfOutput.includes('PROPOSAL / QUOTATION'), 'Document title PROPOSAL / QUOTATION is present');
+    assert.ok(pdfOutput.includes('PROPOSAL'), 'Document title PROPOSAL is present');
     assert.ok(pdfOutput.includes('QT-TWB-2026-1101'), 'Quotation reference number is present');
 
     // Section headings matching Order Form style
     assert.ok(pdfOutput.includes('CLIENT & EVENT PROFILE'), 'Section 1 CLIENT & EVENT PROFILE is present');
     assert.ok(pdfOutput.includes('COMMISSIONED SERVICES & PRODUCTION SCOPE'), 'Section 2 COMMISSIONED SERVICES & PRODUCTION SCOPE is present');
-    assert.ok(pdfOutput.includes('COMMERCIAL INVESTMENT'), 'Section 3 COMMERCIAL INVESTMENT is present');
-    assert.ok(pdfOutput.includes('TOTAL PACKAGE INVESTMENT'), 'TOTAL PACKAGE INVESTMENT heading is present');
+    assert.ok(pdfOutput.includes('PACKAGE DETAILS'), 'Section 3 PACKAGE DETAILS is present');
+    assert.ok(pdfOutput.includes('TOTAL PACKAGE AMOUNT'), 'TOTAL PACKAGE AMOUNT heading is present');
     assert.ok(pdfOutput.includes('SCOPE & PRODUCTION NOTES'), 'Section 4 SCOPE & PRODUCTION NOTES is present');
     assert.ok(pdfOutput.includes('TERMS & CONDITIONS'), 'Section 5 TERMS & CONDITIONS is present');
   });
@@ -150,7 +150,7 @@ describe('Proposal PDF Correction and Redesign Suite', () => {
     assert.ok(pdfOutput.includes('Package Subtotal:'), 'Contains subtotal line');
     assert.ok(pdfOutput.includes('Special Discount'), 'Contains discount line');
     assert.ok(pdfOutput.includes('GST / Tax'), 'Contains GST tax line');
-    assert.ok(pdfOutput.includes('TOTAL PACKAGE INVESTMENT'), 'Contains prominent TOTAL PACKAGE INVESTMENT');
+    assert.ok(pdfOutput.includes('TOTAL PACKAGE AMOUNT'), 'Contains prominent TOTAL PACKAGE AMOUNT');
   });
 
   it('7. Proposal PDF works identically for Golden June brand', () => {
@@ -165,7 +165,7 @@ describe('Proposal PDF Correction and Redesign Suite', () => {
     const pdfGJOutput = docGJ.output();
 
     assert.ok(pdfGJOutput.includes('GOLDEN JUNE FILMS'), 'Contains Golden June brand header');
-    assert.ok(pdfGJOutput.includes('PROPOSAL / QUOTATION'), 'Contains proposal title');
+    assert.ok(pdfGJOutput.includes('PROPOSAL'), 'Contains proposal title');
     assert.ok(!pdfGJOutput.includes('Chase'), 'GJ proposal has no Chase details');
     assert.ok(!pdfGJOutput.includes('Silicon Valley'), 'GJ proposal has no Silicon Valley details');
   });
