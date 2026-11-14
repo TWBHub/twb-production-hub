@@ -299,12 +299,24 @@ export const getUserProfile = async (
 };
 
 /**
+ * Normalizes role strings from Supabase profiles (which may be lowercase like 'admin', 'manager', 'editor')
+ * to the application's UserRole union values.
+ */
+export const normalizeUserRole = (role?: string | null): UserRole => {
+  const norm = (role || '').trim().toLowerCase();
+  if (norm === 'admin') return 'Admin';
+  if (norm === 'manager') return 'Manager';
+  if (norm === 'editor') return 'Editor';
+  return 'Team Member';
+};
+
+/**
  * Retrieves the user's role (Admin, Manager, Team Member, Editor).
  * Defaults to 'Team Member' if unspecified.
  */
 export const getUserRole = async (userId?: string): Promise<UserRole> => {
   const { profile } = await getUserProfile(userId);
-  return profile?.role || 'Team Member';
+  return normalizeUserRole(profile?.role);
 };
 
 /**
@@ -349,20 +361,22 @@ export const upsertProfile = async (
 /**
  * Validates whether a user's role matches any allowed role.
  */
-export const hasRole = (userRole: UserRole, allowedRoles: UserRole[]): boolean => {
-  return allowedRoles.includes(userRole);
+export const hasRole = (userRole: UserRole | string, allowedRoles: UserRole[]): boolean => {
+  const normalized = normalizeUserRole(userRole);
+  return allowedRoles.includes(normalized);
 };
 
 /**
  * Validates whether a user's role has access to a specific navigation tab or view.
  */
-export const canAccessTab = (tab: string, role: UserRole): boolean => {
+export const canAccessTab = (tab: string, role: UserRole | string): boolean => {
+  const normalized = normalizeUserRole(role);
   const allowedRoles = TAB_PERMISSIONS[tab];
   if (!allowedRoles) {
     // Unknown tabs default to Admin and Manager only
-    return role === 'Admin' || role === 'Manager';
+    return normalized === 'Admin' || normalized === 'Manager';
   }
-  return allowedRoles.includes(role);
+  return allowedRoles.includes(normalized);
 };
 
 /**
@@ -370,18 +384,19 @@ export const canAccessTab = (tab: string, role: UserRole): boolean => {
  */
 export const checkRouteAccess = (
   tab: string,
-  role: UserRole = 'Team Member'
+  role: UserRole | string = 'Team Member'
 ): { allowed: boolean; reason?: string; requiredRoles?: UserRole[] } => {
+  const normalized = normalizeUserRole(role);
   const allowedRoles = TAB_PERMISSIONS[tab];
   if (!allowedRoles) {
     return {
-      allowed: role === 'Admin',
+      allowed: normalized === 'Admin',
       reason: 'Restricted view requires administrative privileges.',
       requiredRoles: ['Admin'],
     };
   }
 
-  const allowed = allowedRoles.includes(role);
+  const allowed = allowedRoles.includes(normalized);
   return {
     allowed,
     reason: allowed ? undefined : `Access to ${tab} requires one of: ${allowedRoles.join(', ')}.`,
@@ -415,7 +430,7 @@ export const checkAuthAndRole = async (
   }
 
   const { profile } = await getUserProfile(user!.id);
-  const role: UserRole = profile?.role || (user!.user_metadata?.role as UserRole) || 'Team Member';
+  const role: UserRole = normalizeUserRole(profile?.role || (user!.user_metadata?.role as string));
   const isAuthorized = !allowedRoles || allowedRoles.length === 0 || allowedRoles.includes(role);
 
   return {

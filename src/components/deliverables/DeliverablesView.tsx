@@ -14,33 +14,29 @@ import {
 import { useApp } from '../../context/AppContext';
 import {
   Deliverable,
+  DeliverableBrandScope,
+  DeliverableCatalogueCategory,
   DeliverableStatus,
   DeliverableType,
   Project,
 } from '../../types';
 import { filterDeliverableEditors } from '../../utils/teamMemberFilters';
+import { resolveBrandCode } from '../../utils/companyUtils';
+import {
+  canAddDeliverableCatalogueEntry,
+  getDeliverableTypeOptions,
+} from '../../utils/deliverableCatalogueUtils';
+import {
+  DELIVERABLE_WORKFLOW_STATUSES,
+  getDeliverableFeedbackText,
+  buildDeliverableFeedbackFields,
+  resolveDeliverableStatusOnCreate,
+  syncCreateStatusOnEditorChange,
+} from '../../utils/deliverableMilestones';
+import { ModuleErrorBanner } from '../common/ModuleErrorBanner';
+import { DeliverableTypeSelector } from './DeliverableTypeSelector';
 
-const DELIVERABLE_TYPES: DeliverableType[] = [
-  'Highlight Film (4-5 mins)',
-  'Teaser / Reel (60s)',
-  'Feature Film (20-30 mins)',
-  'Full Ceremony Edit',
-  'Speeches & Toasts',
-  'Full Photo Gallery (800+)',
-  'Fine Art Wedding Album',
-  'Parent Albums',
-  'Drone Compilation',
-];
-
-const WORKFLOW_STATUSES: DeliverableStatus[] = [
-  'Not Started',
-  'Assigned',
-  'In Progress',
-  'Submitted',
-  'Changes Requested',
-  'Approved',
-  'Delivered',
-];
+const WORKFLOW_STATUSES: DeliverableStatus[] = [...DELIVERABLE_WORKFLOW_STATUSES];
 
 const getStatusBadge = (s?: DeliverableStatus | '') => {
   switch (s) {
@@ -73,6 +69,7 @@ interface DeliverableRowProps {
   onDelete: (del: Deliverable) => void;
   onStatusChange: (id: string, status: DeliverableStatus | '') => Promise<void>;
   onUpdateDeliverable?: (del: Deliverable) => Promise<Deliverable>;
+  onActionError: (msg: string) => void;
 }
 
 const DeliverableRow: React.FC<DeliverableRowProps> = ({
@@ -84,6 +81,7 @@ const DeliverableRow: React.FC<DeliverableRowProps> = ({
   onDelete,
   onStatusChange,
   onUpdateDeliverable,
+  onActionError,
 }) => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null);
@@ -161,7 +159,7 @@ const DeliverableRow: React.FC<DeliverableRowProps> = ({
       await onStatusChange(del.id, newStatus);
     } catch (err) {
       console.error('Failed to update status:', err);
-      alert(`Could not update status: ${err instanceof Error ? err.message : String(err)}`);
+      onActionError(`Could not update status: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setIsUpdatingStatus(false);
     }
@@ -171,13 +169,13 @@ const DeliverableRow: React.FC<DeliverableRowProps> = ({
     const newEditorId = e.target.value;
     let newStatus = del.status;
 
-    // Workflow rule 1: If changing from Unassigned to an Editor, set status to "Assigned" if status is blank
-    if (newEditorId && (!del.status || del.status === '')) {
+    // Workflow rule 1: If changing from Unassigned to an Editor while blank or Not Started, set status to "Assigned"
+    if (newEditorId && (!del.status || del.status === '' || del.status === 'Not Started')) {
       newStatus = 'Assigned';
     }
-    // Workflow rule 2: If changing from an Editor to Unassigned, clear "Assigned" status back to blank
+    // Workflow rule 2: If changing from an Editor to Unassigned while Assigned, return to "Not Started"
     else if (!newEditorId && del.status === 'Assigned') {
-      newStatus = '' as DeliverableStatus;
+      newStatus = 'Not Started';
     }
 
     const updated: Deliverable = {
@@ -191,7 +189,7 @@ const DeliverableRow: React.FC<DeliverableRowProps> = ({
       await onUpdateDeliverable(updated);
     } catch (err) {
       console.error('Failed to assign editor:', err);
-      alert(`Could not assign editor: ${err instanceof Error ? err.message : String(err)}`);
+      onActionError(`Could not assign editor: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setIsUpdatingEditor(false);
     }
@@ -208,9 +206,9 @@ const DeliverableRow: React.FC<DeliverableRowProps> = ({
         <div className="font-bold text-slate-900 text-xs">
           {del.deliverable_type}
         </div>
-        {del.client_feedback && (
+        {getDeliverableFeedbackText(del) && (
           <div className="text-[11px] text-slate-500 line-clamp-1 mt-0.5">
-            {del.client_feedback}
+            {getDeliverableFeedbackText(del)}
           </div>
         )}
       </td>
@@ -254,7 +252,10 @@ const DeliverableRow: React.FC<DeliverableRowProps> = ({
             del.status
           )}`}
         >
-          <option value="">Unassigned</option>
+          {!del.status && <option value="">No Status</option>}
+          {del.status && !WORKFLOW_STATUSES.includes(del.status) && (
+            <option value={del.status}>{del.status}</option>
+          )}
           {WORKFLOW_STATUSES.map(st => (
             <option key={st} value={st}>
               {st}
@@ -371,9 +372,18 @@ export const DeliverablesView: React.FC = () => {
     updateDeliverableStatus,
     setSelectedProjectId,
     setActiveTab,
+    deliverableCatalogue,
+    createDeliverableCatalogueItem,
+    moduleErrors,
+    refreshAllData,
+    isRefreshingData,
   } = useApp();
 
-  const canManage = isAdmin || isManager || !currentUser || currentUser.role === 'Admin' || currentUser.role === 'Manager';
+  const canManage =
+    isAdmin ||
+    isManager ||
+    !currentUser ||
+    canAddDeliverableCatalogueEntry(currentUser.role);
 
   // Filters & Ordering State
   const [searchQuery, setSearchQuery] = useState('');
@@ -382,27 +392,58 @@ export const DeliverablesView: React.FC = () => {
     'recently_added' | 'name_asc' | 'wedding_date_asc' | 'wedding_date_desc'
   >('recently_added');
 
-  // Modal States
+  // Modal & Error States
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [editingDeliverable, setEditingDeliverable] = useState<Deliverable | null>(null);
   const [deletingDeliverable, setDeletingDeliverable] = useState<Deliverable | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [deliverableActionError, setDeliverableActionError] = useState<string | null>(null);
+  const [editModalError, setEditModalError] = useState<string | null>(null);
+  const [createModalError, setCreateModalError] = useState<string | null>(null);
 
   // Create Form State
   const [createProjectId, setCreateProjectId] = useState('');
-  const [createType, setCreateType] = useState<DeliverableType>(DELIVERABLE_TYPES[0]);
+  const [createType, setCreateType] = useState<DeliverableType>('');
+  const [createIsCustom, setCreateIsCustom] = useState(false);
+  const [createCustomName, setCreateCustomName] = useState('');
+  const [createSaveToCatalogue, setCreateSaveToCatalogue] = useState(false);
+  const [createCatalogueCategory, setCreateCatalogueCategory] =
+    useState<DeliverableCatalogueCategory>('Film');
+  const [createCatalogueBrandScope, setCreateCatalogueBrandScope] =
+    useState<DeliverableBrandScope>('twb');
+  const [createCatalogueDescription, setCreateCatalogueDescription] = useState('');
   const [createEditorId, setCreateEditorId] = useState('');
-  const [createStatus, setCreateStatus] = useState<DeliverableStatus | ''>('');
+  const [createStatus, setCreateStatus] = useState<DeliverableStatus | ''>('Not Started');
   const [createUrl, setCreateUrl] = useState('');
   const [createFeedback, setCreateFeedback] = useState('');
 
   // Edit Form State
-  const [editType, setEditType] = useState<DeliverableType>(DELIVERABLE_TYPES[0]);
+  const [editType, setEditType] = useState<DeliverableType>('');
+  const [editIsCustom, setEditIsCustom] = useState(false);
+  const [editCustomName, setEditCustomName] = useState('');
+  const [editSaveToCatalogue, setEditSaveToCatalogue] = useState(false);
+  const [editCatalogueCategory, setEditCatalogueCategory] =
+    useState<DeliverableCatalogueCategory>('Film');
+  const [editCatalogueBrandScope, setEditCatalogueBrandScope] =
+    useState<DeliverableBrandScope>('twb');
+  const [editCatalogueDescription, setEditCatalogueDescription] = useState('');
   const [editEditorId, setEditEditorId] = useState('');
   const [editStatus, setEditStatus] = useState<DeliverableStatus | ''>('');
   const [editUrl, setEditUrl] = useState('');
   const [editFeedback, setEditFeedback] = useState('');
+
+  const selectedCreateProject = useMemo(
+    () => projects.find(p => p.id === createProjectId) || projects[0],
+    [projects, createProjectId]
+  );
+  const createProjectBrand = resolveBrandCode(selectedCreateProject?.company_id);
+
+  const editProjectBrand = useMemo(() => {
+    if (!editingDeliverable) return 'twb' as const;
+    const matchedProj = projects.find(p => p.id === editingDeliverable.project_id);
+    return resolveBrandCode(matchedProj?.company_id || editingDeliverable.company_id);
+  }, [projects, editingDeliverable]);
 
   // ASSIGNED EDITOR DROPDOWN:
   // Must ONLY show Team Members whose categories include "Editor"
@@ -481,14 +522,16 @@ export const DeliverablesView: React.FC = () => {
         del.status === statusFilter ||
         (statusFilter === 'Unassigned' && !del.status);
 
-      // 3. Search query (deliverable type, project name, editor, review link)
+      // 3. Search query (deliverable type, project name, editor, review link, editing notes/feedback)
       const query = searchQuery.trim().toLowerCase();
+      const feedbackText = getDeliverableFeedbackText(del);
       const matchesSearch =
         !query ||
         del.deliverable_type.toLowerCase().includes(query) ||
         (project && project.name.toLowerCase().includes(query)) ||
         (editorName && editorName.toLowerCase().includes(query)) ||
-        (del.external_link && del.external_link.toLowerCase().includes(query));
+        (del.external_link && del.external_link.toLowerCase().includes(query)) ||
+        (feedbackText && feedbackText.toLowerCase().includes(query));
 
       if (matchesBrand && matchesStatus && matchesSearch) {
         const pid = del.project_id || 'unassigned-project';
@@ -589,12 +632,21 @@ export const DeliverablesView: React.FC = () => {
 
   // Open Edit Modal
   const openEditModal = (del: Deliverable) => {
+    const matchedProj = projects.find(p => p.id === del.project_id);
+    const brand = resolveBrandCode(matchedProj?.company_id || del.company_id);
     setEditingDeliverable(del);
     setEditType(del.deliverable_type);
+    setEditIsCustom(false);
+    setEditCustomName('');
+    setEditSaveToCatalogue(false);
+    setEditCatalogueCategory('Film');
+    setEditCatalogueBrandScope(brand);
+    setEditCatalogueDescription('');
     setEditEditorId(del.assigned_editor_id || '');
     setEditStatus(del.status || '');
     setEditUrl(del.external_link || '');
-    setEditFeedback(del.client_feedback || '');
+    setEditFeedback(getDeliverableFeedbackText(del));
+    setEditModalError(null);
   };
 
   // Handle Save Edit
@@ -602,20 +654,42 @@ export const DeliverablesView: React.FC = () => {
     e.preventDefault();
     if (!editingDeliverable) return;
 
+    let resolvedType = editIsCustom ? editCustomName.trim() : String(editType || '').trim();
+    if (!resolvedType) {
+      setEditModalError('Please select or enter a deliverable name.');
+      return;
+    }
+
     try {
       setIsSubmitting(true);
+      setEditModalError(null);
+      setDeliverableActionError(null);
+
+      if (editIsCustom && editSaveToCatalogue) {
+        const createdEntry = await createDeliverableCatalogueItem({
+          name: resolvedType,
+          category: editCatalogueCategory,
+          description: editCatalogueDescription.trim() || undefined,
+          applicable_brand: editCatalogueBrandScope,
+          is_active: true,
+        });
+        resolvedType = createdEntry.name;
+      }
+
+      const feedbackFields = buildDeliverableFeedbackFields(editFeedback);
       await updateDeliverable({
         ...editingDeliverable,
-        deliverable_type: editType,
+        deliverable_type: resolvedType,
         assigned_editor_id: editEditorId,
         status: editStatus as DeliverableStatus,
         external_link: editUrl.trim() || undefined,
-        client_feedback: editFeedback.trim() || undefined,
+        notes: feedbackFields.notes,
+        client_feedback: feedbackFields.client_feedback,
       });
       setEditingDeliverable(null);
     } catch (err) {
       console.error('Failed to update deliverable:', err);
-      alert(`Could not update deliverable: ${err instanceof Error ? err.message : String(err)}`);
+      setEditModalError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsSubmitting(false);
     }
@@ -624,18 +698,55 @@ export const DeliverablesView: React.FC = () => {
   // Open Create Modal
   const openCreateModal = (defaultProjectId?: string) => {
     const validProjects = projects && projects.length > 0 ? projects : [];
-    const initialProjectId =
-      (defaultProjectId && validProjects.some(p => p.id === defaultProjectId))
-        ? defaultProjectId
-        : (validProjects[0]?.id || '');
+    const initialProj =
+      (defaultProjectId && validProjects.find(p => p.id === defaultProjectId)) ||
+      validProjects[0];
+    const initialProjectId = initialProj?.id || '';
+    const brand = resolveBrandCode(initialProj?.company_id);
+    const opts = getDeliverableTypeOptions({
+      items: deliverableCatalogue,
+      projectBrand: brand,
+      catalogueError: moduleErrors.deliverableCatalogue,
+    });
+
     setCreateProjectId(initialProjectId);
-    setCreateType(DELIVERABLE_TYPES[0]);
-    // Rule: Blank editor = blank status
+    setCreateType(opts.brandItems[0]?.name || '');
+    setCreateIsCustom(opts.shouldDefaultToCustom);
+    setCreateCustomName('');
+    setCreateSaveToCatalogue(false);
+    setCreateCatalogueCategory('Film');
+    setCreateCatalogueBrandScope(brand);
+    setCreateCatalogueDescription('');
+    // Rule: Unassigned new deliverable defaults to 'Not Started'
     setCreateEditorId('');
-    setCreateStatus('');
+    setCreateStatus('Not Started');
     setCreateUrl('');
     setCreateFeedback('');
+    setCreateModalError(null);
     setShowCreateModal(true);
+  };
+
+  const handleCreateProjectChange = (nextProjectId: string) => {
+    setCreateProjectId(nextProjectId);
+    const nextProj = projects.find(p => p.id === nextProjectId);
+    const nextBrand = resolveBrandCode(nextProj?.company_id);
+    setCreateCatalogueBrandScope(nextBrand);
+
+    const nextOpts = getDeliverableTypeOptions({
+      items: deliverableCatalogue,
+      projectBrand: nextBrand,
+      catalogueError: moduleErrors.deliverableCatalogue,
+    });
+
+    if (!createIsCustom) {
+      const stillAvailable = nextOpts.brandItems.some(i => i.name === createType);
+      if (!stillAvailable) {
+        setCreateType(nextOpts.brandItems[0]?.name || '');
+        if (nextOpts.shouldDefaultToCustom) {
+          setCreateIsCustom(true);
+        }
+      }
+    }
   };
 
   // Handle Create Deliverable
@@ -643,37 +754,61 @@ export const DeliverablesView: React.FC = () => {
     e.preventDefault();
     const proj = projects.find(p => p.id === createProjectId) || projects[0];
     if (!proj) {
-      alert('Please select a valid wedding project.');
+      setCreateModalError('Please select a valid project.');
+      return;
+    }
+
+    const brand = resolveBrandCode(proj.company_id);
+    const opts = getDeliverableTypeOptions({
+      items: deliverableCatalogue,
+      projectBrand: brand,
+      catalogueError: moduleErrors.deliverableCatalogue,
+    });
+    const isUsingCustom = createIsCustom || opts.brandItems.length === 0;
+    let resolvedType = isUsingCustom
+      ? createCustomName.trim()
+      : String(createType || '').trim();
+
+    if (!resolvedType) {
+      setCreateModalError('Please enter or select a deliverable name.');
       return;
     }
 
     const assignedEditor = createEditorId.trim() || '';
-    // Workflow rule: If an editor is assigned during creation, status becomes 'Assigned' (if currently blank)
-    // If no editor is assigned, editor is null/empty and status is blank/null
-    let finalStatus = createStatus;
-    if (assignedEditor && (!finalStatus || finalStatus === '')) {
-      finalStatus = 'Assigned';
-    } else if (!assignedEditor && finalStatus === 'Assigned') {
-      finalStatus = '';
-    }
 
     try {
       setIsSubmitting(true);
+      setCreateModalError(null);
+
+      if (isUsingCustom && createSaveToCatalogue) {
+        const createdEntry = await createDeliverableCatalogueItem({
+          name: resolvedType,
+          category: createCatalogueCategory,
+          description: createCatalogueDescription.trim() || undefined,
+          applicable_brand: createCatalogueBrandScope,
+          is_active: true,
+        });
+        resolvedType = createdEntry.name;
+      }
+
+      const finalStatus = resolveDeliverableStatusOnCreate(createStatus, assignedEditor);
+      const feedbackFields = buildDeliverableFeedbackFields(createFeedback);
       await createDeliverable({
         project_id: proj.id,
         company_id: proj.company_id,
-        deliverable_type: createType,
+        deliverable_type: resolvedType,
         assigned_editor_id: assignedEditor || '',
         due_date: proj.wedding_date_start || new Date().toISOString().split('T')[0],
-        status: finalStatus as DeliverableStatus,
+        status: finalStatus,
         priority: 'Medium',
         external_link: createUrl.trim() || undefined,
-        client_feedback: createFeedback.trim() || undefined,
+        notes: feedbackFields.notes || undefined,
+        client_feedback: feedbackFields.client_feedback,
       });
       setShowCreateModal(false);
     } catch (err) {
       console.error('Failed to create deliverable:', err);
-      alert(`Could not create deliverable: ${err instanceof Error ? err.message : String(err)}`);
+      setCreateModalError(err instanceof Error ? err.message : String(err));
     } finally {
       setIsSubmitting(false);
     }
@@ -703,7 +838,7 @@ export const DeliverablesView: React.FC = () => {
             Post-Production Deliverables
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-            Deliverables grouped by wedding project with editor assignment and workflow status.
+            Deliverables grouped by project with editor assignment and workflow status.
           </p>
         </div>
 
@@ -720,6 +855,25 @@ export const DeliverablesView: React.FC = () => {
         )}
       </div>
 
+      {(moduleErrors.deliverables || deliverableActionError) && (
+        <ModuleErrorBanner
+          title="Supabase Deliverables Synchronisation Error"
+          message={deliverableActionError || moduleErrors.deliverables || ''}
+          onRetry={moduleErrors.deliverables ? refreshAllData : undefined}
+          isRetrying={isRefreshingData}
+          onDismiss={deliverableActionError ? () => setDeliverableActionError(null) : undefined}
+        />
+      )}
+
+      {moduleErrors.deliverableCatalogue && (
+        <ModuleErrorBanner
+          title="Shared Deliverables Catalogue Synchronisation Error"
+          message={`${moduleErrors.deliverableCatalogue} Custom deliverables can still be entered per project.`}
+          onRetry={refreshAllData}
+          isRetrying={isRefreshingData}
+        />
+      )}
+
       {/* FILTER BAR: Search, Status Filter, Ordering Selector */}
       <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs flex flex-col md:flex-row items-center gap-3">
         {/* Search */}
@@ -729,7 +883,7 @@ export const DeliverablesView: React.FC = () => {
             type="text"
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
-            placeholder="Search deliverables, wedding project, editor, or URL..."
+            placeholder="Search deliverables, project, editor, or URL..."
             className="w-full pl-9 pr-4 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-hidden focus:ring-1 focus:ring-slate-400"
           />
         </div>
@@ -776,8 +930,8 @@ export const DeliverablesView: React.FC = () => {
           >
             <option value="recently_added">Recently Added</option>
             <option value="name_asc">Project Name A–Z</option>
-            <option value="wedding_date_asc">Wedding Date — Oldest First</option>
-            <option value="wedding_date_desc">Wedding Date — Newest First</option>
+            <option value="wedding_date_asc">Project Date — Oldest First</option>
+            <option value="wedding_date_desc">Project Date — Newest First</option>
           </select>
         </div>
       </div>
@@ -912,8 +1066,15 @@ export const DeliverablesView: React.FC = () => {
                             availableEditors={availableEditors}
                             onEdit={openEditModal}
                             onDelete={setDeletingDeliverable}
-                            onStatusChange={updateDeliverableStatus}
-                            onUpdateDeliverable={updateDeliverable}
+                            onStatusChange={async (id, status) => {
+                              setDeliverableActionError(null);
+                              await updateDeliverableStatus(id, status);
+                            }}
+                            onUpdateDeliverable={async d => {
+                              setDeliverableActionError(null);
+                              return await updateDeliverable(d);
+                            }}
+                            onActionError={msg => setDeliverableActionError(msg)}
                           />
                         );
                       })}
@@ -950,22 +1111,35 @@ export const DeliverablesView: React.FC = () => {
             </div>
 
             <form onSubmit={handleSaveEdit} className="space-y-3.5 text-xs">
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Deliverable Type
-                </label>
-                <select
-                  value={editType}
-                  onChange={e => setEditType(e.target.value as DeliverableType)}
-                  className="w-full p-2 border border-slate-300 rounded-lg bg-white text-slate-900"
-                >
-                  {DELIVERABLE_TYPES.map(t => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {editModalError && (
+                <div className="p-2.5 bg-red-50 border border-red-200 text-red-700 rounded-lg text-xs">
+                  {editModalError}
+                </div>
+              )}
+              <DeliverableTypeSelector
+                mode="edit"
+                label="Deliverable Type *"
+                projectBrand={editProjectBrand}
+                catalogueItems={deliverableCatalogue}
+                catalogueError={moduleErrors.deliverableCatalogue}
+                canAddToCatalogue={canManage}
+                value={String(editType || '')}
+                historicalValue={editingDeliverable.deliverable_type}
+                isCustom={editIsCustom}
+                onIsCustomChange={setEditIsCustom}
+                onValueChange={val => setEditType(val)}
+                customName={editCustomName}
+                onCustomNameChange={setEditCustomName}
+                saveToCatalogue={editSaveToCatalogue}
+                onSaveToCatalogueChange={setEditSaveToCatalogue}
+                catalogueCategory={editCatalogueCategory}
+                onCatalogueCategoryChange={setEditCatalogueCategory}
+                catalogueBrandScope={editCatalogueBrandScope}
+                onCatalogueBrandScopeChange={setEditCatalogueBrandScope}
+                catalogueDescription={editCatalogueDescription}
+                onCatalogueDescriptionChange={setEditCatalogueDescription}
+                idPrefix="global-edit-deliverable"
+              />
 
               {/* ASSIGNED EDITOR DROPDOWN: ONLY Editors, NO "(editor)" in label */}
               <div>
@@ -978,10 +1152,10 @@ export const DeliverablesView: React.FC = () => {
                     const newEditorId = e.target.value;
                     setEditEditorId(newEditorId);
                     // Automatic status workflow rule
-                    if (newEditorId && (!editStatus || editStatus === '')) {
+                    if (newEditorId && (!editStatus || editStatus === '' || editStatus === 'Not Started')) {
                       setEditStatus('Assigned');
                     } else if (!newEditorId && editStatus === 'Assigned') {
-                      setEditStatus('');
+                      setEditStatus('Not Started');
                     }
                   }}
                   className="w-full p-2 border border-slate-300 rounded-lg bg-white text-slate-900"
@@ -1004,7 +1178,10 @@ export const DeliverablesView: React.FC = () => {
                   onChange={e => setEditStatus(e.target.value as DeliverableStatus | '')}
                   className="w-full p-2 border border-slate-300 rounded-lg bg-white text-slate-900"
                 >
-                  <option value="">Unassigned / Blank</option>
+                  {!editStatus && <option value="">No Status</option>}
+                  {editStatus && !WORKFLOW_STATUSES.includes(editStatus) && (
+                    <option value={editStatus}>{editStatus}</option>
+                  )}
                   {WORKFLOW_STATUSES.map(st => (
                     <option key={st} value={st}>
                       {st}
@@ -1071,7 +1248,7 @@ export const DeliverablesView: React.FC = () => {
                   New Deliverable
                 </h2>
                 <p className="text-[11px] text-slate-500 mt-0.5">
-                  Create a deliverable for a wedding project with editor assignment.
+                  Create a deliverable for a project with editor assignment.
                 </p>
               </div>
 
@@ -1085,40 +1262,52 @@ export const DeliverablesView: React.FC = () => {
             </div>
 
             <form onSubmit={handleCreate} className="space-y-3.5 text-xs">
+              {createModalError && (
+                <div className="p-2.5 bg-red-50 border border-red-200 text-red-700 rounded-lg text-xs">
+                  {createModalError}
+                </div>
+              )}
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">
-                  Wedding Project *
+                  Project *
                 </label>
                 <select
                   value={createProjectId}
-                  onChange={e => setCreateProjectId(e.target.value)}
+                  onChange={e => handleCreateProjectChange(e.target.value)}
                   className="w-full p-2 border border-slate-300 rounded-lg bg-white text-slate-900 font-medium"
                   required
                 >
                   {projects.map(p => (
                     <option key={p.id} value={p.id}>
-                      {p.name} ({p.company_id === 'twb' ? 'TWB' : 'Golden June'})
+                      {p.name} ({resolveBrandCode(p.company_id) === 'twb' ? 'TWB' : 'Golden June'})
                     </option>
                   ))}
                 </select>
               </div>
 
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Deliverable Asset Type *
-                </label>
-                <select
-                  value={createType}
-                  onChange={e => setCreateType(e.target.value as DeliverableType)}
-                  className="w-full p-2 border border-slate-300 rounded-lg bg-white text-slate-900"
-                >
-                  {DELIVERABLE_TYPES.map(t => (
-                    <option key={t} value={t}>
-                      {t}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <DeliverableTypeSelector
+                mode="create"
+                label="Deliverable Asset Type *"
+                projectBrand={createProjectBrand}
+                catalogueItems={deliverableCatalogue}
+                catalogueError={moduleErrors.deliverableCatalogue}
+                canAddToCatalogue={canManage}
+                value={String(createType || '')}
+                isCustom={createIsCustom}
+                onIsCustomChange={setCreateIsCustom}
+                onValueChange={val => setCreateType(val)}
+                customName={createCustomName}
+                onCustomNameChange={setCreateCustomName}
+                saveToCatalogue={createSaveToCatalogue}
+                onSaveToCatalogueChange={setCreateSaveToCatalogue}
+                catalogueCategory={createCatalogueCategory}
+                onCatalogueCategoryChange={setCreateCatalogueCategory}
+                catalogueBrandScope={createCatalogueBrandScope}
+                onCatalogueBrandScopeChange={setCreateCatalogueBrandScope}
+                catalogueDescription={createCatalogueDescription}
+                onCatalogueDescriptionChange={setCreateCatalogueDescription}
+                idPrefix="global-create-deliverable"
+              />
 
               {/* ASSIGNED EDITOR DROPDOWN: ONLY Editors, NO "(editor)" in label */}
               <div>
@@ -1130,13 +1319,7 @@ export const DeliverablesView: React.FC = () => {
                   onChange={e => {
                     const newEditorId = e.target.value;
                     setCreateEditorId(newEditorId);
-                    // Workflow rule: if editor is selected and status is blank -> becomes Assigned
-                    // If editor cleared and status was Assigned -> becomes blank
-                    if (newEditorId && (!createStatus || createStatus === '')) {
-                      setCreateStatus('Assigned');
-                    } else if (!newEditorId && createStatus === 'Assigned') {
-                      setCreateStatus('');
-                    }
+                    setCreateStatus(prev => syncCreateStatusOnEditorChange(prev, newEditorId));
                   }}
                   className="w-full p-2 border border-slate-300 rounded-lg bg-white text-slate-900"
                 >
@@ -1155,10 +1338,9 @@ export const DeliverablesView: React.FC = () => {
                 </label>
                 <select
                   value={createStatus}
-                  onChange={e => setCreateStatus(e.target.value as DeliverableStatus | '')}
+                  onChange={e => setCreateStatus(e.target.value as DeliverableStatus)}
                   className="w-full p-2 border border-slate-300 rounded-lg bg-white text-slate-900"
                 >
-                  <option value="">Unassigned / Blank</option>
                   {WORKFLOW_STATUSES.map(st => (
                     <option key={st} value={st}>
                       {st}

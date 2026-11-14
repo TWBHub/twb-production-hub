@@ -14,10 +14,19 @@ import {
   Coins,
   ShieldAlert,
 } from 'lucide-react';
-import { Enquiry, Company, Quotation, QuotationLineItem, QuotationState } from '../../types';
+import {
+  DeliverableCatalogueItem,
+  Enquiry,
+  Company,
+  Quotation,
+  QuotationLineItem,
+  QuotationState,
+} from '../../types';
 import { generateQuotationPDF, downloadPdfDoc, getOfficialCompanyInfo } from '../../utils/pdfGenerator';
 import { formatDisplayDate, getCommissionedEventSchedule } from '../../utils/dateUtils';
 import { generateProposalReference, getProposalFilename } from '../../utils/proposalRevisionUtils';
+import { sanitizeNumericInput, parseNumericInput } from '../../utils/numberInputUtils';
+import { getQuotationCataloguePresets } from '../../utils/deliverableCatalogueUtils';
 
 interface QuotationBuilderModalProps {
   isOpen: boolean;
@@ -26,19 +35,10 @@ interface QuotationBuilderModalProps {
   company: Company;
   existingQuotation?: Quotation | null;
   allQuotations?: Quotation[];
+  catalogueItems?: DeliverableCatalogueItem[];
+  catalogueError?: string | null;
   onSaveQuotation: (quotation: Omit<Quotation, 'id' | 'created_at' | 'updated_at'> | Quotation) => Promise<void>;
 }
-
-const TEMPLATE_PRESETS = [
-  'Principal 4K Wedding Cinematography (2 Senior Cinematographers, Full Day Coverage)',
-  'Secondary Shooter & Aerial Drone 4K Baraat & Venue Coverage',
-  'Editorial Teaser (60s Reel) + Highlight Feature Film (12-15 mins) Master in 4K',
-  'Pre-Wedding Conceptual Couple Film (1-Day Shoot on Location + Color Grade)',
-  'Same-Day Edit (SDE) Reception Teaser Screened at Gala Dinner',
-  'Archival Master Hard Drive containing All Raw Footage and Multi-Cam Cuts',
-  'Fine Art Wedding Photo Book / Coffee Table Album (100 Pages)',
-  'Traditional Stage Multi-Cam Coverage & Live Stream Relay',
-];
 
 export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
   isOpen,
@@ -47,6 +47,8 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
   company,
   existingQuotation,
   allQuotations = [],
+  catalogueItems = [],
+  catalogueError,
   onSaveQuotation,
 }) => {
   const [items, setItems] = useState<QuotationLineItem[]>([]);
@@ -57,8 +59,8 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
   const [status, setStatus] = useState<QuotationState>('Draft');
   const [issueDate, setIssueDate] = useState('');
   const [validUntil, setValidUntil] = useState('');
-  const [packageInvestment, setPackageInvestment] = useState<number>(0);
-  const [discount, setDiscount] = useState(0);
+  const [packageInvestment, setPackageInvestment] = useState<number | string>(0);
+  const [discount, setDiscount] = useState<number | string>(0);
   const [taxRate, setTaxRate] = useState(0); // Default: Nil unless selected
   const [notes, setNotes] = useState('');
   const [paymentTerms, setPaymentTerms] = useState(
@@ -119,16 +121,25 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
       setNotes('All deliverables delivered via high-speed private cloud gallery. Travel & accommodation outside base city covered by client.');
       setPaymentTerms('Dates and crew allocation are reserved upon receipt of advance booking retainer.');
 
-      // Automatically pull requested services from the lead if present
+      // Automatically pull requested services from the lead if present, enriching with catalogue descriptions if matched
       if (enquiry.services && enquiry.services.length > 0) {
         setItems(
-          enquiry.services.map((serviceName, idx) => ({
-            id: `item-${Date.now()}-${idx}`,
-            description: serviceName,
-            quantity: 1,
-            rate: 0,
-            amount: 0,
-          }))
+          enquiry.services.map((serviceName, idx) => {
+            const matchedCat = catalogueItems.find(
+              c => c.name.trim().toLowerCase() === serviceName.trim().toLowerCase()
+            );
+            const desc =
+              matchedCat?.description && matchedCat.description.trim()
+                ? `${serviceName} — ${matchedCat.description.trim()}`
+                : serviceName;
+            return {
+              id: `item-${Date.now()}-${idx}`,
+              description: desc,
+              quantity: 1,
+              rate: 0,
+              amount: 0,
+            };
+          })
         );
       } else {
         // Fallback scope if lead had no services specified
@@ -164,8 +175,9 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
   if (!isOpen) return null;
 
   // Financial calculations: single package amount, optional discount and tax
-  const subtotal = Number(packageInvestment) || 0;
-  const taxable = Math.max(0, subtotal - discount);
+  const subtotal = parseNumericInput(packageInvestment, 0);
+  const parsedDiscount = parseNumericInput(discount, 0);
+  const taxable = Math.max(0, subtotal - parsedDiscount);
   const taxAmount = Math.round(taxable * taxRate);
   const grandTotal = taxable + taxAmount;
 
@@ -205,7 +217,7 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
         valid_until_date: validUntil,
         items,
         subtotal,
-        discount,
+        discount: parsedDiscount,
         tax_rate: taxRate,
         tax_amount: taxAmount,
         total: grandTotal,
@@ -239,7 +251,7 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
       valid_until_date: validUntil,
       items,
       subtotal,
-      discount,
+      discount: parsedDiscount,
       tax_rate: taxRate,
       tax_amount: taxAmount,
       total: grandTotal,
@@ -255,6 +267,8 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
   };
 
   const isTWB = company.code === 'twb';
+  const companyBrand: 'twb' | 'golden_june' = company?.code === 'golden_june' ? 'golden_june' : 'twb';
+  const scopePresets = getQuotationCataloguePresets(catalogueItems, companyBrand);
   const officialCompany = getOfficialCompanyInfo(company);
   const coupleName = enquiry.partner_name
     ? `${enquiry.client_name || 'Client'} & ${enquiry.partner_name}`
@@ -414,22 +428,31 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
                 </div>
               </div>
 
-              {/* Quick Template Presets */}
+              {/* Quick Catalogue Scope Presets (Active brand-filtered unified catalogue) */}
               <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
                 <span className="text-[11px] text-slate-400 font-semibold uppercase tracking-wider shrink-0">
-                  Add Scope Preset:
+                  Add from Catalogue:
                 </span>
-                {TEMPLATE_PRESETS.map((preset, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => handleAddItem(preset)}
-                    className="shrink-0 px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-medium transition-colors flex items-center gap-1"
-                  >
-                    <Plus className="w-3 h-3 text-slate-500" />
-                    <span>{preset.split('(')[0].trim().slice(0, 32)}</span>
-                  </button>
-                ))}
+                {scopePresets.length > 0 ? (
+                  scopePresets.map(preset => (
+                    <button
+                      key={preset.id}
+                      type="button"
+                      onClick={() => handleAddItem(preset.scopeText)}
+                      title={preset.scopeText}
+                      className="shrink-0 px-2.5 py-1 rounded-md bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-medium transition-colors flex items-center gap-1 cursor-pointer"
+                    >
+                      <Plus className="w-3 h-3 text-slate-500" />
+                      <span>{preset.name}</span>
+                    </button>
+                  ))
+                ) : (
+                  <span className="text-[11px] text-slate-400 italic">
+                    {catalogueError
+                      ? 'Shared Catalogue unavailable — add manual scope items below.'
+                      : 'No active catalogue entries for this brand — add manual scope items below.'}
+                  </span>
+                )}
               </div>
 
               {/* Production Scope (No individual prices, quantities or rates) */}
@@ -556,8 +579,8 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
                         type="number"
                         step="5000"
                         min="0"
-                        value={packageInvestment || ''}
-                        onChange={e => setPackageInvestment(Number(e.target.value) || 0)}
+                        value={packageInvestment}
+                        onChange={e => setPackageInvestment(sanitizeNumericInput(e.target.value))}
                         placeholder="Enter agreed package amount (e.g. 350000)"
                         className="w-full pl-8 pr-3 py-2 bg-white border border-slate-300 rounded-lg text-sm font-mono font-bold text-slate-900 focus:ring-1 focus:ring-slate-900 focus:outline-hidden"
                       />
@@ -574,8 +597,8 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
                         type="number"
                         step="1000"
                         min="0"
-                        value={discount || ''}
-                        onChange={e => setDiscount(Number(e.target.value) || 0)}
+                        value={discount}
+                        onChange={e => setDiscount(sanitizeNumericInput(e.target.value))}
                         placeholder="0"
                         className="w-full px-2 py-1 text-right text-xs bg-white border border-slate-300 rounded-md font-mono"
                       />
@@ -719,16 +742,16 @@ export const QuotationBuilderModal: React.FC<QuotationBuilderModalProps> = ({
                   </div>
 
                   {/* Subtotal, discount, GST breakdown if present */}
-                  {(discount > 0 || taxAmount > 0) && (
+                  {(parsedDiscount > 0 || taxAmount > 0) && (
                     <div className="space-y-1 text-xs text-slate-600">
                       <div className="flex justify-between">
                         <span>Package Subtotal:</span>
                         <span className="font-mono text-slate-800">₹{subtotal.toLocaleString('en-IN')}</span>
                       </div>
-                      {discount > 0 && (
+                      {parsedDiscount > 0 && (
                         <div className="flex justify-between">
                           <span>Special Discount:</span>
-                          <span className="font-mono text-emerald-700">-₹{discount.toLocaleString('en-IN')}</span>
+                          <span className="font-mono text-emerald-700">-₹{parsedDiscount.toLocaleString('en-IN')}</span>
                         </div>
                       )}
                       {taxAmount > 0 && (

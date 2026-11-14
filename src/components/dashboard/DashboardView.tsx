@@ -25,6 +25,7 @@ import {
   calculateDashboardFinanceMetrics,
 } from '../../utils/financeUtils';
 import { formatDisplayDate } from '../../utils/dateUtils';
+import { ModuleErrorBanner } from '../common/ModuleErrorBanner';
 
 export const DashboardView: React.FC = () => {
   const {
@@ -43,7 +44,14 @@ export const DashboardView: React.FC = () => {
     setSelectedProjectId,
     currentUser,
     canManageFinance,
+    moduleErrors,
+    refreshAllData,
+    isRefreshingData,
   } = useApp();
+
+  const activeModuleErrors = Object.entries(moduleErrors).filter(
+    ([, message]) => Boolean(message)
+  );
 
   // Dashboard Financial Period Filter State
   const [dateFilter, setDateFilter] = useState<DateFilterOption>('all');
@@ -163,6 +171,17 @@ export const DashboardView: React.FC = () => {
         </div>
       </div>
 
+      {activeModuleErrors.length > 0 && (
+        <ModuleErrorBanner
+          title="Supabase Module Synchronisation Warning"
+          message={activeModuleErrors
+            .map(([key, msg]) => `${key}: ${msg}`)
+            .join(' | ')}
+          onRetry={refreshAllData}
+          isRetrying={isRefreshingData}
+        />
+      )}
+
       {/* Quick Financial Overview (Accessible to Admins/Managers) */}
       {canManageFinance ? (
         <div className="space-y-3">
@@ -256,7 +275,7 @@ export const DashboardView: React.FC = () => {
                 ₹{(financialMetrics.contractPipeline || 0).toLocaleString()}
               </div>
               <div className="text-[11px] text-slate-400 mt-1">
-                {filteredProjects.length} active weddings (lifetime)
+                {filteredProjects.length} active projects (lifetime)
               </div>
             </div>
 
@@ -328,14 +347,14 @@ export const DashboardView: React.FC = () => {
 
       {/* Main Grid: Upcoming Projects & Deliverables */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left 2 Cols: Upcoming Weddings / Projects */}
+        {/* Left 2 Cols: Upcoming Projects */}
         <div className="lg:col-span-2 space-y-6">
           <div className="bg-white rounded-xl border border-slate-200 shadow-xs overflow-hidden">
             <div className="p-4 sm:p-5 border-b border-slate-100 flex items-center justify-between">
               <div className="flex items-center gap-2">
                 <FolderKanban className="w-4 h-4 text-slate-600" />
                 <h2 className="font-bold text-slate-900 text-sm sm:text-base">
-                  Upcoming Weddings & Production Schedule
+                  Upcoming Projects & Production Schedule
                 </h2>
               </div>
               <button

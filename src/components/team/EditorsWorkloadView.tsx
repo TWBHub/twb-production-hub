@@ -28,6 +28,7 @@ import {
 } from '../../types';
 import { formatDisplayDate, formatTurnaroundDays } from '../../utils/dateUtils';
 import { isDeliverableEditor } from '../../utils/teamMemberFilters';
+import { ModuleErrorBanner } from '../common/ModuleErrorBanner';
 
 const getStatusBadge = (status?: DeliverableStatus | '') => {
   switch (status) {
@@ -94,6 +95,8 @@ export const EditorsWorkloadView: React.FC = () => {
     setSelectedProjectId,
     setActiveTab,
     refreshAllData,
+    moduleErrors,
+    isRefreshingData,
   } = useApp();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -314,7 +317,7 @@ export const EditorsWorkloadView: React.FC = () => {
         return (
           del.deliverable_type.toLowerCase().includes(query) ||
           del.priority.toLowerCase().includes(query) ||
-          del.status.toLowerCase().includes(query) ||
+          (del.status || '').toLowerCase().includes(query) ||
           (proj?.name && proj.name.toLowerCase().includes(query))
         );
       });
@@ -424,6 +427,15 @@ export const EditorsWorkloadView: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {moduleErrors.deliverables && (
+        <ModuleErrorBanner
+          title="Supabase Deliverables Workload Error"
+          message={moduleErrors.deliverables}
+          onRetry={refreshAllData}
+          isRetrying={isRefreshingData}
+        />
+      )}
 
       {/* 2. Four Core Summary Metrics */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
@@ -814,7 +826,7 @@ export const EditorsWorkloadView: React.FC = () => {
                                       del.status
                                     )}`}
                                   >
-                                    {del.status || 'Not Started'}
+                                    {del.status || 'No Status'}
                                   </span>
 
                                   {del.external_link && (

@@ -8,6 +8,7 @@ interface DeleteLeadModalProps {
   onClose: () => void;
   onConfirm: () => Promise<void>;
   isDeleting: boolean;
+  error?: string | null;
 }
 
 export const DeleteLeadModal: React.FC<DeleteLeadModalProps> = ({
@@ -16,6 +17,7 @@ export const DeleteLeadModal: React.FC<DeleteLeadModalProps> = ({
   onClose,
   onConfirm,
   isDeleting,
+  error,
 }) => {
   if (!isOpen) return null;
 
@@ -56,6 +58,12 @@ export const DeleteLeadModal: React.FC<DeleteLeadModalProps> = ({
             <li>If this lead has already been converted to an active Project, the Project record will not be harmed.</li>
           </ul>
         </div>
+
+        {error && (
+          <div className="mt-3 p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 font-medium">
+            {error}
+          </div>
+        )}
 
         <div className="mt-6 flex items-center justify-end gap-3">
           <button

@@ -22,6 +22,7 @@ import {
   STORAGE_STATUS_OPTIONS,
 } from '../../types';
 import { normalizeStorageRecord, getStorageStatusBadge } from '../../utils/storageUtils';
+import { ModuleErrorBanner } from '../common/ModuleErrorBanner';
 
 export const DataManagementView: React.FC = () => {
   const {
@@ -33,6 +34,9 @@ export const DataManagementView: React.FC = () => {
     updateProject,
     setSelectedProjectId,
     setActiveTab,
+    moduleErrors,
+    refreshAllData,
+    isRefreshingData,
   } = useApp();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -169,7 +173,7 @@ export const DataManagementView: React.FC = () => {
     e.preventDefault();
     const proj = filteredProjects.find(p => p.id === formProjectId);
     if (!proj) {
-      setSaveError('Please select a valid wedding project.');
+      setSaveError('Please select a valid project.');
       return;
     }
 
@@ -248,7 +252,7 @@ export const DataManagementView: React.FC = () => {
             Project Data & External Storage
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-            Physical SSDs, HDDs, tower drives, and backup media registry grouped by wedding project.
+            Physical SSDs, HDDs, tower drives, and backup media registry grouped by project.
           </p>
         </div>
 
@@ -262,6 +266,15 @@ export const DataManagementView: React.FC = () => {
           <span>Add Storage Location</span>
         </button>
       </div>
+
+      {moduleErrors.projectData && (
+        <ModuleErrorBanner
+          title="Supabase Project Data Synchronisation Error"
+          message={moduleErrors.projectData}
+          onRetry={refreshAllData}
+          isRetrying={isRefreshingData}
+        />
+      )}
 
       {/* Search & Ordering Bar */}
       <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs flex flex-col sm:flex-row items-center justify-between gap-3">
@@ -527,7 +540,7 @@ export const DataManagementView: React.FC = () => {
                 <p className="text-[11px] text-slate-500 mt-0.5">
                   {editingItem
                     ? 'Update physical storage drive details'
-                    : 'Track SSDs, HDDs, or tower drives for a wedding project'}
+                    : 'Track SSDs, HDDs, or tower drives for a project'}
                 </p>
               </div>
               <button
@@ -552,7 +565,7 @@ export const DataManagementView: React.FC = () => {
             <form onSubmit={handleSave} className="space-y-3 text-xs">
               {/* Project Selection */}
               <div>
-                <label className="block text-slate-700 font-semibold mb-1">Wedding Project</label>
+                <label className="block text-slate-700 font-semibold mb-1">Project</label>
                 <select
                   value={formProjectId}
                   onChange={e => setFormProjectId(e.target.value)}

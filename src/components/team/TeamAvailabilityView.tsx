@@ -16,6 +16,7 @@ import {
 import { useApp } from '../../context/AppContext';
 import { TeamMember } from '../../types';
 import { sortProjectEvents } from '../../utils/eventUtils';
+import { ModuleErrorBanner } from '../common/ModuleErrorBanner';
 import { formatDisplayDate } from '../../utils/dateUtils';
 import { filterProductionTeamMembers } from '../../utils/teamMemberFilters';
 
@@ -79,7 +80,12 @@ export const TeamAvailabilityView: React.FC = () => {
     checkTeamConflict,
     canManageTeam,
     currentUser,
+    moduleErrors,
+    refreshAllData,
+    isRefreshingData,
   } = useApp();
+
+  const [removeAssignmentError, setRemoveAssignmentError] = useState<string | null>(null);
 
   const [currentMonth, setCurrentMonth] = useState(() => new Date());
   const [searchQuery, setSearchQuery] = useState('');
@@ -335,7 +341,7 @@ try {
 
   setAssignIsDuplicate(true);
   setAssignConflictWarning(
-    `${member?.name || 'This team member'} is already assigned to this wedding on ${date}.`
+    `${member?.name || 'This team member'} is already assigned to this project on ${date}.`
   );
   return;
 }
@@ -467,11 +473,16 @@ try {
     }
   };
 
-  const handleRemoveAssignment = async (assignmentId: string) => {
+  const handleRemoveAssignment = async (assignmentId: string): Promise<boolean> => {
     try {
+      setRemoveAssignmentError(null);
       await removeTeamAssignment(assignmentId);
+      return true;
     } catch (err) {
       console.error('Failed to remove team assignment:', err);
+      const msg = err instanceof Error ? err.message : 'Failed to remove team assignment.';
+      setRemoveAssignmentError(msg);
+      return false;
     }
   };
 
@@ -544,12 +555,12 @@ try {
             <CalendarDays className="w-6 h-6 text-slate-700" />
 
             <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
-              Wedding Team Schedule
+              Project Team Schedule
             </h1>
           </div>
 
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            See every wedding and the complete crew assigned to each date.
+            See every project and the complete crew assigned to each date.
           </p>
         </div>
 
@@ -564,6 +575,16 @@ try {
         )}
 
       </div>
+
+      {(moduleErrors.projectTeam || removeAssignmentError) && (
+        <ModuleErrorBanner
+          title="Supabase Team Schedule Synchronisation Error"
+          message={removeAssignmentError || moduleErrors.projectTeam || ''}
+          onRetry={moduleErrors.projectTeam ? refreshAllData : undefined}
+          isRetrying={isRefreshingData}
+          onDismiss={removeAssignmentError ? () => setRemoveAssignmentError(null) : undefined}
+        />
+      )}
 
       {/* MONTH CONTROLS */}
       <div className="bg-white border border-slate-200 rounded-xl p-3 shadow-xs">
@@ -609,7 +630,7 @@ try {
             <input
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
-              placeholder="Search wedding, city or team member..."
+              placeholder="Search project, city or team member..."
               className="w-full pl-9 pr-3 py-2 border border-slate-200 bg-slate-50 rounded-lg text-xs focus:outline-none focus:bg-white"
             />
           </div>
@@ -623,7 +644,7 @@ try {
         <div className="bg-white border border-slate-200 rounded-xl p-4">
           <div className="flex items-center gap-2 text-slate-500 text-xs font-semibold">
             <BriefcaseBusiness className="w-4 h-4 text-slate-600" />
-            Weddings
+            Projects
           </div>
 
           <div className="text-2xl font-bold text-slate-900 mt-2">
@@ -677,7 +698,7 @@ try {
 
         <div className="flex items-center gap-1.5">
           <span className="w-3 h-3 rounded-full bg-slate-300" />
-          Wedding date
+          Project date
         </div>
 
         <div className="text-[11px] text-slate-400">
@@ -703,11 +724,11 @@ try {
             <div className="sticky left-0 z-30 bg-slate-900 text-white border-r border-slate-700 border-b border-slate-700 px-4 py-3">
 
               <div className="text-xs font-bold">
-                Wedding / Project
+                Project
               </div>
 
               <div className="text-[10px] text-slate-300 mt-0.5">
-                {monthProjects.length} wedding
+                {monthProjects.length} project
                 {monthProjects.length !== 1 ? 's' : ''}
               </div>
 
@@ -856,7 +877,7 @@ try {
 ) : isWeddingDate ? (
                           <div className="h-full flex items-start">
                             <div className="text-[10px] text-slate-400 font-medium">
-                              Wedding date
+                              Project date
                             </div>
                           </div>
                         ) : null}
@@ -877,7 +898,7 @@ try {
               <BriefcaseBusiness className="w-10 h-10 text-slate-300 mx-auto mb-3" />
 
               <div className="font-semibold text-slate-700 text-sm">
-                No weddings found
+                No projects found
               </div>
 
               <div className="text-xs text-slate-400 mt-1">
@@ -983,6 +1004,12 @@ try {
                   Crew
                 </div>
 
+                {removeAssignmentError && (
+                  <div className="mb-3 p-2.5 bg-red-50 border border-red-200 text-red-700 rounded-lg text-xs">
+                    {removeAssignmentError}
+                  </div>
+                )}
+
                 <div className="flex items-center justify-end mb-3">
   {canManageTeam && (
     <button
@@ -998,7 +1025,7 @@ try {
 
 {assignments.length === 0 ? (
                   <div className="p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs text-slate-500">
-                    No crew has been assigned to this wedding on this date.
+                    No crew has been assigned to this project on this date.
                   </div>
                 ) : (
                   <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
@@ -1074,7 +1101,7 @@ try {
             Assign Team Member
           </h3>
           <p className="text-xs text-slate-500 mt-0.5">
-            Assign crew to this wedding on {formatDisplayDate(selectedCell.date)}
+            Assign crew to this project on {formatDisplayDate(selectedCell.date)}
           </p>
         </div>
 
@@ -1241,7 +1268,7 @@ try {
               {/* Project Selection */}
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">
-                  Project / Wedding
+                  Project
                 </label>
                 <select
                   value={editingAssignment.projectId}
@@ -1427,17 +1454,26 @@ try {
                 />
               </div>
 
-              {/* Modal actions */}
               <div className="flex items-center justify-between pt-3 border-t border-slate-200">
                 <button
                   type="button"
-                  onClick={() => {
-                    if (editingAssignment) {
-                      handleRemoveAssignment(editingAssignment.assignmentId);
+                  disabled={savingEditAssignment}
+                  onClick={async () => {
+                    if (!editingAssignment) return;
+                    try {
+                      setSavingEditAssignment(true);
+                      setEditConflictWarning(null);
+                      await removeTeamAssignment(editingAssignment.assignmentId);
                       setEditingAssignment(null);
+                    } catch (err) {
+                      setEditConflictWarning(
+                        err instanceof Error ? err.message : 'Failed to remove team assignment.'
+                      );
+                    } finally {
+                      setSavingEditAssignment(false);
                     }
                   }}
-                  className="px-3 py-1.5 text-xs font-semibold text-red-600 hover:text-red-800 hover:bg-red-50 rounded-lg transition-colors"
+                  className="px-3 py-1.5 text-xs font-semibold text-red-600 hover:text-red-800 hover:bg-red-50 rounded-lg transition-colors disabled:opacity-50"
                 >
                   Remove Assignment
                 </button>

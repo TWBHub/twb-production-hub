@@ -309,7 +309,7 @@ export const CalendarEntryModal: React.FC<CalendarEntryModalProps> = ({
           <div className="mt-3 p-3 bg-purple-50/70 border border-purple-200 rounded-lg text-xs text-purple-900 flex items-start gap-2">
             <Sparkles className="w-4 h-4 shrink-0 text-purple-600 mt-0.5" />
             <div>
-              <span className="font-semibold">Linked Project Wedding Schedule</span>
+              <span className="font-semibold">Linked Project Schedule</span>
               <p className="text-[11px] text-purple-700 mt-0.5">
                 This event originates from the project's core shoot & ceremony schedule.
               </p>

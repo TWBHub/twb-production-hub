@@ -23,6 +23,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { BrandId, UserRole } from '../../types';
+import { TWBHubLogo } from '../common/TWBHubLogo';
 
 interface NavItem {
   id: string;
@@ -121,9 +122,7 @@ export const Sidebar: React.FC<{ mobileOpen: boolean; setMobileOpen: (open: bool
         {/* Brand Header */}
         <div className="h-16 px-5 border-b border-slate-800/80 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg bg-[#F1D099] text-slate-950 flex items-center justify-center font-extrabold shadow-sm tracking-wider text-sm">
-              TW
-            </div>
+            <TWBHubLogo className="w-8 h-8 shrink-0 drop-shadow-xs" />
             <div>
               <div className="font-semibold text-white tracking-tight text-base leading-none">
                 TWB<span className="text-[#F1D099] font-bold">Hub</span>

@@ -28,16 +28,19 @@ import {
   FolderKanban,
   CheckCircle2,
   Building,
+  ShieldCheck,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Enquiry, EnquiryStatus, Company, Quotation } from '../../types';
 import { formatDisplayDate, formatLeadsTableEventDates } from '../../utils/dateUtils';
 import { groupQuotationsIntoProposals } from '../../utils/proposalRevisionUtils';
+import { apiService } from '../../services/api';
 import { LeadFormModal } from './LeadFormModal';
 import { LeadDetailsModal } from './LeadDetailsModal';
 import { QuotationBuilderModal } from './QuotationBuilderModal';
 import { ConvertLeadModal } from './ConvertLeadModal';
 import { DeleteLeadModal } from './DeleteLeadModal';
+import { LeadsRecoveryPreviewModal } from './LeadsRecoveryPreviewModal';
 
 const PIPELINE_STAGES: Array<{ id: EnquiryStatus; label: string; color: string; bg: string }> = [
   { id: 'New', label: '1. New', color: 'text-blue-700', bg: 'bg-blue-50 border-blue-200' },
@@ -68,6 +71,10 @@ export const EnquiriesView: React.FC = () => {
     setActiveTab,
     selectedEnquiryId,
     setSelectedEnquiryId,
+    enquiriesError,
+    deliverableCatalogue,
+    moduleErrors,
+    refreshAllData,
   } = useApp();
 
   // Filter states
@@ -100,6 +107,65 @@ export const EnquiriesView: React.FC = () => {
 
   const [deleteModalEnquiry, setDeleteModalEnquiry] = useState<Enquiry | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [leadActionError, setLeadActionError] = useState<string | null>(null);
+
+  // Stage 1, 2 & 3: Backup, Recovery Preview & Explicit Migration state
+  const [isRecoveryModalOpen, setIsRecoveryModalOpen] = useState(false);
+  const [recoveryLoading, setRecoveryLoading] = useState(false);
+  const [recoveryMigrating, setRecoveryMigrating] = useState(false);
+  const [recoveryError, setRecoveryError] = useState<string | null>(null);
+  const [migrationReport, setMigrationReport] = useState<Awaited<
+    ReturnType<typeof apiService.migrateLocalLeadsToSupabase>
+  > | null>(null);
+  const [recoveryData, setRecoveryData] = useState<Awaited<
+    ReturnType<typeof apiService.previewLocalLeadsRecovery>
+  > | null>(null);
+
+  const loadRecoveryPreview = async () => {
+    try {
+      setRecoveryLoading(true);
+      setRecoveryError(null);
+      const res = await apiService.previewLocalLeadsRecovery();
+      setRecoveryData(res);
+    } catch (err: any) {
+      setRecoveryError(err?.message || 'Failed to inspect local Leads backup & Supabase preview.');
+    } finally {
+      setRecoveryLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadRecoveryPreview();
+  }, []);
+
+  const handleCreateManualBackup = () => {
+    const res = apiService.createVersionedLeadsBackup('manual_snapshot');
+    setRecoveryData(prev =>
+      prev
+        ? {
+            ...prev,
+            latestBackup: res.snapshot,
+            backups: res.allSnapshots,
+          }
+        : prev
+    );
+  };
+
+  const handleExecuteMigration = async () => {
+    try {
+      setRecoveryMigrating(true);
+      setRecoveryError(null);
+      const report = await apiService.migrateLocalLeadsToSupabase();
+      setMigrationReport(report);
+      await loadRecoveryPreview();
+      await refreshAllData();
+    } catch (err: any) {
+      setRecoveryError(err?.message || 'Stage 3 Lead migration encountered an error.');
+    } finally {
+      setRecoveryMigrating(false);
+    }
+  };
 
   const todayStr = new Date().toISOString().slice(0, 10);
 
@@ -223,45 +289,75 @@ export const EnquiriesView: React.FC = () => {
   };
 
   const handleFormSubmit = async (data: Omit<Enquiry, 'id' | 'created_at'> | Enquiry) => {
+    setLeadActionError(null);
     if ('id' in data) {
-      await updateEnquiry(data as Enquiry);
-      if (detailsEnquiry && detailsEnquiry.id === data.id) {
-        setDetailsEnquiry(data as Enquiry);
+      const saved = await updateEnquiry(data as Enquiry);
+      if (detailsEnquiry && detailsEnquiry.id === saved.id) {
+        setDetailsEnquiry(saved);
       }
     } else {
       await createEnquiry(data);
     }
+    await loadRecoveryPreview();
   };
 
   const handleQuickStatusChange = async (enquiry: Enquiry, newStatus: EnquiryStatus) => {
-    const updated = { ...enquiry, status: newStatus };
-    await updateEnquiry(updated);
-    if (detailsEnquiry && detailsEnquiry.id === enquiry.id) {
-      setDetailsEnquiry(updated);
+    try {
+      setLeadActionError(null);
+      const updated = { ...enquiry, status: newStatus };
+      const saved = await updateEnquiry(updated);
+      if (detailsEnquiry && detailsEnquiry.id === saved.id) {
+        setDetailsEnquiry(saved);
+      }
+    } catch (err: any) {
+      const msg = err?.message || 'Failed to update Lead status in Supabase.';
+      setLeadActionError(msg);
+      throw err;
     }
   };
 
   const handleQuickFollowUpChange = async (enquiry: Enquiry, newDate?: string) => {
-    const updated = { ...enquiry, follow_up_date: newDate };
-    await updateEnquiry(updated);
-    if (detailsEnquiry && detailsEnquiry.id === enquiry.id) {
-      setDetailsEnquiry(updated);
+    try {
+      setLeadActionError(null);
+      const updated = { ...enquiry, follow_up_date: newDate };
+      const saved = await updateEnquiry(updated);
+      if (detailsEnquiry && detailsEnquiry.id === saved.id) {
+        setDetailsEnquiry(saved);
+      }
+    } catch (err: any) {
+      const msg = err?.message || 'Failed to update Lead follow-up date in Supabase.';
+      setLeadActionError(msg);
+      throw err;
     }
   };
 
   const handleSaveNotes = async (enquiry: Enquiry, newNotes: string) => {
-    const updated = { ...enquiry, notes: newNotes };
-    await updateEnquiry(updated);
-    if (detailsEnquiry && detailsEnquiry.id === enquiry.id) {
-      setDetailsEnquiry(updated);
+    try {
+      setLeadActionError(null);
+      const updated = { ...enquiry, notes: newNotes };
+      const saved = await updateEnquiry(updated);
+      if (detailsEnquiry && detailsEnquiry.id === saved.id) {
+        setDetailsEnquiry(saved);
+      }
+    } catch (err: any) {
+      const msg = err?.message || 'Failed to save Lead notes in Supabase.';
+      setLeadActionError(msg);
+      throw err;
     }
   };
 
   const handleToggleArchive = async (enquiry: Enquiry) => {
-    const updated = { ...enquiry, is_archived: !enquiry.is_archived };
-    await updateEnquiry(updated);
-    if (detailsEnquiry && detailsEnquiry.id === enquiry.id) {
-      setDetailsEnquiry(updated);
+    try {
+      setLeadActionError(null);
+      const updated = { ...enquiry, is_archived: !enquiry.is_archived };
+      const saved = await updateEnquiry(updated);
+      if (detailsEnquiry && detailsEnquiry.id === saved.id) {
+        setDetailsEnquiry(saved);
+      }
+    } catch (err: any) {
+      const msg = err?.message || 'Failed to update Lead archive status in Supabase.';
+      setLeadActionError(msg);
+      throw err;
     }
   };
 
@@ -269,13 +365,19 @@ export const EnquiriesView: React.FC = () => {
     if (!deleteModalEnquiry) return;
     try {
       setIsDeleting(true);
+      setDeleteError(null);
+      setLeadActionError(null);
       await deleteEnquiry(deleteModalEnquiry.id);
       if (detailsEnquiry && detailsEnquiry.id === deleteModalEnquiry.id) {
         setDetailsEnquiry(null);
       }
       setDeleteModalEnquiry(null);
-    } catch (err) {
+      await loadRecoveryPreview();
+    } catch (err: any) {
       console.error('Failed to delete enquiry:', err);
+      const msg = err?.message || 'Failed to delete Lead from Supabase.';
+      setDeleteError(msg);
+      setLeadActionError(msg);
     } finally {
       setIsDeleting(false);
     }
@@ -341,11 +443,32 @@ export const EnquiriesView: React.FC = () => {
             </span>
           </div>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            Wedding enquiries and sales pipeline.
+            Project enquiries and sales pipeline.
           </p>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => {
+              setIsRecoveryModalOpen(true);
+              loadRecoveryPreview();
+            }}
+            className={`px-3.5 py-2 text-xs font-semibold rounded-lg border transition-colors flex items-center justify-center gap-2 cursor-pointer ${
+              (recoveryData?.preview.candidates_to_migrate.length || 0) > 0
+                ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300'
+                : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
+            }`}
+          >
+            <ShieldCheck className="w-4 h-4 text-amber-600" />
+            <span>Backup &amp; Recovery Preview</span>
+            {(recoveryData?.preview.candidates_to_migrate.length || 0) > 0 && (
+              <span className="px-1.5 py-0.5 text-[10px] font-bold rounded-full bg-amber-600 text-white">
+                {recoveryData?.preview.candidates_to_migrate.length}
+              </span>
+            )}
+          </button>
+
           <button
             type="button"
             onClick={handleOpenCreate}
@@ -356,6 +479,57 @@ export const EnquiriesView: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Authoritative Supabase Read / Action Error Alert */}
+      {(enquiriesError || leadActionError) && (
+        <div className="p-3.5 rounded-xl bg-red-50 border border-red-200 text-red-800 flex items-start justify-between gap-3">
+          <div className="flex items-start gap-2.5 text-xs">
+            <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
+            <div>
+              <div className="font-bold">Supabase Lead Synchronisation Error</div>
+              <div className="mt-0.5">{leadActionError || enquiriesError}</div>
+            </div>
+          </div>
+          {leadActionError && (
+            <button
+              type="button"
+              onClick={() => setLeadActionError(null)}
+              className="text-xs font-semibold text-red-700 hover:text-red-900 shrink-0 cursor-pointer"
+            >
+              Dismiss
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* Stage 1 & Stage 2 Non-Destructive Recovery Preview Banner */}
+      {recoveryData && recoveryData.preview.candidates_to_migrate.length > 0 && (
+        <div className="p-4 rounded-xl bg-amber-50 border border-amber-300 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="text-xs text-amber-900 space-y-0.5">
+              <div className="font-bold">
+                {recoveryData.preview.candidates_to_migrate.length} local Lead
+                {recoveryData.preview.candidates_to_migrate.length === 1 ? '' : 's'} found in this browser that{' '}
+                {recoveryData.preview.candidates_to_migrate.length === 1 ? 'is' : 'are'} not in Supabase
+              </div>
+              <div className="text-amber-800">
+                A versioned local backup ({recoveryData.latestBackup ? `v${recoveryData.latestBackup.version}` : 'ready'}) has been preserved without modifying your data. Inspect &amp; download your backup before approving migration.
+              </div>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setIsRecoveryModalOpen(true);
+              loadRecoveryPreview();
+            }}
+            className="px-3.5 py-2 text-xs font-semibold bg-amber-700 hover:bg-amber-800 text-white rounded-lg transition-colors shrink-0 cursor-pointer"
+          >
+            Open Recovery Preview
+          </button>
+        </div>
+      )}
 
       {/* 2. Summary Metric Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
@@ -484,8 +658,8 @@ export const EnquiriesView: React.FC = () => {
               className="px-2.5 py-1 bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium text-xs focus:outline-hidden"
             >
               <option value="created_desc">Newest Leads First</option>
-              <option value="event_date_asc">Wedding Date (Earliest)</option>
-              <option value="event_date_desc">Wedding Date (Latest)</option>
+              <option value="event_date_asc">Project Date (Earliest)</option>
+              <option value="event_date_desc">Project Date (Latest)</option>
               <option value="budget_desc">Budget (High to Low)</option>
               <option value="budget_asc">Budget (Low to High)</option>
             </select>
@@ -517,7 +691,7 @@ export const EnquiriesView: React.FC = () => {
               <tr className="bg-slate-900 text-white font-bold uppercase tracking-wider text-[10px]">
                 <th className="py-3 px-4">Lead / Couple</th>
                 <th className="py-3 px-3">Brand</th>
-                <th className="py-3 px-3">Wedding Date & Venue</th>
+                <th className="py-3 px-3">Project Date & Venue</th>
                 <th className="py-3 px-3 text-right">Est. Budget (₹)</th>
                 <th className="py-3 px-3">Pipeline Stage</th>
                 <th className="py-3 px-3">Follow-up</th>
@@ -584,7 +758,7 @@ export const EnquiriesView: React.FC = () => {
                       </span>
                     </td>
 
-                    {/* Wedding Date & Venue */}
+                    {/* Project Date & Venue */}
                     <td className="py-3 px-3">
                       {(() => {
                         const dateInfo = formatLeadsTableEventDates(lead);
@@ -622,7 +796,9 @@ export const EnquiriesView: React.FC = () => {
                     <td className="py-3 px-3" onClick={e => e.stopPropagation()}>
                       <select
                         value={lead.status}
-                        onChange={e => handleQuickStatusChange(lead, e.target.value as EnquiryStatus)}
+                        onChange={e => {
+                          void handleQuickStatusChange(lead, e.target.value as EnquiryStatus).catch(() => {});
+                        }}
                         className="text-[11px] font-semibold bg-slate-100 border border-slate-200 rounded-lg px-2 py-1 text-slate-800 focus:outline-hidden"
                       >
                         <option value="New">1. New</option>
@@ -705,7 +881,9 @@ export const EnquiriesView: React.FC = () => {
                         )}
                         <button
                           type="button"
-                          onClick={() => handleToggleArchive(lead)}
+                          onClick={() => {
+                            void handleToggleArchive(lead).catch(() => {});
+                          }}
                           className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
                           title={lead.is_archived ? 'Restore (Unarchive) Lead' : 'Archive Lead'}
                         >
@@ -718,7 +896,10 @@ export const EnquiriesView: React.FC = () => {
                         <div className="w-px h-4 bg-slate-200 mx-0.5" aria-hidden="true" />
                         <button
                           type="button"
-                          onClick={() => setDeleteModalEnquiry(lead)}
+                          onClick={() => {
+                            setDeleteError(null);
+                            setDeleteModalEnquiry(lead);
+                          }}
                           className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
                           title="Delete Lead"
                         >
@@ -768,6 +949,7 @@ export const EnquiriesView: React.FC = () => {
           }}
           onDeleteLead={lead => {
             setDetailsEnquiry(null);
+            setDeleteError(null);
             setDeleteModalEnquiry(lead);
           }}
           onToggleArchive={handleToggleArchive}
@@ -796,6 +978,8 @@ export const EnquiriesView: React.FC = () => {
           company={resolveCompanyForEnquiry(quoteModalEnquiry.company_id)}
           existingQuotation={quoteToEdit}
           allQuotations={quotations}
+          catalogueItems={deliverableCatalogue}
+          catalogueError={moduleErrors.deliverableCatalogue}
           onSaveQuotation={handleSaveQuotation}
         />
       )}
@@ -820,12 +1004,35 @@ export const EnquiriesView: React.FC = () => {
       {deleteModalEnquiry && (
         <DeleteLeadModal
           isOpen={Boolean(deleteModalEnquiry)}
-          onClose={() => setDeleteModalEnquiry(null)}
+          onClose={() => {
+            setDeleteError(null);
+            setDeleteModalEnquiry(null);
+          }}
           enquiry={deleteModalEnquiry}
           onConfirm={handleDeleteConfirm}
           isDeleting={isDeleting}
+          error={deleteError}
         />
       )}
+
+      {/* Stage 1, 2 & 3: Backup, Recovery Preview & Explicit Migration Modal */}
+      <LeadsRecoveryPreviewModal
+        isOpen={isRecoveryModalOpen}
+        onClose={() => setIsRecoveryModalOpen(false)}
+        loading={recoveryLoading}
+        migrating={recoveryMigrating}
+        error={recoveryError}
+        diagnostics={recoveryData?.diagnostics || null}
+        latestBackup={recoveryData?.latestBackup || null}
+        backups={recoveryData?.backups || []}
+        preview={recoveryData?.preview || null}
+        migrationReceipts={recoveryData?.migrationReceipts || []}
+        migrationReport={migrationReport}
+        quotationsTableStatus={recoveryData?.quotationsTableStatus || null}
+        onRefreshPreview={loadRecoveryPreview}
+        onCreateManualBackup={handleCreateManualBackup}
+        onExecuteMigration={handleExecuteMigration}
+      />
     </div>
   );
 };

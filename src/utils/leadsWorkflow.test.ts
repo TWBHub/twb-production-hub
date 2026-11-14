@@ -1,10 +1,16 @@
-import { Enquiry, Project, ProjectEvent, Client, Quotation, ServiceCatalogueItem } from '../types';
+import { Enquiry, Project, ProjectEvent, Client, Quotation, DeliverableCatalogueItem, Deliverable } from '../types';
 import {
   TWB_COMPANY_UUID,
   GJ_COMPANY_UUID,
   resolveCompanyUuid,
   resolveBrandCode,
 } from './companyUtils';
+import {
+  filterDeliverableCatalogueForBrand,
+  getLeadServiceOptions,
+  getQuotationCataloguePresets,
+  getCatalogueItemReferences,
+} from './deliverableCatalogueUtils';
 
 function runLeadsWorkflowTests() {
   console.log('=== Starting TWBHub Leads Workflow & Conversion Tests ===');
@@ -124,64 +130,101 @@ function runLeadsWorkflowTests() {
     { start: '2026-11-20', end: '2026-11-21' }
   );
 
-  // 3. Service Catalogue Integration
-  const mockCatalogue: ServiceCatalogueItem[] = [
+  // 3. Unified Shared Catalogue Integration (Leads + Quotations)
+  const mockCatalogue: DeliverableCatalogueItem[] = [
     {
-      id: 'srv-1',
+      id: 'cat-1',
+      company_id: TWB_COMPANY_UUID,
       applicable_brand: 'twb',
       name: 'Principal 4K Wedding Cinematography',
+      category: 'Cinematography',
       description: '2 Senior Cinematographers with cinema prime lenses',
-      is_active: true,
-      sort_order: 1,
-      created_at: '2026-01-01',
-    },
-    {
-      id: 'srv-2',
-      applicable_brand: 'twb',
-      name: 'Editorial Teaser & Highlight Film',
-      description: '60s social reel + 12-15 min feature film',
-      is_active: true,
-      sort_order: 2,
-      created_at: '2026-01-01',
-    },
-    {
-      id: 'srv-3',
-      applicable_brand: 'golden_june',
-      name: 'Artisanal Analog Film Coverage (35mm / 16mm)',
-      description: 'Vintage film aesthetics and custom chemical grade',
-      is_active: true,
-      sort_order: 1,
-      created_at: '2026-01-01',
-    },
-    {
-      id: 'srv-4',
-      applicable_brand: 'all',
-      name: 'Fine Art Wedding Coffee Table Book',
-      description: 'Hand-bound Italian linen cover 100-page album',
       is_active: true,
       sort_order: 10,
       created_at: '2026-01-01',
     },
+    {
+      id: 'cat-2',
+      company_id: TWB_COMPANY_UUID,
+      applicable_brand: 'twb',
+      name: 'Editorial Teaser & Highlight Film',
+      category: 'Film',
+      description: '60s social reel + 12-15 min feature film',
+      is_active: true,
+      sort_order: 20,
+      created_at: '2026-01-01',
+    },
+    {
+      id: 'cat-3',
+      company_id: GJ_COMPANY_UUID,
+      applicable_brand: 'golden_june',
+      name: 'Artisanal Analog Film Coverage (35mm / 16mm)',
+      category: 'Cinematography',
+      description: 'Vintage film aesthetics and custom chemical grade',
+      is_active: true,
+      sort_order: 30,
+      created_at: '2026-01-01',
+    },
+    {
+      id: 'cat-4',
+      company_id: null,
+      applicable_brand: 'all',
+      name: 'Fine Art Wedding Coffee Table Book',
+      category: 'Album & Print',
+      description: 'Hand-bound Italian linen cover 100-page album',
+      is_active: true,
+      sort_order: 40,
+      created_at: '2026-01-01',
+    },
+    {
+      id: 'cat-5',
+      company_id: null,
+      applicable_brand: 'all',
+      name: 'Retired VHS Transfer',
+      category: 'Add-on',
+      description: 'Old add-on',
+      is_active: false,
+      sort_order: 50,
+      created_at: '2026-01-01',
+    },
   ];
 
-  const twbServices = mockCatalogue.filter(
-    s => s.is_active && (s.applicable_brand === 'twb' || s.applicable_brand === 'all')
-  );
+  const twbServices = filterDeliverableCatalogueForBrand(mockCatalogue, 'twb');
   assert(
     twbServices.length === 3,
-    'TWB catalogue filtering returns active TWB and shared services',
+    'TWB catalogue filtering returns active TWB and shared entries',
     twbServices.length,
     3
   );
 
-  const gjServices = mockCatalogue.filter(
-    s => s.is_active && (s.applicable_brand === 'golden_june' || s.applicable_brand === 'all')
-  );
+  const gjServices = filterDeliverableCatalogueForBrand(mockCatalogue, 'golden_june');
   assert(
     gjServices.length === 2,
-    'Golden June catalogue filtering returns active GJ and shared services',
+    'Golden June catalogue filtering returns active GJ and shared entries',
     gjServices.length,
     2
+  );
+
+  const leadOpts = getLeadServiceOptions({
+    items: mockCatalogue,
+    projectBrand: 'twb',
+    selectedServices: ['Retired VHS Transfer', 'Artisanal Analog Film Coverage (35mm / 16mm)', 'Bespoke Polaroid Booth'],
+  });
+  assert(
+    leadOpts.historicalSelected.length === 3 &&
+      leadOpts.historicalSelected[0].status === 'inactive' &&
+      leadOpts.historicalSelected[1].status === 'other_brand' &&
+      leadOpts.historicalSelected[2].status === 'custom',
+    'Lead service selector preserves inactive, other-brand, and custom historical selections',
+    leadOpts.historicalSelected
+  );
+
+  const gjPresets = getQuotationCataloguePresets(mockCatalogue, 'golden_june');
+  assert(
+    gjPresets.length === 2 &&
+      gjPresets[0].scopeText === 'Artisanal Analog Film Coverage (35mm / 16mm) — Vintage film aesthetics and custom chemical grade',
+    'Quotation quick-add presets filter by brand and format name + description',
+    gjPresets
   );
 
   // 4. Quotation Scope: Single Overall Package Investment without individual item prices
@@ -316,49 +359,73 @@ function runLeadsWorkflowTests() {
     true
   );
 
-  // 6. Service Catalogue Deletion Safeguard & In-Use Protection
-  const getReferencingLeadsForService = (serviceName: string, allEnquiries: Enquiry[]) => {
-    const target = serviceName.trim().toLowerCase();
-    return allEnquiries.filter(
-      e => e.services && Array.isArray(e.services) && e.services.some(s => (s || '').trim().toLowerCase() === target)
-    );
-  };
-
+  // 6. Combined Catalogue Deletion Safeguard & In-Use Protection (Leads + Deliverables)
   const allTestLeads: Enquiry[] = [leadWithEvents, minimalLead];
+  const allTestDeliverables: Deliverable[] = [
+    {
+      id: 'del-test-1',
+      project_id: 'prj-1',
+      company_id: 'twb',
+      deliverable_type: 'Highlight Film (4-5 mins)',
+      assigned_editor_id: '',
+      due_date: '2026-12-01',
+      status: 'Not Started',
+      priority: 'Medium',
+      last_updated: '2026-11-14T10:00:00Z',
+    },
+  ];
 
-  // A: Test service in use
-  const inUseService: ServiceCatalogueItem = {
-    id: 'srv-used-1',
+  // A: Test entry referenced by a Lead
+  const inUseEntry: DeliverableCatalogueItem = {
+    id: 'cat-used-1',
+    company_id: GJ_COMPANY_UUID,
     applicable_brand: 'golden_june',
     name: 'Principal 4K Artisanal Cinematography',
+    category: 'Cinematography',
     is_active: true,
+    sort_order: 10,
   };
-  const refsForUsed = getReferencingLeadsForService(inUseService.name, allTestLeads);
+  const refsForUsedLead = getCatalogueItemReferences({
+    deliverables: allTestDeliverables,
+    enquiries: allTestLeads,
+    itemName: inUseEntry.name,
+  });
   assert(
-    refsForUsed.length === 1 && refsForUsed[0].id === leadWithEvents.id,
-    'Service referenced by existing lead correctly identified as IN USE',
-    refsForUsed.length,
+    refsForUsedLead.leads.length === 1 && refsForUsedLead.leads[0].id === leadWithEvents.id,
+    'Catalogue entry referenced by existing lead correctly identified as IN USE',
+    refsForUsedLead.leads.length,
     1
   );
 
-  // Deletion must be blocked for in-use services
-  const canDeleteInUse = refsForUsed.length === 0;
+  // Deletion must be blocked for in-use entries (Lead or Deliverable)
   assert(
-    canDeleteInUse === false,
-    'Destructive deletion is strictly prevented for services referenced by leads',
-    canDeleteInUse,
-    false
+    refsForUsedLead.isInUse === true && refsForUsedLead.totalCount > 0,
+    'Destructive deletion is strictly prevented for entries referenced by leads',
+    refsForUsedLead.isInUse,
+    true
+  );
+
+  const refsForUsedDeliverable = getCatalogueItemReferences({
+    deliverables: allTestDeliverables,
+    enquiries: allTestLeads,
+    itemName: 'Highlight Film (4-5 mins)',
+  });
+  assert(
+    refsForUsedDeliverable.deliverables.length === 1 && refsForUsedDeliverable.totalCount === 1,
+    'Catalogue entry referenced by existing deliverable is also blocked from deletion',
+    refsForUsedDeliverable.totalCount,
+    1
   );
 
   // Deactivation is offered instead
-  const deactivatedInUseService: ServiceCatalogueItem = {
-    ...inUseService,
+  const deactivatedInUseEntry: DeliverableCatalogueItem = {
+    ...inUseEntry,
     is_active: false,
   };
   assert(
-    deactivatedInUseService.is_active === false,
-    'In-use service can be safely deactivated instead of deleted',
-    deactivatedInUseService.is_active,
+    deactivatedInUseEntry.is_active === false,
+    'In-use catalogue entry can be safely deactivated instead of deleted',
+    deactivatedInUseEntry.is_active,
     false
   );
 
@@ -369,35 +436,42 @@ function runLeadsWorkflowTests() {
     leadWithEvents.services
   );
 
-  // B: Test unused service
-  const unusedService: ServiceCatalogueItem = {
-    id: 'srv-unused-1',
+  // B: Test unused entry
+  const unusedEntry: DeliverableCatalogueItem = {
+    id: 'cat-unused-1',
+    company_id: null,
     applicable_brand: 'all',
     name: 'Unused Test Drone Addon',
+    category: 'Add-on',
     is_active: true,
+    sort_order: 20,
   };
-  const refsForUnused = getReferencingLeadsForService(unusedService.name, allTestLeads);
+  const refsForUnused = getCatalogueItemReferences({
+    deliverables: allTestDeliverables,
+    enquiries: allTestLeads,
+    itemName: unusedEntry.name,
+  });
   assert(
-    refsForUnused.length === 0,
-    'Unused service has 0 referencing leads',
-    refsForUnused.length,
+    refsForUnused.totalCount === 0,
+    'Unused catalogue entry has 0 referencing leads or deliverables',
+    refsForUnused.totalCount,
     0
   );
 
-  const canDeleteUnused = refsForUnused.length === 0;
+  const canDeleteUnused = refsForUnused.totalCount === 0;
   assert(
     canDeleteUnused === true,
-    'Unused service is allowed to be permanently deleted from catalogue',
+    'Unused entry is allowed to be permanently deleted from catalogue',
     canDeleteUnused,
     true
   );
 
-  // Deleting unused service from catalogue array
-  let currentCatalogue = [inUseService, unusedService];
-  currentCatalogue = currentCatalogue.filter(s => s.id !== unusedService.id);
+  // Deleting unused entry from catalogue array
+  let currentCatalogue = [inUseEntry, unusedEntry];
+  currentCatalogue = currentCatalogue.filter(s => s.id !== unusedEntry.id);
   assert(
-    currentCatalogue.length === 1 && currentCatalogue[0].id === inUseService.id,
-    'Unused service successfully removed from catalogue',
+    currentCatalogue.length === 1 && currentCatalogue[0].id === inUseEntry.id,
+    'Unused entry successfully removed from catalogue',
     currentCatalogue.length,
     1
   );

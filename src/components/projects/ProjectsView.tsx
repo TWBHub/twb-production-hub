@@ -27,6 +27,7 @@ import {
 import { sortProjectEvents } from '../../utils/eventUtils';
 import { formatDisplayDate, formatDisplayDateRange } from '../../utils/dateUtils';
 import { resolveCompanyUuid } from '../../utils/companyUtils';
+import { sanitizeNumericInput, parseNumericInput } from '../../utils/numberInputUtils';
 
 export const ProjectsView: React.FC = () => {
   const {
@@ -98,8 +99,8 @@ export const ProjectsView: React.FC = () => {
   const [newPackageDetails, setNewPackageDetails] = useState(
     'Full day coverage, 3x cinematographers, 2x photographers, drone coverage, 4K highlight film.'
   );
-  const [newBookingAmount, setNewBookingAmount] = useState(5000);
-  const [newTotalAmount, setNewTotalAmount] = useState(14000);
+  const [newBookingAmount, setNewBookingAmount] = useState<number | string>('');
+  const [newTotalAmount, setNewTotalAmount] = useState<number | string>('');
   const [newNotes, setNewNotes] = useState('');
 
   // Project creation status and error message
@@ -155,8 +156,16 @@ useEffect(() => {
   setNewEmail(projectToEdit.client_contact?.email || '');
   setNewPackage(projectToEdit.package_name || '');
   setNewPackageDetails(projectToEdit.package_details || '');
-  setNewBookingAmount(projectToEdit.booking_amount || 0);
-  setNewTotalAmount(projectToEdit.total_amount || 0);
+  setNewBookingAmount(
+    projectToEdit.booking_amount !== undefined && projectToEdit.booking_amount !== null
+      ? projectToEdit.booking_amount
+      : ''
+  );
+  setNewTotalAmount(
+    projectToEdit.total_amount !== undefined && projectToEdit.total_amount !== null
+      ? projectToEdit.total_amount
+      : ''
+  );
   setNewNotes(projectToEdit.notes || '');
 }, [editingProjectId, filteredProjects]);
 
@@ -200,8 +209,8 @@ useEffect(() => {
     setNewPackageDetails(
       'Full day coverage, 3x cinematographers, 2x photographers, drone coverage, 4K highlight film.'
     );
-    setNewBookingAmount(5000);
-    setNewTotalAmount(14000);
+    setNewBookingAmount('');
+    setNewTotalAmount('');
     setNewNotes('');
     setCreateProjectError(null);
   };
@@ -432,9 +441,9 @@ useEffect(() => {
     return;
   }
 
-  // 2. Validate required project / wedding title
+  // 2. Validate required project title
   if (!newWeddingName.trim()) {
-    setCreateProjectError('Please enter a Project / Wedding Title.');
+    setCreateProjectError('Please enter a Project Title.');
     return;
   }
 
@@ -504,8 +513,8 @@ useEffect(() => {
       status: 'confirmed' as const,
       package_name: newPackage,
       package_details: newPackageDetails,
-      booking_amount: newBookingAmount,
-      total_amount: newTotalAmount,
+      booking_amount: parseNumericInput(newBookingAmount, 0),
+      total_amount: parseNumericInput(newTotalAmount, 0),
       notes: newNotes,
       client_hdd_status: 'Not Received' as const,
     };
@@ -643,7 +652,7 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
             type="text"
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
-            placeholder="Search wedding, couple name, venue, city..."
+            placeholder="Search project, couple name, venue, city..."
             className="w-full pl-9 pr-4 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:bg-white focus:outline-hidden"
           />
         </div>
@@ -686,9 +695,9 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
           >
             <option value="recently_added">Recently Added</option>
             <option value="name_asc">Project Name A–Z</option>
-            <option value="wedding_date_asc">Wedding Date — Oldest First</option>
-            <option value="wedding_date_desc">Wedding Date — Newest First</option>
-            <option value="upcoming_weddings">Upcoming Weddings</option>
+            <option value="wedding_date_asc">Project Date — Oldest First</option>
+            <option value="wedding_date_desc">Project Date — Newest First</option>
+            <option value="upcoming_weddings">Upcoming Projects</option>
           </select>
         </div>
       </div>
@@ -1053,7 +1062,7 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
 
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">
-                  Project / Wedding Title
+                  Project Title
                 </label>
 
                 <input
@@ -1363,8 +1372,9 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
                     type="number"
                     value={newBookingAmount}
                     onChange={e =>
-                      setNewBookingAmount(Number(e.target.value))
+                      setNewBookingAmount(sanitizeNumericInput(e.target.value))
                     }
+                    placeholder="e.g. 50000"
                     className="w-full p-2 border border-slate-300 rounded-lg"
                   />
                 </div>
@@ -1378,8 +1388,9 @@ console.log('EDIT BRAND BEFORE UPDATE:', newCompanyId);
                     type="number"
                     value={newTotalAmount}
                     onChange={e =>
-                      setNewTotalAmount(Number(e.target.value))
+                      setNewTotalAmount(sanitizeNumericInput(e.target.value))
                     }
+                    placeholder="e.g. 150000"
                     className="w-full p-2 border border-slate-300 rounded-lg"
                   />
                 </div>

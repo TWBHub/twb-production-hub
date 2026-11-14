@@ -19,7 +19,9 @@ import {
   CalendarEvent,
   AppNotification,
   DeliverableStatus,
-  ServiceCatalogueItem,
+  DeliverableBrandScope,
+  DeliverableCatalogueCategory,
+  DeliverableCatalogueItem,
 } from '../types';
 import { apiService } from '../services/api';
 import { INITIAL_PROFILES } from '../services/seedData';
@@ -32,6 +34,16 @@ import {
   onAuthStateChange,
   canAccessTab,
 } from '../lib/auth';
+
+export type ModuleErrorKey =
+  | 'clients'
+  | 'deliverables'
+  | 'deliverableCatalogue'
+  | 'payments'
+  | 'projectData'
+  | 'projectTeam';
+
+export type ModuleLoadErrors = Partial<Record<ModuleErrorKey, string>>;
 
 interface AppContextType {
   // Brand & User State
@@ -82,7 +94,7 @@ interface AppContextType {
   calendarEvents: CalendarEvent[];
   notifications: AppNotification[];
   unreadNotificationCount: number;
-  services: ServiceCatalogueItem[];
+  deliverableCatalogue: DeliverableCatalogueItem[];
 
   // Filtered views based on current Brand and User Role
   filteredProjects: Project[];
@@ -95,6 +107,11 @@ interface AppContextType {
   filteredExpenses: Expense[];
 
   // Operations
+  enquiriesError: string | null;
+  moduleErrors: ModuleLoadErrors;
+  clearModuleError: (key: ModuleErrorKey) => void;
+  isRefreshingData: boolean;
+  resolveItemCompanyId: (projectId?: string, fallbackCompanyId?: string) => string;
   refreshAllData: () => Promise<void>;
   createProject: (project: Omit<Project, 'id' | 'created_at'>) => Promise<Project>;
   updateProject: (project: Project) => Promise<Project>;
@@ -102,9 +119,21 @@ interface AppContextType {
   createEnquiry: (enquiry: Omit<Enquiry, 'id' | 'created_at'>) => Promise<Enquiry>;
   updateEnquiry: (enquiry: Enquiry) => Promise<Enquiry>;
   deleteEnquiry: (id: string) => Promise<void>;
-  createService: (service: Omit<ServiceCatalogueItem, 'id'>) => Promise<ServiceCatalogueItem>;
-  updateService: (service: ServiceCatalogueItem) => Promise<ServiceCatalogueItem>;
-  deleteService: (id: string) => Promise<void>;
+  createDeliverableCatalogueItem: (item: {
+    name: string;
+    category?: DeliverableCatalogueCategory | string;
+    description?: string;
+    applicable_brand: DeliverableBrandScope;
+    is_active?: boolean;
+    sort_order?: number;
+  }) => Promise<DeliverableCatalogueItem>;
+  updateDeliverableCatalogueItem: (
+    item: DeliverableCatalogueItem
+  ) => Promise<DeliverableCatalogueItem>;
+  reorderDeliverableCatalogue: (
+    updatedPair: [DeliverableCatalogueItem, DeliverableCatalogueItem]
+  ) => Promise<DeliverableCatalogueItem[]>;
+  deleteDeliverableCatalogueItem: (id: string, itemName: string) => Promise<void>;
   quotations: Quotation[];
   createQuotation: (quotation: Omit<Quotation, 'id' | 'created_at'>) => Promise<Quotation>;
   updateQuotation: (quotation: Quotation) => Promise<Quotation>;
@@ -203,6 +232,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [companies, setCompanies] = useState<Company[]>([]);
   const [clients, setClients] = useState<Client[]>([]);
   const [enquiries, setEnquiries] = useState<Enquiry[]>([]);
+  const [enquiriesError, setEnquiriesError] = useState<string | null>(null);
+  const [moduleErrors, setModuleErrors] = useState<ModuleLoadErrors>({});
+  const [isRefreshingData, setIsRefreshingData] = useState<boolean>(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [editors, setEditors] = useState<Editor[]>([]);
@@ -214,7 +246,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [quotations, setQuotations] = useState<Quotation[]>([]);
-  const [services, setServices] = useState<ServiceCatalogueItem[]>([]);
+  const [deliverableCatalogue, setDeliverableCatalogue] = useState<DeliverableCatalogueItem[]>([]);
 
   // Persist brand filter
   const handleSetBrandFilter = (brand: BrandId) => {
@@ -233,8 +265,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     });
   }, []);
 
+  const clearModuleError = useCallback((key: ModuleErrorKey) => {
+    setModuleErrors(prev => {
+      if (!prev[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }, []);
+
  // Fetch all collections
 const refreshAllData = useCallback(async () => {
+  setIsRefreshingData(true);
   try {
     const results = await Promise.allSettled([
       apiService.getCompanies(),
@@ -251,7 +293,7 @@ const refreshAllData = useCallback(async () => {
       apiService.getCalendarEvents(),
       apiService.getNotifications(),
       apiService.getQuotations(),
-      apiService.getServices(),
+      apiService.getDeliverableCatalogue(),
     ]);
 
     const names = [
@@ -269,7 +311,7 @@ const refreshAllData = useCallback(async () => {
       'calendar events',
       'notifications',
       'quotations',
-      'services',
+      'shared catalogue',
     ];
 
     results.forEach((result, index) => {
@@ -296,26 +338,86 @@ const refreshAllData = useCallback(async () => {
       evts,
       notifs,
       quots,
-      srvs,
+      delCat,
     ] = results;
 
     if (comps.status === 'fulfilled') setCompanies(comps.value);
-    if (clis.status === 'fulfilled') setClients(clis.value);
-    if (enqs.status === 'fulfilled') setEnquiries(enqs.value);
-    if (prjs.status === 'fulfilled') setProjects(prjs.value);
+
+    const nextModuleErrors: ModuleLoadErrors = {};
+
+    if (clis.status === 'fulfilled') {
+      setClients(clis.value);
+    } else {
+      nextModuleErrors.clients =
+        clis.reason?.message || 'Failed to load clients from Supabase.';
+    }
+
+    if (enqs.status === 'fulfilled') {
+      setEnquiries(enqs.value);
+      setEnquiriesError(null);
+    } else if (enqs.status === 'rejected') {
+      setEnquiriesError(enqs.reason?.message || 'Failed to load Leads from Supabase.');
+    }
+
+    const loadedProjects = prjs.status === 'fulfilled' ? prjs.value : null;
+    if (loadedProjects) setProjects(loadedProjects);
+
     if (tms.status === 'fulfilled') setTeamMembers(tms.value);
     if (eds.status === 'fulfilled') setEditors(eds.value);
-    if (ptm.status === 'fulfilled') setProjectTeam(ptm.value);
-    if (pdt.status === 'fulfilled') setProjectData(pdt.value);
-    if (dels.status === 'fulfilled') setDeliverables(dels.value);
-    if (pays.status === 'fulfilled') setPayments(pays.value);
+
+    if (ptm.status === 'fulfilled') {
+      setProjectTeam(ptm.value);
+    } else {
+      nextModuleErrors.projectTeam =
+        ptm.reason?.message || 'Failed to load project team assignments from Supabase.';
+    }
+
+    if (pdt.status === 'fulfilled') {
+      setProjectData(pdt.value);
+    } else {
+      nextModuleErrors.projectData =
+        pdt.reason?.message || 'Failed to load project storage data from Supabase.';
+    }
+
+    if (dels.status === 'fulfilled') {
+      setDeliverables(dels.value);
+    } else {
+      nextModuleErrors.deliverables =
+        dels.reason?.message || 'Failed to load deliverables from Supabase.';
+    }
+
+    if (delCat.status === 'fulfilled') {
+      setDeliverableCatalogue(delCat.value);
+    } else {
+      nextModuleErrors.deliverableCatalogue =
+        delCat.reason?.message || 'Failed to load Shared Deliverables Catalogue from Supabase.';
+    }
+
+    if (pays.status === 'fulfilled') {
+      const normalizedPayments = loadedProjects
+        ? pays.value.map(pay => {
+            const matchedProj = loadedProjects.find(p => p.id === pay.project_id);
+            return matchedProj?.company_id
+              ? { ...pay, company_id: matchedProj.company_id }
+              : pay;
+          })
+        : pays.value;
+      setPayments(normalizedPayments);
+    } else {
+      nextModuleErrors.payments =
+        pays.reason?.message || 'Failed to load finance payments from Supabase.';
+    }
+
+    setModuleErrors(nextModuleErrors);
+
     if (exps.status === 'fulfilled') setExpenses(exps.value);
     if (evts.status === 'fulfilled') setCalendarEvents(evts.value);
     if (notifs.status === 'fulfilled') setNotifications(notifs.value);
     if (quots && quots.status === 'fulfilled') setQuotations(quots.value);
-    if (srvs && srvs.status === 'fulfilled') setServices(srvs.value);
   } catch (err) {
     console.error('Failed to load TWBHub data:', err);
+  } finally {
+    setIsRefreshingData(false);
   }
 }, []);
 
@@ -360,7 +462,7 @@ const refreshAllData = useCallback(async () => {
         setCurrentUser(resolvedProfile);
 
         // Route to the appropriate dashboard depending on role
-        if (resolvedProfile.role === 'Editor') {
+        if ((resolvedProfile.role || '').trim().toLowerCase() === 'editor') {
           setActiveTab('deliverables');
         } else {
           setActiveTab('dashboard');
@@ -408,7 +510,7 @@ const refreshAllData = useCallback(async () => {
 
         setCurrentUser(resolvedProfile);
 
-        if (resolvedProfile.role === 'Editor') {
+        if ((resolvedProfile.role || '').trim().toLowerCase() === 'editor') {
           setActiveTab('deliverables');
         } else {
           setActiveTab('dashboard');
@@ -454,7 +556,7 @@ const refreshAllData = useCallback(async () => {
             setCurrentUser(profile);
             // Verify permission on restored active view
             if (!canAccessTab(activeTab, profile.role)) {
-              setActiveTab(profile.role === 'Editor' ? 'deliverables' : 'dashboard');
+              setActiveTab((profile.role || '').trim().toLowerCase() === 'editor' ? 'deliverables' : 'dashboard');
             }
           }
         }
@@ -500,12 +602,13 @@ const refreshAllData = useCallback(async () => {
     }
   }, [checkSupabase, refreshAllData, currentUser]);
 
-  // Role permissions helpers
+  // Role permissions helpers (case-insensitive to support both lowercase Supabase roles and Title Case)
   const userRole = currentUser?.role || 'Team Member';
-  const isAdmin = currentUser?.role === 'Admin';
-  const isManager = currentUser?.role === 'Manager';
-  const isTeamMember = currentUser?.role === 'Team Member';
-  const isEditorOnly = currentUser?.role === 'Editor';
+  const normalizedRole = (currentUser?.role || '').trim().toLowerCase();
+  const isAdmin = normalizedRole === 'admin';
+  const isManager = normalizedRole === 'manager';
+  const isTeamMember = normalizedRole === 'team member' || normalizedRole === 'team_member';
+  const isEditorOnly = normalizedRole === 'editor';
 
   const canManageFinance = isAdmin || isManager;
   const canManageTeam = isAdmin || isManager;
@@ -633,21 +736,45 @@ const matchBrand = (companyId: string) => {
     await refreshAllData();
   };
 
-  const createService = async (item: Omit<ServiceCatalogueItem, 'id'>) => {
-    const created = await apiService.createService(item);
+  const createDeliverableCatalogueItem = async (item: {
+    name: string;
+    category?: DeliverableCatalogueCategory | string;
+    description?: string;
+    applicable_brand: DeliverableBrandScope;
+    is_active?: boolean;
+    sort_order?: number;
+  }) => {
+    const created = await apiService.createDeliverableCatalogueItem(
+      item,
+      deliverableCatalogue
+    );
     await refreshAllData();
     return created;
   };
 
-  const updateService = async (item: ServiceCatalogueItem) => {
-    const updated = await apiService.updateService(item);
+  const updateDeliverableCatalogueItem = async (item: DeliverableCatalogueItem) => {
+    const updated = await apiService.updateDeliverableCatalogueItem(
+      item,
+      deliverableCatalogue
+    );
     await refreshAllData();
     return updated;
   };
 
-  const deleteService = async (id: string) => {
-    setServices(prev => prev.filter(s => s.id !== id));
-    await apiService.deleteService(id);
+  const reorderDeliverableCatalogue = async (
+    updatedPair: [DeliverableCatalogueItem, DeliverableCatalogueItem]
+  ) => {
+    const updated = await apiService.reorderDeliverableCatalogue(
+      updatedPair,
+      deliverableCatalogue
+    );
+    await refreshAllData();
+    return updated;
+  };
+
+  const deleteDeliverableCatalogueItem = async (id: string, itemName: string) => {
+    await apiService.deleteDeliverableCatalogueItem(id, itemName, deliverables, enquiries);
+    setDeliverableCatalogue(prev => prev.filter(item => item.id !== id));
     await refreshAllData();
   };
 
@@ -729,8 +856,8 @@ const deleteTeamMember = async (id: string) => {
   };
 
   const removeTeamAssignment = async (assignmentId: string) => {
-    setProjectTeam(prev => prev.filter(a => a.id !== assignmentId));
     await apiService.removeTeamAssignment(assignmentId);
+    setProjectTeam(prev => prev.filter(a => a.id !== assignmentId));
     await refreshAllData();
   };
 
@@ -751,7 +878,6 @@ const deleteTeamMember = async (id: string) => {
   };
 
   const updateProjectData = async (data: ProjectData) => {
-    setProjectData(prev => prev.map(d => (d.id === data.id ? data : d)));
     const updated = await apiService.updateProjectData(data);
     setProjectData(prev => prev.map(d => (d.id === data.id ? updated : d)));
     await refreshAllData();
@@ -759,8 +885,8 @@ const deleteTeamMember = async (id: string) => {
   };
 
   const deleteProjectData = async (id: string) => {
-    setProjectData(prev => prev.filter(d => d.id !== id));
     await apiService.deleteProjectData(id);
+    setProjectData(prev => prev.filter(d => d.id !== id));
     await refreshAllData();
   };
 
@@ -772,7 +898,6 @@ const deleteTeamMember = async (id: string) => {
   };
 
   const updateDeliverable = async (deliverable: Deliverable) => {
-    setDeliverables(prev => prev.map(d => (d.id === deliverable.id ? deliverable : d)));
     const updated = await apiService.updateDeliverable(deliverable);
     setDeliverables(prev => prev.map(d => (d.id === deliverable.id ? updated : d)));
     await refreshAllData();
@@ -786,30 +911,7 @@ const deleteTeamMember = async (id: string) => {
   };
 
   const updateDeliverableStatus = async (deliverableId: string, status: DeliverableStatus) => {
-    // 1. Immediately update local state so UI and completion dot reflect change instantly
-    const now = new Date().toISOString();
-    setDeliverables(prev =>
-      prev.map(d => {
-        if (d.id !== deliverableId) return d;
-        const firstSubmittedAt =
-          status === 'Submitted' && !d.first_submitted_at
-            ? now
-            : d.first_submitted_at;
-        const deliveredAt =
-          status === 'Delivered' && !d.delivered_at
-            ? now
-            : d.delivered_at;
-        return {
-          ...d,
-          status,
-          first_submitted_at: firstSubmittedAt,
-          delivered_at: deliveredAt,
-          last_updated: now,
-        };
-      })
-    );
-
-    // 2. Persist to Supabase deliverables table and local storage
+    // Persist to Supabase deliverables table first (never leave optimistic state on failure)
     const updated = await apiService.updateDeliverableStatus(
       deliverableId,
       status,
@@ -942,6 +1044,11 @@ const deleteExpense = async (id: string) => {
         filteredCalendarEvents,
         filteredPayments,
         filteredExpenses,
+        enquiriesError,
+        moduleErrors,
+        clearModuleError,
+        isRefreshingData,
+        resolveItemCompanyId,
         refreshAllData,
         createProject,
         updateProject,
@@ -949,10 +1056,11 @@ const deleteExpense = async (id: string) => {
         createEnquiry,
         updateEnquiry,
         deleteEnquiry,
-        services,
-        createService,
-        updateService,
-        deleteService,
+        deliverableCatalogue,
+        createDeliverableCatalogueItem,
+        updateDeliverableCatalogueItem,
+        reorderDeliverableCatalogue,
+        deleteDeliverableCatalogueItem,
         quotations,
         createQuotation,
         updateQuotation,

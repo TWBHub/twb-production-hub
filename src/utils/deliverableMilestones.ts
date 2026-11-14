@@ -331,3 +331,115 @@ export function prepareDeliverableForCreate(
   };
 }
 
+/**
+ * Resolves the user-visible "Editing Notes / Feedback" text consistently across views.
+ * Prefers user_notes extracted from notes (__METADATA__ or plain text), and falls back to
+ * legacy client_feedback so existing Supabase rows remain readable.
+ */
+export function getDeliverableFeedbackText(
+  deliverable?: { notes?: string | null; client_feedback?: string | null } | null
+): string {
+  if (!deliverable) return '';
+  const parsedNotes = parseDeliverableNotes(deliverable.notes).userNotes;
+  if (parsedNotes && parsedNotes.trim() !== '') {
+    return parsedNotes.trim();
+  }
+  if (typeof deliverable.client_feedback === 'string' && deliverable.client_feedback.trim() !== '') {
+    return deliverable.client_feedback.trim();
+  }
+  return '';
+}
+
+/**
+ * Builds consistent notes + client_feedback fields when saving or creating a deliverable.
+ * Keeps notes as '' (empty string, not undefined) when cleared so persistence clears user_notes
+ * without erasing __METADATA__ milestone timestamps.
+ */
+export function buildDeliverableFeedbackFields(rawFeedback: string): {
+  notes: string;
+  client_feedback?: string;
+} {
+  const trimmed = typeof rawFeedback === 'string' ? rawFeedback.trim() : '';
+  return {
+    notes: trimmed,
+    client_feedback: trimmed || undefined,
+  };
+}
+
+/**
+ * Canonical workflow statuses allowed by the live Supabase deliverables_status_check constraint.
+ */
+export const DELIVERABLE_WORKFLOW_STATUSES = [
+  'Not Started',
+  'Assigned',
+  'In Progress',
+  'Submitted',
+  'Changes Requested',
+  'Approved',
+  'Delivered',
+] as const;
+
+export type ValidDeliverableStatus = (typeof DELIVERABLE_WORKFLOW_STATUSES)[number];
+
+export function isValidDeliverableStatus(status: string): status is ValidDeliverableStatus {
+  return (DELIVERABLE_WORKFLOW_STATUSES as readonly string[]).includes(status);
+}
+
+/**
+ * Validates an explicit deliverable workflow status against the allowed Supabase constraint values.
+ */
+export function validateDeliverableStatus(status?: string | null): ValidDeliverableStatus {
+  const trimmed = typeof status === 'string' ? status.trim() : '';
+  if (!trimmed || !isValidDeliverableStatus(trimmed)) {
+    throw new Error(
+      `Invalid deliverable status "${status ?? ''}". Allowed values: ${DELIVERABLE_WORKFLOW_STATUSES.join(', ')}.`
+    );
+  }
+  return trimmed;
+}
+
+/**
+ * Resolves and validates the workflow status when creating a deliverable:
+ * - Blank + no assigned editor -> 'Not Started'
+ * - Blank + assigned editor -> 'Assigned'
+ * - Explicit valid status -> preserved verbatim
+ * - Any invalid non-blank status -> throws clear validation error (never downgraded to NULL)
+ */
+export function resolveDeliverableStatusOnCreate(
+  status?: string | null,
+  assignedEditorId?: string | null
+): ValidDeliverableStatus {
+  const hasEditor = Boolean(assignedEditorId && assignedEditorId.trim());
+  const trimmedStatus = typeof status === 'string' ? status.trim() : '';
+
+  if (!trimmedStatus) {
+    return hasEditor ? 'Assigned' : 'Not Started';
+  }
+
+  return validateDeliverableStatus(trimmedStatus);
+}
+
+/**
+ * Synchronizes the Create Deliverable modal's Workflow Status selector when Assigned Editor changes:
+ * - Selecting an editor when status is blank or 'Not Started' -> 'Assigned'
+ * - Clearing the editor when status is blank or 'Assigned' -> 'Not Started'
+ * - Any other explicit status ('In Progress', 'Submitted', etc.) -> preserved
+ */
+export function syncCreateStatusOnEditorChange(
+  currentStatus: DeliverableStatus | '' | undefined,
+  newEditorId: string
+): ValidDeliverableStatus {
+  const hasEditor = Boolean(newEditorId && newEditorId.trim());
+  const trimmed = typeof currentStatus === 'string' ? currentStatus.trim() : '';
+
+  if (hasEditor && (!trimmed || trimmed === 'Not Started')) {
+    return 'Assigned';
+  }
+  if (!hasEditor && (!trimmed || trimmed === 'Assigned')) {
+    return 'Not Started';
+  }
+  if (trimmed && isValidDeliverableStatus(trimmed)) {
+    return trimmed;
+  }
+  return hasEditor ? 'Assigned' : 'Not Started';
+}

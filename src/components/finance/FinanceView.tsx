@@ -24,6 +24,7 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { Payment, PaymentMode, ExpenseCategory, Expense } from '../../types';
+import { sanitizeNumericInput, parseNumericInput } from '../../utils/numberInputUtils';
 import {
   generateReceiptPDF,
   downloadPdfDoc,
@@ -45,6 +46,7 @@ import {
   calculateFinanceViewMetrics,
 } from '../../utils/financeUtils';
 import { formatDisplayDate } from '../../utils/dateUtils';
+import { ModuleErrorBanner } from '../common/ModuleErrorBanner';
 
 export const FinanceView: React.FC = () => {
   const {
@@ -63,6 +65,10 @@ export const FinanceView: React.FC = () => {
     deleteExpense,
     canManageFinance,
     brandFilter,
+    moduleErrors,
+    refreshAllData,
+    isRefreshingData,
+    resolveItemCompanyId,
   } = useApp();
 
   // Helper to resolve brand from linked project or fallback
@@ -74,16 +80,8 @@ const resolveRecordBrand = (
     return 'shared';
   }
 
-  if (projectId) {
-    const matched = projects.find(p => p.id === projectId);
-    if (matched?.company_id) {
-      return matched.company_id === 'golden_june'
-        ? 'golden_june'
-        : 'twb';
-    }
-  }
-
-  return recordCompanyId === 'golden_june'
+  const resolved = resolveItemCompanyId(projectId, recordCompanyId);
+  return resolved === 'golden_june' || resolved === '3a19bbe1-a2bc-46db-bbbc-44ef7f5036ec'
     ? 'golden_june'
     : 'twb';
 };
@@ -123,7 +121,7 @@ const resolveRecordBrand = (
   const [showExpenseModal, setShowExpenseModal] = useState(false);
   const [showBusinessExpenseModal, setShowBusinessExpenseModal] = useState(false);
 const [businessExpenseBrand, setBusinessExpenseBrand] = useState<'twb' | 'golden_june' | 'shared'>('twb');
-const [businessExpenseAmount, setBusinessExpenseAmount] = useState(0);
+const [businessExpenseAmount, setBusinessExpenseAmount] = useState<number | string>('');
 const [businessExpenseCategory, setBusinessExpenseCategory] = useState('Office & Operations');
 const [businessExpenseVendor, setBusinessExpenseVendor] = useState('');
 const [businessExpenseDescription, setBusinessExpenseDescription] = useState('');
@@ -137,7 +135,7 @@ const [businessExpensePaymentMethod, setBusinessExpensePaymentMethod] = useState
   // New Payment Form
   const [payProjectId, setPayProjectId] = useState(filteredProjects[0]?.id || '');
   const [payProjectSearch, setPayProjectSearch] = useState('');
-  const [payAmount, setPayAmount] = useState(2500);
+  const [payAmount, setPayAmount] = useState<number | string>('');
   const [payMode, setPayMode] = useState<PaymentMode>('Bank Transfer');
   const [payDesc, setPayDesc] = useState('Milestone Retainer Payment');
   const [payDate, setPayDate] = useState(new Date().toISOString().split('T')[0]);
@@ -146,7 +144,7 @@ const [businessExpensePaymentMethod, setBusinessExpensePaymentMethod] = useState
  // New Expense Form
 const [expProjectId, setExpProjectId] = useState(filteredProjects[0]?.id || '');
 const [expProjectSearch, setExpProjectSearch] = useState('');
-const [expAmount, setExpAmount] = useState(450);
+const [expAmount, setExpAmount] = useState<number | string>('');
 const [expCat, setExpCat] = useState<ExpenseCategory>('Crew Travel');
 const [expDesc, setExpDesc] = useState('Airfare and local transport');
 const [expPaidTo, setExpPaidTo] = useState('Delta Airlines');
@@ -268,7 +266,10 @@ const {
     try {
       const project = projects.find(p => p.id === payment.project_id) || filteredProjects.find(p => p.id === payment.project_id);
       const client = clients.find(c => c.id === project?.client_id);
-      const company = companies.find(c => c.id === payment.company_id) || companies.find(c => c.code === payment.company_id) || companies[0];
+      const resolvedCompanyKey = resolveItemCompanyId(payment.project_id, payment.company_id);
+      const company =
+        companies.find(c => c.id === resolvedCompanyKey || c.code === resolvedCompanyKey) ||
+        companies[0];
       const projectPayments = (payments || filteredPayments || []).filter(p => p.project_id === payment.project_id);
 
       const doc = generateReceiptPDF(payment, project, client, company, projectPayments);
@@ -293,7 +294,11 @@ const {
   const handleAddPayment = async (e: React.FormEvent) => {
     e.preventDefault();
     if (isSavingPayment) return;
-    if (!payProjectId || payAmount <= 0) return;
+    const numericPayAmount = parseNumericInput(payAmount, 0);
+    if (!payProjectId || numericPayAmount <= 0) {
+      alert('Please enter a valid payment amount greater than zero.');
+      return;
+    }
 
     const proj = projects.find(p => p.id === payProjectId) || filteredProjects.find(p => p.id === payProjectId);
     if (!proj) return;
@@ -305,7 +310,7 @@ const {
           ...editingPayment,
           project_id: proj.id,
           company_id: proj.company_id,
-          amount: payAmount,
+          amount: numericPayAmount,
           payment_mode: payMode,
           description: payDesc,
           payment_date: payDate,
@@ -314,7 +319,7 @@ const {
         await createPayment({
           project_id: proj.id,
           company_id: proj.company_id,
-          amount: payAmount,
+          amount: numericPayAmount,
           payment_mode: payMode,
           description: payDesc,
           payment_date: payDate,
@@ -323,6 +328,7 @@ const {
       }
 
       setEditingPayment(null);
+      setPayAmount('');
       setShowPaymentModal(false);
     } catch (err: any) {
       console.error('Failed to record payment:', err);
@@ -364,6 +370,11 @@ const confirmDeletePayment = async () => {
 
   const handleAddExpense = async (e: React.FormEvent) => {
     e.preventDefault();
+    const numericExpAmount = parseNumericInput(expAmount, 0);
+    if (numericExpAmount <= 0) {
+      alert('Please enter an expense amount greater than zero.');
+      return;
+    }
     const proj = projects.find(p => p.id === expProjectId) || filteredProjects.find(p => p.id === expProjectId);
     if (!proj) return;
 
@@ -372,7 +383,7 @@ const confirmDeletePayment = async () => {
         ...editingExpense,
         project_id: proj.id,
         company_id: proj.company_id,
-        amount: expAmount,
+        amount: numericExpAmount,
         category: expCat,
         description: expDesc,
         paid_to: expPaidTo,
@@ -382,7 +393,7 @@ const confirmDeletePayment = async () => {
       await createExpense({
         project_id: proj.id,
         company_id: proj.company_id,
-        amount: expAmount,
+        amount: numericExpAmount,
         category: expCat,
         description: expDesc,
         paid_to: expPaidTo,
@@ -391,13 +402,15 @@ const confirmDeletePayment = async () => {
     }
 
     setEditingExpense(null);
+    setExpAmount('');
     setShowExpenseModal(false);
   };
 
   const handleAddBusinessExpense = async (e: React.FormEvent) => {
   e.preventDefault();
+  const numericBizAmount = parseNumericInput(businessExpenseAmount, 0);
 
-  if (businessExpenseAmount <= 0) {
+  if (numericBizAmount <= 0) {
     alert('Please enter an expense amount greater than zero.');
     return;
   }
@@ -414,14 +427,14 @@ const confirmDeletePayment = async () => {
       expense_type: 'business',
       payment_method: businessExpensePaymentMethod,
       receipt_url: '',
-      amount: businessExpenseAmount,
+      amount: numericBizAmount,
       category: businessExpenseCategory,
       description: businessExpenseDescription.trim(),
       paid_to: businessExpenseVendor.trim(),
       expense_date: businessExpenseDate,
     });
 
-    setBusinessExpenseAmount(0);
+    setBusinessExpenseAmount('');
     setBusinessExpenseCategory('Office & Operations');
     setBusinessExpenseVendor('');
     setBusinessExpenseDescription('');
@@ -481,21 +494,32 @@ return (
 
         <div className="flex items-center gap-2">
           <button
-            onClick={() => setShowPaymentModal(true)}
+            onClick={() => {
+              setEditingPayment(null);
+              setPayAmount('');
+              setShowPaymentModal(true);
+            }}
             className="px-3.5 py-2 text-xs font-semibold bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg shadow-xs transition-colors flex items-center gap-1.5"
           >
             <Plus className="w-4 h-4" />
             <span>Record Payment</span>
           </button>
           <button
-            onClick={() => setShowExpenseModal(true)}
+            onClick={() => {
+              setEditingExpense(null);
+              setExpAmount('');
+              setShowExpenseModal(true);
+            }}
             className="px-3.5 py-2 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg shadow-xs transition-colors flex items-center gap-1.5"
           >
             <Plus className="w-4 h-4" />
             <span>Record Expense</span>
           </button>
                     <button
-            onClick={() => setShowBusinessExpenseModal(true)}
+            onClick={() => {
+              setBusinessExpenseAmount('');
+              setShowBusinessExpenseModal(true);
+            }}
             className="px-3.5 py-2 text-xs font-semibold bg-[#A42C2C] hover:bg-[#7A2721] text-white rounded-lg shadow-xs transition-colors flex items-center gap-1.5"
           >
             <Plus className="w-4 h-4" />
@@ -503,6 +527,15 @@ return (
           </button>
         </div>
       </div>
+
+      {moduleErrors.payments && (
+        <ModuleErrorBanner
+          title="Supabase Finance Payments Synchronisation Error"
+          message={moduleErrors.payments}
+          onRetry={refreshAllData}
+          isRetrying={isRefreshingData}
+        />
+      )}
 
       {/* Receipt Download Error Alert */}
       {receiptDownloadError && (
@@ -871,7 +904,7 @@ return (
                       </td>
                       <td className="p-3.5 text-slate-600">{formatDisplayDate(p.payment_date)}</td>
                       <td className="p-3.5 font-semibold text-slate-900">
-                        {project?.name || 'Wedding'}
+                        {project?.name || 'Project'}
                       </td>
                       <td className="p-3.5">
                         {renderBrandBadge(brand)}
@@ -1147,7 +1180,8 @@ return (
                     type="number"
                     required
                     value={payAmount}
-                    onChange={e => setPayAmount(Number(e.target.value))}
+                    onChange={e => setPayAmount(sanitizeNumericInput(e.target.value))}
+                    placeholder="e.g. 50000"
                     className="w-full p-2 border border-slate-300 rounded-lg"
                   />
                 </div>
@@ -1306,7 +1340,8 @@ return (
                     type="number"
                     required
                     value={expAmount}
-                    onChange={e => setExpAmount(Number(e.target.value))}
+                    onChange={e => setExpAmount(sanitizeNumericInput(e.target.value))}
+                    placeholder="e.g. 15000"
                     className="w-full p-2 border border-slate-300 rounded-lg"
                   />
                 </div>
@@ -1347,7 +1382,7 @@ return (
                   required
                   value={expDesc}
                   onChange={e => setExpDesc(e.target.value)}
-                  placeholder="e.g. Sony Cinema lenses rental for wedding"
+                  placeholder="e.g. Sony Cinema lenses rental for project"
                   className="w-full p-2 border border-slate-300 rounded-lg"
                 />
               </div>
@@ -1421,8 +1456,9 @@ return (
               type="number"
               min="1"
               required
-              value={businessExpenseAmount || ''}
-              onChange={e => setBusinessExpenseAmount(Number(e.target.value))}
+              value={businessExpenseAmount}
+              onChange={e => setBusinessExpenseAmount(sanitizeNumericInput(e.target.value))}
+              placeholder="e.g. 2500"
               className="w-full p-2 border border-slate-300 rounded-lg"
             />
           </div>

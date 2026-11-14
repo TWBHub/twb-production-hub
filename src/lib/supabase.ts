@@ -33,6 +33,56 @@ export const saveSupabaseConfig = (url: string, key: string) => {
   }
 };
 
+export interface SupabaseConnectionDiagnostics {
+  projectUrl: string | null;
+  credentialSource: 'localStorage_override' | 'environment' | 'mixed' | 'unconfigured';
+  hasUrlOverride: boolean;
+  hasKeyOverride: boolean;
+  isConfigured: boolean;
+  note: string;
+}
+
+/**
+ * Returns read-only diagnostics for the active browser's Supabase connection.
+ * Never returns, exposes, or logs any API / anon keys.
+ */
+export const getSupabaseConnectionDiagnostics = (): SupabaseConnectionDiagnostics => {
+  const storedUrl =
+    typeof window !== 'undefined' ? localStorage.getItem('twbhub_supabase_url')?.trim() || '' : '';
+  const hasStoredKey =
+    typeof window !== 'undefined' ? Boolean(localStorage.getItem('twbhub_supabase_anon_key')?.trim()) : false;
+
+  const cleanEnvUrl = (envUrl || '').trim();
+  const hasEnvUrl = Boolean(cleanEnvUrl && !cleanEnvUrl.includes('your-project'));
+  const hasEnvKey = Boolean(envKey && !envKey.includes('your-anon-key'));
+
+  const hasValidStoredUrl = Boolean(storedUrl && !storedUrl.includes('your-project'));
+  const activeUrl = hasValidStoredUrl ? storedUrl : hasEnvUrl ? cleanEnvUrl : null;
+  const hasActiveKey = hasStoredKey || hasEnvKey;
+
+  let credentialSource: SupabaseConnectionDiagnostics['credentialSource'] = 'unconfigured';
+  if (hasValidStoredUrl && hasStoredKey) {
+    credentialSource = 'localStorage_override';
+  } else if (hasValidStoredUrl || hasStoredKey) {
+    credentialSource = hasEnvUrl || hasEnvKey ? 'mixed' : 'localStorage_override';
+  } else if (hasEnvUrl && hasEnvKey) {
+    credentialSource = 'environment';
+  }
+
+  const configured = Boolean(activeUrl && hasActiveKey);
+
+  return {
+    projectUrl: activeUrl,
+    credentialSource,
+    hasUrlOverride: hasValidStoredUrl,
+    hasKeyOverride: hasStoredKey,
+    isConfigured: configured,
+    note: configured
+      ? 'Verified for this browser only. Check the Office Mac separately to confirm it points to the same Supabase URL.'
+      : 'Supabase credentials are not configured in this browser.',
+  };
+};
+
 /**
  * Indicates whether valid Supabase environment credentials are provided.
  */
@@ -195,16 +245,19 @@ create table if not exists enquiries (
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
--- 5b. SERVICE CATALOGUE
-create table if not exists service_catalogue (
-  id text primary key,
+-- 5b. UNIFIED SHARED CATALOGUE (public.deliverable_catalogue)
+-- Used across Leads, Quotations, and Deliverables.
+create table if not exists deliverable_catalogue (
+  id uuid default uuid_generate_v4() primary key,
   name text not null,
+  category text check (category in ('Film', 'Cinematography', 'Photography', 'Album & Print', 'Specialty', 'Add-on', 'Other')) not null default 'Film',
   description text,
-  category text default 'Cinematography',
-  applicable_brand text default 'all',
-  is_active boolean default true,
-  sort_order integer default 0,
-  created_at timestamp with time zone default timezone('utc'::text, now()) not null
+  company_id uuid references companies(id) on delete restrict,
+  applicable_brand text check (applicable_brand in ('all', 'twb', 'golden_june')) not null default 'all',
+  is_active boolean not null default true,
+  sort_order integer not null default 0,
+  created_at timestamp with time zone default timezone('utc'::text, now()) not null,
+  updated_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
 -- 6. PROJECTS

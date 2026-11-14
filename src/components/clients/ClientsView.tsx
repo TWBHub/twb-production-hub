@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import {
   Users,
   Search,
@@ -17,7 +17,9 @@ import {
 import { useApp } from '../../context/AppContext';
 import { Client } from '../../types';
 import { formatDisplayDate } from '../../utils/dateUtils';
-import { resolveCompanyUuid, isTWB } from '../../utils/companyUtils';
+import { resolveCompanyUuid, resolveBrandCode, isTWB } from '../../utils/companyUtils';
+import { matchesClientSearch } from '../../utils/clientUtils';
+import { ModuleErrorBanner } from '../common/ModuleErrorBanner';
 
 export const ClientsView: React.FC = () => {
   const {
@@ -30,12 +32,17 @@ export const ClientsView: React.FC = () => {
     setSelectedProjectId,
     setActiveTab,
     brandFilter,
+    moduleErrors,
+    refreshAllData,
+    isRefreshingData,
   } = useApp();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedClient, setSelectedClient] = useState<Client | null>(null);
-const [showCreateModal, setShowCreateModal] = useState(false);
-const [editingClientId, setEditingClientId] = useState<string | null>(null);
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [editingClientId, setEditingClientId] = useState<string | null>(null);
+  const [clientSaveError, setClientSaveError] = useState<string | null>(null);
+  const [isSavingClient, setIsSavingClient] = useState(false);
 
   // Form State
   const [name, setName] = useState('');
@@ -50,28 +57,22 @@ const [editingClientId, setEditingClientId] = useState<string | null>(null);
   const [instagram2, setInstagram2] = useState('');
   const [notes, setNotes] = useState('');
 
-  const filtered = filteredClients.filter(c => {
-    const query = searchQuery.toLowerCase();
-    return (
-      c.name.toLowerCase().includes(query) ||
-      (c.partner_name && c.partner_name.toLowerCase().includes(query)) ||
-      c.email.toLowerCase().includes(query) ||
-      (c.instagram && c.instagram.toLowerCase().includes(query)) ||
-      (c.instagram_2 && c.instagram_2.toLowerCase().includes(query))
-    );
-  });
+  const filtered = useMemo(() => {
+    return filteredClients.filter(c => matchesClientSearch(c, searchQuery));
+  }, [filteredClients, searchQuery]);
 
 const openEditClient = (client: Client) => {
   setEditingClientId(client.id);
   setName(client.name || '');
   setPartnerName(client.partner_name || '');
-  setCompanyId(client.company_id);
+  setCompanyId(resolveBrandCode(client.company_id));
   setEmail(client.email || '');
   setPhone(client.phone || '');
   setAddress(client.address || '');
   setInstagram(client.instagram || '');
   setInstagram2(client.instagram_2 || '');
   setNotes(client.notes || '');
+  setClientSaveError(null);
   setSelectedClient(null);
   setShowCreateModal(true);
 };
@@ -92,33 +93,45 @@ const openEditClient = (client: Client) => {
     notes,
   };
 
-  if (editingClientId) {
-    const existingClient = filteredClients.find(
-      client => client.id === editingClientId
-    );
+  try {
+    setIsSavingClient(true);
+    setClientSaveError(null);
+    if (editingClientId) {
+      const existingClient = filteredClients.find(
+        client => client.id === editingClientId
+      );
 
-    if (!existingClient) return;
+      if (!existingClient) {
+        setClientSaveError('Could not locate client record to update.');
+        return;
+      }
 
-    await updateClient({
-      ...existingClient,
-      ...clientData,
-      id: editingClientId,
-    });
-  } else {
-    await createClient(clientData);
+      await updateClient({
+        ...existingClient,
+        ...clientData,
+        id: editingClientId,
+      });
+    } else {
+      await createClient(clientData);
+    }
+
+    setName('');
+    setPartnerName('');
+    setCompanyId(brandFilter === 'golden_june' ? 'golden_june' : 'twb');
+    setEmail('');
+    setPhone('');
+    setAddress('');
+    setInstagram('');
+    setInstagram2('');
+    setNotes('');
+    setEditingClientId(null);
+    setShowCreateModal(false);
+  } catch (err) {
+    console.error('Failed to save client:', err);
+    setClientSaveError(err instanceof Error ? err.message : 'Failed to save client record.');
+  } finally {
+    setIsSavingClient(false);
   }
-
-  setName('');
-  setPartnerName('');
-  setCompanyId(brandFilter === 'golden_june' ? 'golden_june' : 'twb');
-  setEmail('');
-  setPhone('');
-  setAddress('');
-  setInstagram('');
-  setInstagram2('');
-  setNotes('');
-  setEditingClientId(null);
-  setShowCreateModal(false);
 };
 
   return (
@@ -129,7 +142,7 @@ const openEditClient = (client: Client) => {
             Client Directory
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-            Profiles, wedding histories, payment receipts, and communications.
+            Profiles, project histories, payment receipts, and communications.
           </p>
         </div>
 
@@ -145,6 +158,7 @@ const openEditClient = (client: Client) => {
   setInstagram('');
   setInstagram2('');
   setNotes('');
+  setClientSaveError(null);
   setShowCreateModal(true);
 }}
           className="px-4 py-2 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg shadow-xs transition-colors flex items-center justify-center gap-2"
@@ -154,6 +168,15 @@ const openEditClient = (client: Client) => {
         </button>
       </div>
 
+      {moduleErrors.clients && (
+        <ModuleErrorBanner
+          title="Supabase Clients Synchronisation Error"
+          message={moduleErrors.clients}
+          onRetry={refreshAllData}
+          isRetrying={isRefreshingData}
+        />
+      )}
+
       {/* Search Bar */}
       <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs">
         <div className="relative">
@@ -162,7 +185,7 @@ const openEditClient = (client: Client) => {
             type="text"
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
-            placeholder="Search client by name, partner, or email..."
+            placeholder="Search client by name, partner, email, or phone..."
             className="w-full pl-9 pr-4 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:bg-white focus:outline-hidden"
           />
         </div>
@@ -208,11 +231,11 @@ const openEditClient = (client: Client) => {
                 <div className="space-y-1 text-xs text-slate-600 bg-slate-50 p-2.5 rounded-lg border border-slate-100">
                   <div className="flex items-center gap-1.5 truncate">
                     <Mail className="w-3.5 h-3.5 text-slate-400" />
-                    <span className="truncate">{client.email}</span>
+                    <span className="truncate">{client.email || 'No email provided'}</span>
                   </div>
                   <div className="flex items-center gap-1.5">
                     <Phone className="w-3.5 h-3.5 text-slate-400" />
-                    <span>{client.phone}</span>
+                    <span>{client.phone || 'No phone provided'}</span>
                   </div>
                 </div>
 
@@ -279,7 +302,7 @@ const openEditClient = (client: Client) => {
             {/* Projects for this client */}
             <div className="space-y-3">
               <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider">
-                Associated Wedding Projects
+                Associated Projects
               </h3>
               <div className="space-y-2">
                 {projects
@@ -335,6 +358,11 @@ const openEditClient = (client: Client) => {
             </div>
 
             <form onSubmit={handleCreate} className="space-y-3 text-xs">
+              {clientSaveError && (
+                <div className="p-2.5 bg-red-50 border border-red-200 text-red-700 rounded-lg text-xs">
+                  {clientSaveError}
+                </div>
+              )}
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-semibold text-slate-700 mb-1">Company / Brand</label>
@@ -449,9 +477,10 @@ const openEditClient = (client: Client) => {
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg shadow-xs"
+                  disabled={isSavingClient}
+                  className="px-5 py-2 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg shadow-xs disabled:opacity-50"
                 >
-                  {editingClientId ? 'Update Client' : 'Create Client'}
+                  {isSavingClient ? 'Saving...' : (editingClientId ? 'Update Client' : 'Create Client')}
                 </button>
               </div>
             </form>

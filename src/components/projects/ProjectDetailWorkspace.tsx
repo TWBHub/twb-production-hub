@@ -24,6 +24,7 @@ import {
   Check,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
+import { sanitizeNumericInput, parseNumericInput } from '../../utils/numberInputUtils';
 import {
   Project,
   Company,
@@ -44,6 +45,8 @@ import {
   DeliverableStatus,
   DeliverableType,
   DeliverablePriority,
+  DeliverableBrandScope,
+  DeliverableCatalogueCategory,
   DataCategory,
   PaymentMode,
   ExpenseCategory,
@@ -68,6 +71,13 @@ import {
   filterDeliverableEditors,
 } from '../../utils/teamMemberFilters';
 import {
+  DELIVERABLE_WORKFLOW_STATUSES,
+  getDeliverableFeedbackText,
+  buildDeliverableFeedbackFields,
+  resolveDeliverableStatusOnCreate,
+  syncCreateStatusOnEditorChange,
+} from '../../utils/deliverableMilestones';
+import {
   getProjectCalendarEntries,
   CALENDAR_CATEGORIES,
   CalendarCategory,
@@ -76,6 +86,12 @@ import {
   serializeCalendarNotes,
 } from '../../utils/calendarUtils';
 import { CalendarEntryModal } from '../calendar/CalendarEntryModal';
+import { resolveBrandCode } from '../../utils/companyUtils';
+import {
+  canAddDeliverableCatalogueEntry,
+  getDeliverableTypeOptions,
+} from '../../utils/deliverableCatalogueUtils';
+import { DeliverableTypeSelector } from '../deliverables/DeliverableTypeSelector';
 
 interface ProjectWorkspaceProps {
   projectId: string;
@@ -107,6 +123,7 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
   deleteProjectData,
   deliverables,
   createDeliverable,
+  updateDeliverable,
   deleteDeliverable,
   updateDeliverableStatus,
   payments,
@@ -127,6 +144,9 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
   isEditorOnly,
   canManageFinance,
   canManageTeam,
+  deliverableCatalogue,
+  createDeliverableCatalogueItem,
+  moduleErrors,
 } = useApp();
 
   const matchedProject = projects.find(p => p.id === projectId);
@@ -253,12 +273,17 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
     return Array.from(map.entries()).map(([date, names]) => ({
       date,
-      label: `${formatEventDateOption(date)} — ${names.join(', ') || 'Wedding event'}`,
+      label: `${formatEventDateOption(date)} — ${names.join(', ') || 'Project event'}`,
     }));
   }, [projectEventsList]);
 
   // Deliverables permissions & helpers
-  const canManageDeliverables = isAdmin || isManager || !currentUser || currentUser.role === 'Admin' || currentUser.role === 'Manager';
+  const canManageDeliverables =
+    isAdmin ||
+    isManager ||
+    !currentUser ||
+    canAddDeliverableCatalogueEntry(currentUser.role);
+  const projectBrand = resolveBrandCode(project?.company_id);
 
   const availableEditors = useMemo(() => {
     return filterDeliverableEditors(teamMembers).map(member => ({
@@ -269,15 +294,114 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
   // New Deliverable modal state
   const [showDeliverableModal, setShowDeliverableModal] = useState(false);
-  const [newDelType, setNewDelType] = useState<DeliverableType>('Highlight Film (4-5 mins)');
+  const [newDelType, setNewDelType] = useState<DeliverableType>('');
+  const [newDelIsCustom, setNewDelIsCustom] = useState(false);
+  const [newDelCustomName, setNewDelCustomName] = useState('');
+  const [newDelSaveToCatalogue, setNewDelSaveToCatalogue] = useState(false);
+  const [newDelCatalogueCategory, setNewDelCatalogueCategory] =
+    useState<DeliverableCatalogueCategory>('Film');
+  const [newDelCatalogueBrandScope, setNewDelCatalogueBrandScope] =
+    useState<DeliverableBrandScope>('twb');
+  const [newDelCatalogueDescription, setNewDelCatalogueDescription] = useState('');
   const [newDelEditorId, setNewDelEditorId] = useState('');
+  const [newDelStatus, setNewDelStatus] = useState<DeliverableStatus>('Not Started');
   const [newDelDueDate, setNewDelDueDate] = useState('');
   const [newDelPriority, setNewDelPriority] = useState<DeliverablePriority>('High');
   const [newDelLink, setNewDelLink] = useState('');
   const [newDelNotes, setNewDelNotes] = useState('');
+  const [addDelModalError, setAddDelModalError] = useState<string | null>(null);
   const [isSubmittingDeliverable, setIsSubmittingDeliverable] = useState(false);
+
+  const [editingDeliverable, setEditingDeliverable] = useState<Deliverable | null>(null);
+  const [editDelType, setEditDelType] = useState<DeliverableType>('');
+  const [editDelIsCustom, setEditDelIsCustom] = useState(false);
+  const [editDelCustomName, setEditDelCustomName] = useState('');
+  const [editDelSaveToCatalogue, setEditDelSaveToCatalogue] = useState(false);
+  const [editDelCatalogueCategory, setEditDelCatalogueCategory] =
+    useState<DeliverableCatalogueCategory>('Film');
+  const [editDelCatalogueBrandScope, setEditDelCatalogueBrandScope] =
+    useState<DeliverableBrandScope>('twb');
+  const [editDelCatalogueDescription, setEditDelCatalogueDescription] = useState('');
+  const [editDelEditorId, setEditDelEditorId] = useState('');
+  const [editDelStatus, setEditDelStatus] = useState<DeliverableStatus | ''>('');
+  const [editDelLink, setEditDelLink] = useState('');
+  const [editDelFeedback, setEditDelFeedback] = useState('');
+  const [editDelModalError, setEditDelModalError] = useState<string | null>(null);
+  const [isUpdatingDeliverable, setIsUpdatingDeliverable] = useState(false);
   const [deletingDeliverable, setDeletingDeliverable] = useState<Deliverable | null>(null);
   const [isDeletingDeliverable, setIsDeletingDeliverable] = useState(false);
+
+  const editAvailableEditors = useMemo(() => {
+    return filterDeliverableEditors(teamMembers, {
+      currentEditorId: editingDeliverable?.assigned_editor_id,
+    }).map(member => ({
+      id: member.id,
+      name: member.name,
+    }));
+  }, [teamMembers, editingDeliverable?.assigned_editor_id]);
+
+  const openEditDeliverableModal = (del: Deliverable) => {
+    const delBrand = resolveBrandCode(project?.company_id || del.company_id);
+    setEditingDeliverable(del);
+    setEditDelType(del.deliverable_type);
+    setEditDelIsCustom(false);
+    setEditDelCustomName('');
+    setEditDelSaveToCatalogue(false);
+    setEditDelCatalogueCategory('Film');
+    setEditDelCatalogueBrandScope(delBrand);
+    setEditDelCatalogueDescription('');
+    setEditDelEditorId(del.assigned_editor_id || '');
+    setEditDelStatus(del.status || '');
+    setEditDelLink(del.external_link || '');
+    setEditDelFeedback(getDeliverableFeedbackText(del));
+    setEditDelModalError(null);
+  };
+
+  const handleSaveWorkspaceDeliverableEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingDeliverable) return;
+
+    let resolvedType = editDelIsCustom
+      ? editDelCustomName.trim()
+      : String(editDelType || '').trim();
+    if (!resolvedType) {
+      setEditDelModalError('Please select or enter a deliverable name.');
+      return;
+    }
+
+    try {
+      setIsUpdatingDeliverable(true);
+      setEditDelModalError(null);
+
+      if (editDelIsCustom && editDelSaveToCatalogue) {
+        const createdEntry = await createDeliverableCatalogueItem({
+          name: resolvedType,
+          category: editDelCatalogueCategory,
+          description: editDelCatalogueDescription.trim() || undefined,
+          applicable_brand: editDelCatalogueBrandScope,
+          is_active: true,
+        });
+        resolvedType = createdEntry.name;
+      }
+
+      const feedbackFields = buildDeliverableFeedbackFields(editDelFeedback);
+      await updateDeliverable({
+        ...editingDeliverable,
+        deliverable_type: resolvedType,
+        assigned_editor_id: editDelEditorId,
+        status: editDelStatus as DeliverableStatus,
+        external_link: editDelLink.trim() || undefined,
+        notes: feedbackFields.notes,
+        client_feedback: feedbackFields.client_feedback,
+      });
+      setEditingDeliverable(null);
+    } catch (err) {
+      console.error('Failed to update deliverable:', err);
+      setEditDelModalError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setIsUpdatingDeliverable(false);
+    }
+  };
 
   // Storage Data modal state
   const [showDataModal, setShowDataModal] = useState(false);
@@ -298,7 +422,7 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const [showPaymentModal, setShowPaymentModal] = useState(false);
   const [editingPayment, setEditingPayment] = useState<Payment | null>(null);
   const [deletingPaymentId, setDeletingPaymentId] = useState<string | null>(null);
-  const [payAmount, setPayAmount] = useState(1000);
+  const [payAmount, setPayAmount] = useState<number | string>('');
   const [payMode, setPayMode] = useState<PaymentMode>('Bank Transfer');
   const [payDesc, setPayDesc] = useState('');
   const [payDate, setPayDate] = useState(new Date().toISOString().split('T')[0]);
@@ -308,7 +432,7 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
   const [showExpenseModal, setShowExpenseModal] = useState(false);
   const [editingExpense, setEditingExpense] = useState<Expense | null>(null);
   const [deletingExpenseId, setDeletingExpenseId] = useState<string | null>(null);
-  const [expAmount, setExpAmount] = useState(250);
+  const [expAmount, setExpAmount] = useState<number | string>('');
   const [expCat, setExpCat] = useState<ExpenseCategory>('Crew Travel');
   const [expDesc, setExpDesc] = useState('');
   const [expPaidTo, setExpPaidTo] = useState('');
@@ -316,7 +440,7 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
   const handleOpenAddPayment = () => {
     setEditingPayment(null);
-    setPayAmount(1000);
+    setPayAmount('');
     setPayMode('Bank Transfer');
     setPayDesc(`Payment for ${project?.name || 'Project'}`);
     setPayDate(new Date().toISOString().split('T')[0]);
@@ -394,7 +518,7 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
 
   const handleOpenAddExpense = () => {
     setEditingExpense(null);
-    setExpAmount(250);
+    setExpAmount('');
     setExpCat('Crew Travel');
     setExpDesc('');
     setExpPaidTo('');
@@ -1369,7 +1493,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
               {groupedCrew.length === 0 && (
                 <div className="p-8 text-center bg-white rounded-xl border border-dashed border-slate-300">
                   <Users className="w-8 h-8 text-slate-400 mx-auto mb-2" />
-                  <p className="text-xs text-slate-600">No team members assigned to this wedding yet.</p>
+                  <p className="text-xs text-slate-600">No team members assigned to this project yet.</p>
                 </div>
               )}
 
@@ -1385,7 +1509,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                         <p className="text-[11px] text-slate-500 mt-0.5">
                           {editingAssignmentId
                             ? 'Update this crew member assignment on project'
-                            : 'Allocate crew roles for wedding events'}
+                            : 'Allocate crew roles for project events'}
                         </p>
                       </div>
                       <button
@@ -1932,7 +2056,8 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                         <input
                           type="number"
                           value={payAmount}
-                          onChange={e => setPayAmount(Number(e.target.value))}
+                          onChange={e => setPayAmount(sanitizeNumericInput(e.target.value))}
+                          placeholder="e.g. 50000"
                           className="w-full p-2 border rounded-lg"
                         />
                       </div>
@@ -1984,6 +2109,11 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                         disabled={isSavingPayment}
                         onClick={async () => {
                           if (isSavingPayment) return;
+                          const numericAmount = parseNumericInput(payAmount, 0);
+                          if (numericAmount <= 0) {
+                            alert('Please enter a valid payment amount greater than zero.');
+                            return;
+                          }
                           try {
                             setIsSavingPayment(true);
                             if (editingPayment) {
@@ -1991,7 +2121,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                                 ...editingPayment,
                                 project_id: project.id,
                                 company_id: project.company_id,
-                                amount: payAmount,
+                                amount: numericAmount,
                                 payment_mode: payMode,
                                 description: payDesc,
                                 payment_date: payDate,
@@ -2000,7 +2130,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                               await createPayment({
                                 project_id: project.id,
                                 company_id: project.company_id,
-                                amount: payAmount,
+                                amount: numericAmount,
                                 payment_mode: payMode,
                                 description: payDesc || `Payment for ${project.name}`,
                                 payment_date: payDate,
@@ -2046,7 +2176,8 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                         <input
                           type="number"
                           value={expAmount}
-                          onChange={e => setExpAmount(Number(e.target.value))}
+                          onChange={e => setExpAmount(sanitizeNumericInput(e.target.value))}
+                          placeholder="e.g. 15000"
                           className="w-full p-2 border rounded-lg"
                         />
                       </div>
@@ -2108,12 +2239,17 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                       </button>
                       <button
                         onClick={async () => {
+                          const numericAmount = parseNumericInput(expAmount, 0);
+                          if (numericAmount <= 0) {
+                            alert('Please enter a valid expense amount greater than zero.');
+                            return;
+                          }
                           if (editingExpense) {
                             await updateExpense({
                               ...editingExpense,
                               project_id: project.id,
                               company_id: project.company_id,
-                              amount: expAmount,
+                              amount: numericAmount,
                               category: expCat,
                               description: expDesc || 'Production Expense',
                               paid_to: expPaidTo || 'Vendor',
@@ -2123,7 +2259,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                             await createExpense({
                               project_id: project.id,
                               company_id: project.company_id,
-                              amount: expAmount,
+                              amount: numericAmount,
                               category: expCat,
                               description: expDesc || 'Production Expense',
                               paid_to: expPaidTo || 'Vendor',
@@ -2365,7 +2501,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                         <p className="text-[11px] text-slate-500 mt-0.5">
                           {editingDataId
                             ? 'Update physical storage drive details'
-                            : 'Track SSDs, HDDs, or tower drives for this wedding'}
+                            : 'Track SSDs, HDDs, or tower drives for this project'}
                         </p>
                       </div>
                       <button
@@ -2576,10 +2712,23 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                     type="button"
                     id="btn-workspace-add-deliverable"
                     onClick={() => {
-                      setNewDelType('Highlight Film (4-5 mins)');
+                      const opts = getDeliverableTypeOptions({
+                        items: deliverableCatalogue,
+                        projectBrand,
+                        catalogueError: moduleErrors.deliverableCatalogue,
+                      });
+                      setNewDelType(opts.brandItems[0]?.name || '');
+                      setNewDelIsCustom(opts.shouldDefaultToCustom);
+                      setNewDelCustomName('');
+                      setNewDelSaveToCatalogue(false);
+                      setNewDelCatalogueCategory('Film');
+                      setNewDelCatalogueBrandScope(projectBrand);
+                      setNewDelCatalogueDescription('');
                       setNewDelEditorId('');
+                      setNewDelStatus('Not Started');
                       setNewDelLink('');
                       setNewDelNotes('');
+                      setAddDelModalError(null);
                       setShowDeliverableModal(true);
                     }}
                     className="px-3 py-1.5 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg flex items-center gap-1.5 shadow-xs transition-colors cursor-pointer"
@@ -2593,50 +2742,69 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
               <div className="space-y-2">
                 {projectDeliverablesList.map(del => {
                   const editorName = teamMembers.find(m => m.id === del.assigned_editor_id)?.name;
+                  const feedbackText = getDeliverableFeedbackText(del);
 
                   return (
                     <div
                       key={del.id}
                       id={`project-deliverable-${del.id}`}
-                      className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between gap-3"
+                      className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-xs flex items-start justify-between gap-3"
                     >
-                      <div className="flex items-center gap-2.5 flex-wrap">
-                        <span className="font-semibold text-xs text-slate-900">{del.deliverable_type}</span>
-                        <span className="text-[11px] font-medium text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
-                          {del.status || 'Unassigned'}
-                        </span>
-                        {editorName ? (
-                          <span className="text-[11px] text-slate-500">
-                            • Editor: <strong className="text-slate-700 font-medium">{editorName}</strong>
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex items-center gap-2.5 flex-wrap">
+                          <span className="font-semibold text-xs text-slate-900">{del.deliverable_type}</span>
+                          <span className="text-[11px] font-medium text-slate-600 bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
+                            {del.status || 'No Status'}
                           </span>
-                        ) : (
-                          <span className="text-[11px] text-slate-400 italic">
-                            • Unassigned Editor
-                          </span>
-                        )}
-                        {del.external_link && (
-                          <a
-                            href={del.external_link}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex items-center gap-1 text-[11px] text-blue-600 hover:underline"
-                          >
-                            <span>Review Link</span>
-                            <ExternalLink className="w-3 h-3" />
-                          </a>
+                          {editorName ? (
+                            <span className="text-[11px] text-slate-500">
+                              • Editor: <strong className="text-slate-700 font-medium">{editorName}</strong>
+                            </span>
+                          ) : (
+                            <span className="text-[11px] text-slate-400 italic">
+                              • Unassigned Editor
+                            </span>
+                          )}
+                          {del.external_link && (
+                            <a
+                              href={del.external_link}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 text-[11px] text-blue-600 hover:underline"
+                            >
+                              <span>Review Link</span>
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          )}
+                        </div>
+                        {feedbackText && (
+                          <div className="text-[11px] text-slate-500 line-clamp-2">
+                            {feedbackText}
+                          </div>
                         )}
                       </div>
 
                       {canManageDeliverables && (
-                        <button
-                          type="button"
-                          id={`workspace-delete-deliverable-${del.id}`}
-                          onClick={() => setDeletingDeliverable(del)}
-                          className="text-slate-400 hover:text-rose-600 p-1.5 rounded-lg hover:bg-rose-50 transition-colors cursor-pointer"
-                          title="Delete deliverable"
-                        >
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <button
+                            type="button"
+                            id={`workspace-edit-deliverable-${del.id}`}
+                            onClick={() => openEditDeliverableModal(del)}
+                            className="text-slate-400 hover:text-slate-700 p-1.5 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+                            title="Edit deliverable"
+                          >
+                            <Pencil className="w-4 h-4" />
+                          </button>
+                          <button
+                            type="button"
+                            id={`workspace-delete-deliverable-${del.id}`}
+                            onClick={() => setDeletingDeliverable(del)}
+                            className="text-slate-400 hover:text-rose-600 p-1.5 rounded-lg hover:bg-rose-50 transition-colors cursor-pointer"
+                            title="Delete deliverable"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
                       )}
                     </div>
                   );
@@ -2669,36 +2837,66 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                     </div>
 
                     <div className="space-y-3 text-xs">
-                      <div>
-                        <label className="block text-slate-700 mb-1 font-semibold">Deliverable Type *</label>
-                        <select
-                          value={newDelType}
-                          onChange={e => setNewDelType(e.target.value as DeliverableType)}
-                          className="w-full p-2 border border-slate-300 rounded-lg text-slate-900 bg-white"
-                        >
-                          <option value="Highlight Film (4-5 mins)">Highlight Film (4-5 mins)</option>
-                          <option value="Teaser / Reel (60s)">Teaser / Reel (60s)</option>
-                          <option value="Feature Film (20-30 mins)">Feature Film (20-30 mins)</option>
-                          <option value="Full Ceremony Edit">Full Ceremony Edit</option>
-                          <option value="Speeches & Toasts">Speeches & Toasts</option>
-                          <option value="Full Photo Gallery (800+)">Full Photo Gallery (800+)</option>
-                          <option value="Fine Art Wedding Album">Fine Art Wedding Album</option>
-                          <option value="Parent Albums">Parent Albums</option>
-                          <option value="Drone Compilation">Drone Compilation</option>
-                        </select>
-                      </div>
+                      {addDelModalError && (
+                        <div className="p-2.5 bg-red-50 border border-red-200 text-red-700 rounded-lg text-xs">
+                          {addDelModalError}
+                        </div>
+                      )}
+                      <DeliverableTypeSelector
+                        mode="create"
+                        label="Deliverable Type *"
+                        projectBrand={projectBrand}
+                        catalogueItems={deliverableCatalogue}
+                        catalogueError={moduleErrors.deliverableCatalogue}
+                        canAddToCatalogue={canManageDeliverables}
+                        value={String(newDelType || '')}
+                        isCustom={newDelIsCustom}
+                        onIsCustomChange={setNewDelIsCustom}
+                        onValueChange={val => setNewDelType(val)}
+                        customName={newDelCustomName}
+                        onCustomNameChange={setNewDelCustomName}
+                        saveToCatalogue={newDelSaveToCatalogue}
+                        onSaveToCatalogueChange={setNewDelSaveToCatalogue}
+                        catalogueCategory={newDelCatalogueCategory}
+                        onCatalogueCategoryChange={setNewDelCatalogueCategory}
+                        catalogueBrandScope={newDelCatalogueBrandScope}
+                        onCatalogueBrandScopeChange={setNewDelCatalogueBrandScope}
+                        catalogueDescription={newDelCatalogueDescription}
+                        onCatalogueDescriptionChange={setNewDelCatalogueDescription}
+                        idPrefix="workspace-create-deliverable"
+                      />
 
                       <div>
                         <label className="block text-slate-700 mb-1 font-semibold">Assigned Editor</label>
                         <select
                           value={newDelEditorId}
-                          onChange={e => setNewDelEditorId(e.target.value)}
+                          onChange={e => {
+                            const newEditorId = e.target.value;
+                            setNewDelEditorId(newEditorId);
+                            setNewDelStatus(prev => syncCreateStatusOnEditorChange(prev, newEditorId));
+                          }}
                           className="w-full p-2 border border-slate-300 rounded-lg text-slate-900 bg-white"
                         >
                           <option value="">Unassigned</option>
                           {availableEditors.map(ed => (
                             <option key={ed.id} value={ed.id}>
                               {ed.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-slate-700 mb-1 font-semibold">Workflow Status</label>
+                        <select
+                          id="workspace-new-deliverable-status"
+                          value={newDelStatus}
+                          onChange={e => setNewDelStatus(e.target.value as DeliverableStatus)}
+                          className="w-full p-2 border border-slate-300 rounded-lg text-slate-900 bg-white"
+                        >
+                          {DELIVERABLE_WORKFLOW_STATUSES.map(st => (
+                            <option key={st} value={st}>
+                              {st}
                             </option>
                           ))}
                         </select>
@@ -2716,12 +2914,12 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                       </div>
 
                       <div>
-                        <label className="block text-slate-700 mb-1 font-semibold">Notes / Feedback</label>
+                        <label className="block text-slate-700 mb-1 font-semibold">Editing Notes / Feedback</label>
                         <textarea
                           rows={2}
                           value={newDelNotes}
                           onChange={e => setNewDelNotes(e.target.value)}
-                          placeholder="Special creative requirements or feedback..."
+                          placeholder="Notes, creative directions, or client review notes..."
                           className="w-full p-2 border border-slate-300 rounded-lg text-slate-900"
                         />
                       </div>
@@ -2741,31 +2939,58 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                         disabled={isSubmittingDeliverable}
                         onClick={async () => {
                           const editorId = newDelEditorId.trim();
-                          // Workflow rules:
-                          // If editor assigned: status = 'Assigned'
-                          // If no editor assigned: editor = null, status = '' (blank)
-                          const initialStatus: DeliverableStatus = editorId ? 'Assigned' : ('' as DeliverableStatus);
+                          const feedbackFields = buildDeliverableFeedbackFields(newDelNotes);
+                          const opts = getDeliverableTypeOptions({
+                            items: deliverableCatalogue,
+                            projectBrand,
+                            catalogueError: moduleErrors.deliverableCatalogue,
+                          });
+                          const isUsingCustom = newDelIsCustom || opts.brandItems.length === 0;
+                          let resolvedType = isUsingCustom
+                            ? newDelCustomName.trim()
+                            : String(newDelType || '').trim();
+
+                          if (!resolvedType) {
+                            setAddDelModalError('Please select or enter a deliverable name.');
+                            return;
+                          }
 
                           try {
                             setIsSubmittingDeliverable(true);
+                            setAddDelModalError(null);
+
+                            if (isUsingCustom && newDelSaveToCatalogue) {
+                              const createdEntry = await createDeliverableCatalogueItem({
+                                name: resolvedType,
+                                category: newDelCatalogueCategory,
+                                description: newDelCatalogueDescription.trim() || undefined,
+                                applicable_brand: newDelCatalogueBrandScope,
+                                is_active: true,
+                              });
+                              resolvedType = createdEntry.name;
+                            }
+
+                            const resolvedStatus = resolveDeliverableStatusOnCreate(newDelStatus, editorId);
                             await createDeliverable({
                               project_id: project.id,
                               company_id: project.company_id,
-                              deliverable_type: newDelType,
+                              deliverable_type: resolvedType,
                               assigned_editor_id: editorId || '',
                               due_date: project.wedding_date_start || new Date().toISOString().split('T')[0],
-                              status: initialStatus,
+                              status: resolvedStatus,
                               priority: 'Medium',
                               external_link: newDelLink.trim() || undefined,
-                              client_feedback: newDelNotes.trim() || undefined,
+                              notes: feedbackFields.notes || undefined,
+                              client_feedback: feedbackFields.client_feedback,
                             });
                             setShowDeliverableModal(false);
                             setNewDelLink('');
                             setNewDelEditorId('');
+                            setNewDelStatus('Not Started');
                             setNewDelNotes('');
                           } catch (err) {
                             console.error('Failed to add deliverable:', err);
-                            alert(`Could not add deliverable: ${err instanceof Error ? err.message : String(err)}`);
+                            setAddDelModalError(err instanceof Error ? err.message : String(err));
                           } finally {
                             setIsSubmittingDeliverable(false);
                           }
@@ -2775,6 +3000,153 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                         {isSubmittingDeliverable ? 'Adding...' : 'Add Deliverable'}
                       </button>
                     </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Workspace Edit Deliverable Modal */}
+              {editingDeliverable && (
+                <div className="fixed inset-0 z-70 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+                  <div className="bg-white rounded-2xl max-w-lg w-full p-6 border border-slate-200 shadow-xl my-8">
+                    <div className="flex items-start justify-between mb-4">
+                      <div>
+                        <h4 className="text-base font-bold text-slate-900">Edit Deliverable</h4>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Update deliverable type, assigned editor, status, review URL, or feedback.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setEditingDeliverable(null)}
+                        className="text-slate-400 hover:text-slate-700 p-1 rounded-lg cursor-pointer"
+                      >
+                        <X className="w-5 h-5" />
+                      </button>
+                    </div>
+
+                    <form onSubmit={handleSaveWorkspaceDeliverableEdit} className="space-y-3.5 text-xs">
+                      {editDelModalError && (
+                        <div className="p-2.5 bg-red-50 border border-red-200 text-red-700 rounded-lg text-xs">
+                          {editDelModalError}
+                        </div>
+                      )}
+
+                      <DeliverableTypeSelector
+                        mode="edit"
+                        label="Deliverable Type *"
+                        projectBrand={projectBrand}
+                        catalogueItems={deliverableCatalogue}
+                        catalogueError={moduleErrors.deliverableCatalogue}
+                        canAddToCatalogue={canManageDeliverables}
+                        value={String(editDelType || '')}
+                        historicalValue={editingDeliverable.deliverable_type}
+                        isCustom={editDelIsCustom}
+                        onIsCustomChange={setEditDelIsCustom}
+                        onValueChange={val => setEditDelType(val)}
+                        customName={editDelCustomName}
+                        onCustomNameChange={setEditDelCustomName}
+                        saveToCatalogue={editDelSaveToCatalogue}
+                        onSaveToCatalogueChange={setEditDelSaveToCatalogue}
+                        catalogueCategory={editDelCatalogueCategory}
+                        onCatalogueCategoryChange={setEditDelCatalogueCategory}
+                        catalogueBrandScope={editDelCatalogueBrandScope}
+                        onCatalogueBrandScopeChange={setEditDelCatalogueBrandScope}
+                        catalogueDescription={editDelCatalogueDescription}
+                        onCatalogueDescriptionChange={setEditDelCatalogueDescription}
+                        idPrefix="workspace-edit-deliverable"
+                      />
+
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Assigned Editor
+                        </label>
+                        <select
+                          value={editDelEditorId}
+                          onChange={e => {
+                            const newEditorId = e.target.value;
+                            setEditDelEditorId(newEditorId);
+                            if (newEditorId && (!editDelStatus || editDelStatus === '' || editDelStatus === 'Not Started')) {
+                              setEditDelStatus('Assigned');
+                            } else if (!newEditorId && editDelStatus === 'Assigned') {
+                              setEditDelStatus('Not Started');
+                            }
+                          }}
+                          className="w-full p-2 border border-slate-300 rounded-lg bg-white text-slate-900"
+                        >
+                          <option value="">Unassigned</option>
+                          {editAvailableEditors.map(ed => (
+                            <option key={ed.id} value={ed.id}>
+                              {ed.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Workflow Status
+                        </label>
+                        <select
+                          value={editDelStatus}
+                          onChange={e => setEditDelStatus(e.target.value as DeliverableStatus | '')}
+                          className="w-full p-2 border border-slate-300 rounded-lg bg-white text-slate-900"
+                        >
+                          {!editDelStatus && <option value="">No Status</option>}
+                          {editDelStatus && !(DELIVERABLE_WORKFLOW_STATUSES as readonly string[]).includes(editDelStatus) && (
+                            <option value={editDelStatus}>{editDelStatus}</option>
+                          )}
+                          {DELIVERABLE_WORKFLOW_STATUSES.map(st => (
+                            <option key={st} value={st}>
+                              {st}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Review / Delivery URL
+                        </label>
+                        <input
+                          type="url"
+                          value={editDelLink}
+                          onChange={e => setEditDelLink(e.target.value)}
+                          placeholder="https://frame.io/... or vimeo.com/..."
+                          className="w-full p-2 border border-slate-300 rounded-lg text-slate-900"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Editing Notes / Feedback
+                        </label>
+                        <textarea
+                          rows={3}
+                          value={editDelFeedback}
+                          onChange={e => setEditDelFeedback(e.target.value)}
+                          placeholder="Notes, creative directions, or client review notes..."
+                          className="w-full p-2 border border-slate-300 rounded-lg text-slate-900"
+                        />
+                      </div>
+
+                      <div className="flex justify-end gap-2 pt-3 border-t border-slate-100">
+                        <button
+                          type="button"
+                          onClick={() => setEditingDeliverable(null)}
+                          className="px-4 py-2 text-xs text-slate-600 hover:bg-slate-100 rounded-lg transition-colors font-medium cursor-pointer"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="submit"
+                          id="save-workspace-deliverable-btn"
+                          disabled={isUpdatingDeliverable}
+                          className="px-5 py-2 text-xs font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-lg shadow-xs transition-colors cursor-pointer"
+                        >
+                          {isUpdatingDeliverable ? 'Saving...' : 'Save Changes'}
+                        </button>
+                      </div>
+                    </form>
                   </div>
                 </div>
               )}
@@ -3100,7 +3472,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                           </>
                         ) : (
                           <span className="text-[10px] font-medium text-purple-700 bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
-                            Wedding Schedule
+                            Project Schedule
                           </span>
                         )}
                       </div>
@@ -3117,7 +3489,7 @@ const handleStatusChange = async (newStatus: ProjectStatus) => {
                         : `No ${calendarCategoryFilter} found for this project.`}
                     </p>
                     <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
-                      Events from the wedding itinerary, payment reminders, deliverable deadlines, and team meetings all appear here and sync with the Master Operations Calendar.
+                      Events from the project itinerary, payment reminders, deliverable deadlines, and team meetings all appear here and sync with the Master Operations Calendar.
                     </p>
                     <button
                       type="button"

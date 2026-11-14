@@ -41,15 +41,28 @@ export interface Client {
 export type EnquiryStatus = 'New' | 'Contacted' | 'Meeting Scheduled' | 'Proposal Sent' | 'Won' | 'Lost';
 export type QuotationStatus = 'Draft' | 'Sent' | 'Approved' | 'Declined' | 'Expired';
 
-export interface ServiceCatalogueItem {
+export type DeliverableBrandScope = 'all' | 'twb' | 'golden_june';
+
+export type DeliverableCatalogueCategory =
+  | 'Film'
+  | 'Cinematography'
+  | 'Photography'
+  | 'Album & Print'
+  | 'Specialty'
+  | 'Add-on'
+  | 'Other';
+
+export interface DeliverableCatalogueItem {
   id: string;
   name: string;
+  category: DeliverableCatalogueCategory;
   description?: string;
-  category?: 'Cinematography' | 'Photography' | 'Specialty' | 'Add-on';
-  applicable_brand: 'all' | 'twb' | 'golden_june';
+  company_id: string | null;
+  applicable_brand: DeliverableBrandScope;
   is_active: boolean;
-  sort_order?: number;
+  sort_order: number;
   created_at?: string;
+  updated_at?: string;
 }
 
 export interface Enquiry {
@@ -332,16 +345,18 @@ export interface ProjectData {
   notes?: string;
 }
 
-export type DeliverableType = 
-  | 'Highlight Film (4-5 mins)' 
-  | 'Teaser / Reel (60s)' 
-  | 'Feature Film (20-30 mins)' 
-  | 'Full Ceremony Edit' 
-  | 'Speeches & Toasts' 
-  | 'Full Photo Gallery (800+)' 
-  | 'Fine Art Wedding Album' 
-  | 'Parent Albums' 
+export type DefaultDeliverableType =
+  | 'Highlight Film (4-5 mins)'
+  | 'Teaser / Reel (60s)'
+  | 'Feature Film (20-30 mins)'
+  | 'Full Ceremony Edit'
+  | 'Speeches & Toasts'
+  | 'Full Photo Gallery (800+)'
+  | 'Fine Art Wedding Album'
+  | 'Parent Albums'
   | 'Drone Compilation';
+
+export type DeliverableType = DefaultDeliverableType | (string & {});
 
 export type DeliverableStatus = 
   | 'Not Started' 

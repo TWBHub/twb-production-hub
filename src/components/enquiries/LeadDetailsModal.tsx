@@ -69,6 +69,7 @@ export const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({
   const [internalNotes, setInternalNotes] = useState(enquiry.notes || '');
   const [isSavingNotes, setIsSavingNotes] = useState(false);
   const [notesSavedSuccess, setNotesSavedSuccess] = useState(false);
+  const [modalActionError, setModalActionError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'overview' | 'events' | 'services' | 'quotations' | 'followups' | 'notes'>('overview');
 
   if (!isOpen) return null;
@@ -88,14 +89,44 @@ export const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({
   // Clean phone for WhatsApp
   const waPhone = (enquiry.phone || '').replace(/[^0-9]/g, '');
 
+  const handleStatusChange = async (newStatus: EnquiryStatus) => {
+    try {
+      setModalActionError(null);
+      await onUpdateStatus(enquiry, newStatus);
+    } catch (err: any) {
+      setModalActionError(err?.message || 'Failed to update Lead status.');
+    }
+  };
+
+  const handleArchiveToggle = async () => {
+    try {
+      setModalActionError(null);
+      await onToggleArchive(enquiry);
+    } catch (err: any) {
+      setModalActionError(err?.message || 'Failed to update Lead archive state.');
+    }
+  };
+
+  const handleFollowUpChange = async (newDate?: string) => {
+    try {
+      setModalActionError(null);
+      await onUpdateFollowUp(enquiry, newDate);
+    } catch (err: any) {
+      setModalActionError(err?.message || 'Failed to update Lead follow-up date.');
+    }
+  };
+
   const handleSaveNotesClick = async () => {
     try {
       setIsSavingNotes(true);
+      setModalActionError(null);
+      setNotesSavedSuccess(false);
       await onSaveNotes(enquiry, internalNotes);
       setNotesSavedSuccess(true);
       setTimeout(() => setNotesSavedSuccess(false), 2500);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to save notes:', err);
+      setModalActionError(err?.message || 'Failed to save Lead notes.');
     } finally {
       setIsSavingNotes(false);
     }
@@ -128,7 +159,7 @@ export const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({
             {/* Quick Stage Transition Dropdown */}
             <select
               value={enquiry.status}
-              onChange={e => onUpdateStatus(enquiry, e.target.value as EnquiryStatus)}
+              onChange={e => handleStatusChange(e.target.value as EnquiryStatus)}
               className="text-xs font-bold bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-lg px-2.5 py-1 text-slate-800 transition-colors focus:outline-hidden cursor-pointer"
             >
               <option value="New">1. New Lead</option>
@@ -182,7 +213,7 @@ export const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({
 
             <button
               type="button"
-              onClick={() => onToggleArchive(enquiry)}
+              onClick={handleArchiveToggle}
               className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded-lg transition-colors"
               title={enquiry.is_archived ? 'Restore (Unarchive)' : 'Archive Lead'}
             >
@@ -207,6 +238,19 @@ export const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({
             </button>
           </div>
         </div>
+
+        {modalActionError && (
+          <div className="mt-3 p-2.5 rounded-xl bg-red-50 border border-red-200 text-xs text-red-700 flex items-center justify-between gap-2 shrink-0">
+            <span className="font-medium">{modalActionError}</span>
+            <button
+              type="button"
+              onClick={() => setModalActionError(null)}
+              className="text-red-500 hover:text-red-800 font-bold text-[11px] shrink-0"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
         {/* Lead Hero Title */}
         <div className="pt-3 pb-2 shrink-0">
@@ -874,7 +918,7 @@ export const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({
                       const y = d.getFullYear();
                       const m = String(d.getMonth() + 1).padStart(2, '0');
                       const day = String(d.getDate()).padStart(2, '0');
-                      onUpdateFollowUp(enquiry, `${y}-${m}-${day}`);
+                      handleFollowUpChange(`${y}-${m}-${day}`);
                     }}
                     className="px-2.5 py-1 bg-white hover:bg-slate-100 border rounded-md font-semibold text-[11px] shadow-2xs"
                   >
@@ -888,7 +932,7 @@ export const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({
                       const y = d.getFullYear();
                       const m = String(d.getMonth() + 1).padStart(2, '0');
                       const day = String(d.getDate()).padStart(2, '0');
-                      onUpdateFollowUp(enquiry, `${y}-${m}-${day}`);
+                      handleFollowUpChange(`${y}-${m}-${day}`);
                     }}
                     className="px-2.5 py-1 bg-white hover:bg-slate-100 border rounded-md font-semibold text-[11px] shadow-2xs"
                   >
@@ -902,7 +946,7 @@ export const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({
                       const y = d.getFullYear();
                       const m = String(d.getMonth() + 1).padStart(2, '0');
                       const day = String(d.getDate()).padStart(2, '0');
-                      onUpdateFollowUp(enquiry, `${y}-${m}-${day}`);
+                      handleFollowUpChange(`${y}-${m}-${day}`);
                     }}
                     className="px-2.5 py-1 bg-white hover:bg-slate-100 border rounded-md font-semibold text-[11px] shadow-2xs"
                   >
@@ -911,7 +955,7 @@ export const LeadDetailsModal: React.FC<LeadDetailsModalProps> = ({
                   {enquiry.follow_up_date && (
                     <button
                       type="button"
-                      onClick={() => onUpdateFollowUp(enquiry, undefined)}
+                      onClick={() => handleFollowUpChange(undefined)}
                       className="px-2.5 py-1 text-red-600 hover:bg-red-50 rounded-md font-semibold text-[11px]"
                     >
                       Clear

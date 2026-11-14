@@ -139,7 +139,7 @@ export const CalendarView: React.FC = () => {
             Master Operations Calendar
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 mt-0.5">
-            Wedding shoots, payment due dates, editing deadlines, and couple consultations.
+            Project shoots, payment due dates, editing deadlines, and couple consultations.
           </p>
         </div>
 

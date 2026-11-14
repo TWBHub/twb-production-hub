@@ -20,9 +20,26 @@ import {
   Instagram,
   Search,
   Check,
+  AlertTriangle,
 } from 'lucide-react';
-import { Enquiry, EnquiryStatus, QuotationStatus, TeamMember, ProjectEvent } from '../../types';
+import {
+  DeliverableBrandScope,
+  DeliverableCatalogueCategory,
+  Enquiry,
+  EnquiryStatus,
+  QuotationStatus,
+  TeamMember,
+  ProjectEvent,
+} from '../../types';
 import { useApp } from '../../context/AppContext';
+import {
+  DELIVERABLE_CATALOGUE_CATEGORIES,
+  canAddDeliverableCatalogueEntry,
+  findEffectiveBrandDuplicate,
+  getLeadServiceOptions,
+  normalizeDeliverableCatalogueName,
+  resolveCatalogueBrandLabel,
+} from '../../utils/deliverableCatalogueUtils';
 
 interface LeadFormModalProps {
   isOpen: boolean;
@@ -62,7 +79,13 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
   defaultBrand,
   teamMembers,
 }) => {
-  const { services, createService } = useApp();
+  const {
+    deliverableCatalogue,
+    createDeliverableCatalogueItem,
+    moduleErrors,
+    currentUser,
+  } = useApp();
+  const canAddToCatalogue = canAddDeliverableCatalogueEntry(currentUser?.role);
 
   // Section A: Lead & Client Information
   const [companyId, setCompanyId] = useState<'twb' | 'golden_june'>(defaultBrand);
@@ -87,6 +110,11 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
   const [serviceSearch, setServiceSearch] = useState('');
   const [customServiceName, setCustomServiceName] = useState('');
   const [saveCustomToCatalogue, setSaveCustomToCatalogue] = useState(false);
+  const [customCategory, setCustomCategory] = useState<DeliverableCatalogueCategory>('Specialty');
+  const [customBrandScope, setCustomBrandScope] = useState<DeliverableBrandScope>(defaultBrand);
+  const [customDescription, setCustomDescription] = useState('');
+  const [catalogueSaveError, setCatalogueSaveError] = useState('');
+  const [isSavingCustomCatalogue, setIsSavingCustomCatalogue] = useState(false);
   const [packageInterest, setPackageInterest] = useState('');
   const [requirements, setRequirements] = useState('');
 
@@ -193,8 +221,12 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
       setQuotationStatus('Draft');
     }
     setErrorMsg('');
+    setCatalogueSaveError('');
     setCustomServiceName('');
     setSaveCustomToCatalogue(false);
+    setCustomCategory('Specialty');
+    setCustomBrandScope(editingEnquiry?.company_id || defaultBrand);
+    setCustomDescription('');
   }, [editingEnquiry, defaultBrand, isOpen]);
 
   if (!isOpen) return null;
@@ -239,8 +271,11 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
   };
 
   const toggleService = (srvName: string) => {
+    const targetNorm = normalizeDeliverableCatalogueName(srvName);
     setSelectedServices(prev =>
-      prev.includes(srvName) ? prev.filter(s => s !== srvName) : [...prev, srvName]
+      prev.some(s => normalizeDeliverableCatalogueName(s) === targetNorm)
+        ? prev.filter(s => normalizeDeliverableCatalogueName(s) !== targetNorm)
+        : [...prev, srvName]
     );
   };
 
@@ -248,24 +283,35 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
     const trimmed = customServiceName.trim();
     if (!trimmed) return;
 
-    if (!selectedServices.includes(trimmed)) {
+    setCatalogueSaveError('');
+    const normTrimmed = normalizeDeliverableCatalogueName(trimmed);
+    if (!selectedServices.some(s => normalizeDeliverableCatalogueName(s) === normTrimmed)) {
       setSelectedServices(prev => [...prev, trimmed]);
     }
 
-    if (saveCustomToCatalogue) {
+    if (saveCustomToCatalogue && canAddToCatalogue) {
       try {
-        await createService({
+        setIsSavingCustomCatalogue(true);
+        await createDeliverableCatalogueItem({
           name: trimmed,
-          applicable_brand: companyId,
-          category: 'Specialty',
+          applicable_brand: customBrandScope,
+          category: customCategory,
+          description: customDescription.trim() || undefined,
           is_active: true,
         });
-      } catch (err) {
-        console.error('Failed to save service to catalogue:', err);
+      } catch (err: any) {
+        console.error('Failed to save entry to Shared Catalogue:', err);
+        setCatalogueSaveError(
+          err?.message || 'Added to this lead, but could not save to Shared Catalogue.'
+        );
+        return;
+      } finally {
+        setIsSavingCustomCatalogue(false);
       }
     }
 
     setCustomServiceName('');
+    setCustomDescription('');
     setSaveCustomToCatalogue(false);
   };
 
@@ -357,20 +403,28 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
     }
   };
 
-  // Filter catalogue services for current brand
-  const brandCatalogueServices = services.filter(
-    s => s.is_active && (s.applicable_brand === 'all' || s.applicable_brand === companyId)
+  // Unified Shared Catalogue options for current brand (preserving historical selections)
+  const leadServiceOptions = getLeadServiceOptions({
+    items: deliverableCatalogue,
+    projectBrand: companyId,
+    selectedServices,
+  });
+
+  const displayedCatalogueServices = leadServiceOptions.brandItems.filter(s =>
+    serviceSearch
+      ? s.name.toLowerCase().includes(serviceSearch.toLowerCase()) ||
+        (s.description || '').toLowerCase().includes(serviceSearch.toLowerCase())
+      : true
   );
 
-  // Filter by search query if any
-  const displayedCatalogueServices = brandCatalogueServices.filter(s =>
-    serviceSearch ? s.name.toLowerCase().includes(serviceSearch.toLowerCase()) : true
-  );
-
-  // Historical services that may be selected on this lead but not in active catalogue
-  const historicalSelected = selectedServices.filter(
-    srvName => !brandCatalogueServices.some(s => s.name === srvName)
-  );
+  const customDuplicateConflict =
+    saveCustomToCatalogue && canAddToCatalogue && customServiceName.trim()
+      ? findEffectiveBrandDuplicate(
+          deliverableCatalogue,
+          customServiceName,
+          customBrandScope
+        )
+      : undefined;
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4 overflow-y-auto">
@@ -806,16 +860,28 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
               </h3>
             </div>
 
-            {/* Shared Service Catalogue Chips */}
+            {/* Unified Shared Catalogue Chips */}
             <div className="space-y-2">
               <div className="flex items-center justify-between">
                 <label className="font-semibold text-slate-700">
-                  Select Requested Services from Catalogue
+                  Select Requested Services from Shared Catalogue
                 </label>
                 <span className="text-[10px] text-slate-400">
                   {selectedServices.length} selected
                 </span>
               </div>
+
+              {moduleErrors.deliverableCatalogue && (
+                <div className="p-2.5 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-[11px] flex items-start gap-2">
+                  <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <span className="font-semibold">Shared Catalogue unavailable: </span>
+                    <span>
+                      {moduleErrors.deliverableCatalogue} You can still preserve existing selections or enter custom services below.
+                    </span>
+                  </div>
+                </div>
+              )}
 
               {/* Search filter for chips */}
               <div className="relative">
@@ -824,7 +890,7 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
                   type="text"
                   value={serviceSearch}
                   onChange={e => setServiceSearch(e.target.value)}
-                  placeholder="Filter services..."
+                  placeholder="Filter shared catalogue..."
                   className="w-full pl-8 pr-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-slate-50/50 focus:bg-white"
                 />
               </div>
@@ -832,12 +898,16 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
               {/* Service Chips */}
               <div className="flex flex-wrap gap-1.5 pt-1">
                 {displayedCatalogueServices.map(service => {
-                  const isSelected = selectedServices.includes(service.name);
+                  const normName = normalizeDeliverableCatalogueName(service.name);
+                  const isSelected = selectedServices.some(
+                    s => normalizeDeliverableCatalogueName(s) === normName
+                  );
                   return (
                     <button
                       type="button"
                       key={service.id}
                       onClick={() => toggleService(service.name)}
+                      title={service.description || service.category}
                       className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all flex items-center gap-1.5 ${
                         isSelected
                           ? 'bg-slate-900 text-white border-slate-900 shadow-2xs font-semibold'
@@ -850,23 +920,23 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
                   );
                 })}
 
-                {/* Display historical services selected on lead not in current catalogue view */}
-                {historicalSelected.map(srvName => (
+                {/* Display historical services selected on lead (inactive, other-brand, or custom) */}
+                {leadServiceOptions.historicalSelected.map(hist => (
                   <button
                     type="button"
-                    key={`hist-${srvName}`}
-                    onClick={() => toggleService(srvName)}
+                    key={`hist-${hist.name}`}
+                    onClick={() => toggleService(hist.name)}
                     className="px-3 py-1.5 rounded-full text-xs font-semibold border bg-slate-800 text-white border-slate-800 shadow-2xs flex items-center gap-1.5"
                   >
                     <Check className="w-3.5 h-3.5 text-white" />
-                    <span>{srvName}</span>
-                    <span className="text-[9px] text-slate-300">(custom)</span>
+                    <span>{hist.name}</span>
+                    <span className="text-[9px] text-slate-300">({hist.detailLabel})</span>
                   </button>
                 ))}
               </div>
 
               {/* Add Custom Service Inline Input */}
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2 mt-2">
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-2.5 mt-2">
                 <span className="font-semibold text-slate-700 block text-[11px]">
                   Add a Custom Service for this lead:
                 </span>
@@ -881,21 +951,104 @@ export const LeadFormModal: React.FC<LeadFormModalProps> = ({
                   <button
                     type="button"
                     onClick={handleAddCustomService}
-                    disabled={!customServiceName.trim()}
-                    className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white rounded-lg font-semibold text-xs"
+                    disabled={!customServiceName.trim() || isSavingCustomCatalogue}
+                    className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white rounded-lg font-semibold text-xs cursor-pointer"
                   >
-                    Add Service
+                    {isSavingCustomCatalogue ? 'Saving...' : 'Add Service'}
                   </button>
                 </div>
-                <label className="flex items-center gap-2 text-[11px] text-slate-600 cursor-pointer pt-0.5">
-                  <input
-                    type="checkbox"
-                    checked={saveCustomToCatalogue}
-                    onChange={e => setSaveCustomToCatalogue(e.target.checked)}
-                    className="rounded text-slate-900 focus:ring-0"
-                  />
-                  <span>Optionally save to shared Service Catalogue for future leads</span>
-                </label>
+
+                {canAddToCatalogue ? (
+                  <div className="space-y-2">
+                    <label className="flex items-center gap-2 text-[11px] text-slate-700 cursor-pointer pt-0.5">
+                      <input
+                        type="checkbox"
+                        checked={saveCustomToCatalogue}
+                        onChange={e => {
+                          setSaveCustomToCatalogue(e.target.checked);
+                          if (e.target.checked) {
+                            setCustomBrandScope(companyId);
+                          }
+                        }}
+                        className="rounded text-slate-900 focus:ring-0"
+                      />
+                      <span>Save to Shared Catalogue for future Leads, Quotations & Deliverables</span>
+                    </label>
+
+                    {saveCustomToCatalogue && (
+                      <div className="p-2.5 bg-white border border-slate-200 rounded-lg space-y-2">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 mb-1">
+                              Category
+                            </label>
+                            <select
+                              value={customCategory}
+                              onChange={e =>
+                                setCustomCategory(e.target.value as DeliverableCatalogueCategory)
+                              }
+                              className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg bg-white text-xs"
+                            >
+                              {DELIVERABLE_CATALOGUE_CATEGORIES.map(cat => (
+                                <option key={cat} value={cat}>
+                                  {cat}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label className="block text-[10px] font-semibold text-slate-600 mb-1">
+                              Brand Scope
+                            </label>
+                            <select
+                              value={customBrandScope}
+                              onChange={e =>
+                                setCustomBrandScope(e.target.value as DeliverableBrandScope)
+                              }
+                              className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg bg-white text-xs"
+                            >
+                              <option value={companyId}>
+                                {resolveCatalogueBrandLabel(companyId)} Only
+                              </option>
+                              <option value="all">All Brands (TWB & Golden June)</option>
+                            </select>
+                          </div>
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-semibold text-slate-600 mb-1">
+                            Description <span className="font-normal text-slate-400">(optional)</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={customDescription}
+                            onChange={e => setCustomDescription(e.target.value)}
+                            placeholder="Optional scope note for proposals & deliverables..."
+                            className="w-full px-2.5 py-1.5 border border-slate-300 rounded-lg bg-white text-xs"
+                          />
+                        </div>
+
+                        {customDuplicateConflict && (
+                          <div className="p-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-[11px]">
+                            Already exists as {customDuplicateConflict.is_active ? 'active' : 'inactive'} in{' '}
+                            <strong>{resolveCatalogueBrandLabel(customDuplicateConflict.applicable_brand)}</strong>.
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <p className="text-[10px] text-slate-500">
+                    Lead-only custom entry. Only Admins and Managers can add new entries to the Shared Catalogue.
+                  </p>
+                )}
+
+                {catalogueSaveError && (
+                  <div className="p-2 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-[11px]">
+                    {catalogueSaveError}
+                  </div>
+                )}
               </div>
             </div>
 

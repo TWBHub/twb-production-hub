@@ -1,4 +1,4 @@
-import { getSupabaseClient } from '../lib/supabase';
+import { getSupabaseClient, getSupabaseConnectionDiagnostics } from '../lib/supabase';
 import {
   Company,
   Client,
@@ -28,7 +28,9 @@ import {
   AppNotification,
   DeliverableStatus,
   UserRole,
-  ServiceCatalogueItem,
+  DeliverableBrandScope,
+  DeliverableCatalogueCategory,
+  DeliverableCatalogueItem,
 } from '../types';
 import {
   INITIAL_COMPANIES,
@@ -45,15 +47,11 @@ import {
   INITIAL_EXPENSES,
   INITIAL_CALENDAR_EVENTS,
   INITIAL_NOTIFICATIONS,
-  INITIAL_SERVICES,
+  INITIAL_DELIVERABLE_CATALOGUE,
 } from './seedData';
 import { sortProjectEvents } from '../utils/eventUtils';
 import { normalizeStorageRecord } from '../utils/storageUtils';
-import {
-  parseDeliverableNotes,
-  serializeDeliverableNotes,
-  prepareDeliverableForCreate,
-} from '../utils/deliverableMilestones';
+import { parseDeliverableNotes } from '../utils/deliverableMilestones';
 import { isDeliverableEditor } from '../utils/teamMemberFilters';
 import {
   sanitizeCompany,
@@ -61,7 +59,63 @@ import {
   resolveBrandCode,
   isGoldenJune,
   isTWB,
+  isUuid,
 } from '../utils/companyUtils';
+import {
+  createVersionedBackupSnapshot,
+  getLeadsBackupSnapshots,
+  buildLeadsRecoveryPreview,
+  readRawLocalLeadsAndQuotations,
+  mapSupabaseEnquiryToModel,
+  buildEnquirySupabasePayload,
+  getLeadsMigrationReceipts,
+  recordLeadMigrationReceipt,
+  findMatchingSupabaseLead,
+  fetchEnquiriesWithSupabase,
+  createEnquiryWithSupabase,
+  updateEnquiryWithSupabase,
+  deleteEnquiryWithSupabase,
+  EnquiriesSupabaseClientAdapter,
+  LeadsBackupSnapshot,
+  LeadsRecoveryPreview,
+  LeadMigrationReceiptEntry,
+  LeadMigrationItemResult,
+  LeadsMigrationReport,
+} from '../utils/leadsPersistenceUtils';
+import {
+  fetchClientsWithSupabase,
+  fetchDeliverablesWithSupabase,
+  fetchPaymentsWithSupabase,
+  fetchProjectDataWithSupabase,
+  fetchProjectTeamWithSupabase,
+  removeTeamAssignmentWithSupabase,
+  createDeliverableWithSupabase,
+  updateDeliverableWithSupabase,
+  updateDeliverableStatusWithSupabase,
+  getDefaultPhase1Storage,
+  upsertItemInCache,
+  removeItemFromCache,
+} from '../utils/phase1PersistenceUtils';
+import {
+  fetchDeliverableCatalogueWithSupabase,
+  createDeliverableCatalogueWithSupabase,
+  updateDeliverableCatalogueWithSupabase,
+  reorderDeliverableCatalogueWithSupabase,
+  deleteDeliverableCatalogueWithSupabase,
+} from '../utils/deliverableCatalogueUtils';
+
+const createEnquiriesSupabaseAdapter = (
+  supabase: NonNullable<ReturnType<typeof getSupabaseClient>>
+): EnquiriesSupabaseClientAdapter => ({
+  selectAll: async () =>
+    await supabase.from('enquiries').select('*').order('created_at', { ascending: false }),
+  insertAndReturn: async (payload: Record<string, any>) =>
+    await supabase.from('enquiries').insert(payload).select().single(),
+  updateAndReturn: async (id: string, payload: Record<string, any>) =>
+    await supabase.from('enquiries').update(payload).eq('id', id).select().single(),
+  deleteById: async (id: string) =>
+    await supabase.from('enquiries').delete().eq('id', id),
+});
 
 // Cache keys for resilient persistent storage when offline or before Supabase sync
 const STORAGE_PREFIX = 'twbhub_';
@@ -146,7 +200,7 @@ export const mapSupabaseProjectToModel = (row: any): Project => {
     id: row.id,
     company_id: companyId,
     client_id: row.client_id || '',
-    name: row.project_name || row.name || 'Wedding Project',
+    name: row.project_name || row.name || 'Project',
     wedding_date_start:
       row.start_date || row.wedding_date_start || '',
     wedding_date_end:
@@ -251,7 +305,7 @@ export const mapSupabaseDeliverableToModel = (row: any): Deliverable => {
     notes: userNotes || undefined,
     client_feedback: row.client_feedback || undefined,
     review_status: row.review_status || undefined,
-    last_updated: row.last_updated || row.updated_at || row.created_at || new Date().toISOString(),
+    last_updated: row.updated_at || row.last_updated || row.created_at || new Date().toISOString(),
     assigned_at: row.assigned_at || metadata?.assigned_at || undefined,
     first_submitted_at: row.first_submitted_at || metadata?.first_submitted_at || undefined,
     delivered_at: row.delivered_at || metadata?.delivered_at || undefined,
@@ -578,25 +632,22 @@ export const apiService = {
   },
 
   // CLIENTS
- async getClients(): Promise<Client[]> {
-  const supabase = getSupabaseClient();
-
-  if (supabase) {
-    const { data, error } = await supabase
-      .from('clients')
-      .select('*')
-      .order('created_at', { ascending: false });
-
-    if (!error && data) {
-      saveToStorage('clients', data);
-      return data as Client[];
-    }
-
-    console.error('Failed to load clients from Supabase:', error);
-  }
-
-  return getStoredOrInitial('clients', INITIAL_CLIENTS);
-},
+  async getClients(): Promise<Client[]> {
+    const supabase = getSupabaseClient();
+    return fetchClientsWithSupabase({
+      adapter: supabase
+        ? {
+            selectAll: async () =>
+              await supabase
+                .from('clients')
+                .select('*')
+                .order('created_at', { ascending: false }),
+          }
+        : null,
+      storage: getDefaultPhase1Storage(),
+      initialFallback: INITIAL_CLIENTS,
+    });
+  },
 
   async createClient(client: Omit<Client, 'id' | 'created_at'>): Promise<Client> {
     const supabase = getSupabaseClient();
@@ -675,11 +726,13 @@ export const apiService = {
         throw new Error(`Could not create client: ${error.message}`);
       }
 
-      const newClient = data as Client;
+      const newClient: Client = {
+        ...(data as any),
+        company_id: resolveBrandCode((data as any)?.company_id || companyUuid),
+      };
 
-      const current = await this.getClients();
-      const updated = [newClient, ...current.filter(c => c.id !== newClient.id)];
-      saveToStorage('clients', updated);
+      // Update secondary cache safely without triggering an extra Supabase read after committed write
+      upsertItemInCache<Client>(getDefaultPhase1Storage(), 'clients', newClient, true);
 
       return newClient;
     }
@@ -728,13 +781,13 @@ export const apiService = {
         throw new Error(`Could not update client: ${error.message}`);
       }
 
-      const updatedClient = data as Client;
+      const updatedClient: Client = {
+        ...(data as any),
+        company_id: resolveBrandCode((data as any)?.company_id || companyUuid),
+      };
 
-      const current = await this.getClients();
-      const updated = current.map(c =>
-        c.id === updatedClient.id ? updatedClient : c
-      );
-      saveToStorage('clients', updated);
+      // Update secondary cache safely without triggering an extra Supabase read after committed write
+      upsertItemInCache<Client>(getDefaultPhase1Storage(), 'clients', updatedClient);
 
       return updatedClient;
     }
@@ -755,166 +808,459 @@ export const apiService = {
     return updatedClient;
   },
   
+  getSupabaseDiagnostics() {
+    return getSupabaseConnectionDiagnostics();
+  },
+
+  getLeadsBackups(): LeadsBackupSnapshot[] {
+    return getLeadsBackupSnapshots();
+  },
+
+  createVersionedLeadsBackup(
+    reason: 'auto_pre_recovery' | 'manual_snapshot' = 'manual_snapshot'
+  ): { snapshot: LeadsBackupSnapshot | null; createdNew: boolean; allSnapshots: LeadsBackupSnapshot[] } {
+    return createVersionedBackupSnapshot(undefined, reason);
+  },
+
+  async previewLocalLeadsRecovery(): Promise<{
+    diagnostics: ReturnType<typeof getSupabaseConnectionDiagnostics>;
+    latestBackup: LeadsBackupSnapshot | null;
+    backups: LeadsBackupSnapshot[];
+    preview: LeadsRecoveryPreview;
+    migrationReceipts: LeadMigrationReceiptEntry[];
+    quotationsTableStatus: { exists: boolean; count: number; error?: string };
+  }> {
+    // Stage 1: Always preserve a non-overwriting versioned backup of raw local storage first
+    const backupResult = createVersionedBackupSnapshot(undefined, 'auto_pre_recovery');
+    const diagnostics = getSupabaseConnectionDiagnostics();
+    const { localLeads, localQuotations } = readRawLocalLeadsAndQuotations();
+    const migrationReceipts = getLeadsMigrationReceipts();
+
+    const supabase = getSupabaseClient();
+    let supabaseLeads: Enquiry[] = [];
+    let supabaseReachable = false;
+    let supabaseError: string | undefined;
+    let quotationsTableStatus: { exists: boolean; count: number; error?: string } = {
+      exists: false,
+      count: 0,
+      error: 'Supabase client not configured in this browser.',
+    };
+
+    if (supabase) {
+      const { data, error } = await supabase
+        .from('enquiries')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        supabaseReachable = false;
+        supabaseError = error.message;
+      } else {
+        supabaseReachable = true;
+        supabaseLeads = (data || []).map((d: any) => mapSupabaseEnquiryToModel(d));
+      }
+
+      // Read-only inspection of quotations table status (no mutation)
+      try {
+        const { count: qCount, error: qErr } = await supabase
+          .from('quotations')
+          .select('id', { count: 'exact', head: true });
+        if (qErr) {
+          quotationsTableStatus = { exists: false, count: 0, error: qErr.message };
+        } else {
+          quotationsTableStatus = { exists: true, count: qCount || 0 };
+        }
+      } catch (qEx: any) {
+        quotationsTableStatus = { exists: false, count: 0, error: qEx?.message || 'Unable to inspect quotations table' };
+      }
+    } else {
+      supabaseError = 'Supabase client is not configured in this browser.';
+    }
+
+    const preview = buildLeadsRecoveryPreview({
+      localLeads,
+      localQuotations,
+      supabaseLeads,
+      migrationReceipts,
+      supabaseReachable,
+      supabaseError,
+    });
+
+    return {
+      diagnostics,
+      latestBackup: backupResult.snapshot,
+      backups: backupResult.allSnapshots,
+      preview,
+      migrationReceipts,
+      quotationsTableStatus,
+    };
+  },
+
+  /**
+   * Stage 3: Sequentially migrates unsynced local Leads to Supabase `public.enquiries`,
+   * verifies every inserted row on read-back, records verified receipts, and strictly
+   * preserves original local Leads (`twbhub_enquiries`), quotations (`twbhub_quotations`),
+   * and existing quotation `enquiry_id` links untouched.
+   */
+  async migrateLocalLeadsToSupabase(candidateLeadIds?: string[]): Promise<LeadsMigrationReport> {
+    const startedAt = new Date().toISOString();
+
+    // Ensure a pre-migration versioned backup exists before attempting any writes
+    const backupRes = createVersionedBackupSnapshot(undefined, 'auto_pre_recovery');
+
+    const supabase = getSupabaseClient();
+    if (!supabase) {
+      throw new Error('Supabase client is not configured in this browser.');
+    }
+
+    const { data: existingRows, error: fetchError } = await supabase
+      .from('enquiries')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (fetchError) {
+      throw new Error(`Failed to fetch existing Supabase enquiries: ${fetchError.message}`);
+    }
+
+    const currentSupabaseLeads: Enquiry[] = (existingRows || []).map((d: any) =>
+      mapSupabaseEnquiryToModel(d)
+    );
+    const { localLeads, localQuotations } = readRawLocalLeadsAndQuotations();
+    let currentReceipts = getLeadsMigrationReceipts();
+
+    const preview = buildLeadsRecoveryPreview({
+      localLeads,
+      localQuotations,
+      supabaseLeads: currentSupabaseLeads,
+      migrationReceipts: currentReceipts,
+      supabaseReachable: true,
+    });
+
+    const candidates =
+      candidateLeadIds && candidateLeadIds.length > 0
+        ? preview.candidates_to_migrate.filter(c => candidateLeadIds.includes(c.lead.id))
+        : preview.candidates_to_migrate;
+
+    const results: LeadMigrationItemResult[] = [];
+    let migratedCount = 0;
+    let alreadyMigratedCount = 0;
+    let failedCount = 0;
+
+    for (const candidate of candidates) {
+      const lead = candidate.lead;
+      const displayName = lead.title || lead.client_name || 'Untitled Lead';
+      const linkedQuotationsCount = candidate.linkedLocalQuotations.length;
+
+      // Idempotency / duplicate guard against live Supabase rows and receipts
+      const existingMatch = findMatchingSupabaseLead(lead, currentSupabaseLeads, currentReceipts);
+      if (existingMatch) {
+        const hasReceipt = currentReceipts.some(
+          r => r.legacy_local_id === lead.id && r.verified && r.supabase_uuid === existingMatch.id
+        );
+        if (!hasReceipt) {
+          currentReceipts = recordLeadMigrationReceipt({
+            legacy_local_id: lead.id,
+            supabase_uuid: existingMatch.id,
+            migrated_at: new Date().toISOString(),
+            display_name: displayName,
+            verified: true,
+          });
+        }
+        alreadyMigratedCount += 1;
+        results.push({
+          legacy_local_id: lead.id,
+          supabase_uuid: existingMatch.id,
+          display_name: displayName,
+          status: 'already_migrated',
+          linked_quotations_preserved: linkedQuotationsCount,
+        });
+        continue;
+      }
+
+      const targetUuid = isUuid(lead.id) ? lead.id : crypto.randomUUID();
+      const payload = buildEnquirySupabasePayload(lead, targetUuid, {
+        preserveTimestamps: true,
+      });
+
+      const { data: insertedRow, error: insertError } = await supabase
+        .from('enquiries')
+        .insert(payload)
+        .select()
+        .single();
+
+      if (insertError || !insertedRow) {
+        failedCount += 1;
+        results.push({
+          legacy_local_id: lead.id,
+          display_name: displayName,
+          status: 'failed',
+          linked_quotations_preserved: linkedQuotationsCount,
+          error: insertError?.message || 'Supabase insert returned no record',
+        });
+        continue;
+      }
+
+      // Verify insertion explicitly on read-back before recording receipt
+      const { data: verifiedRow, error: verifyError } = await supabase
+        .from('enquiries')
+        .select('*')
+        .eq('id', insertedRow.id)
+        .single();
+
+      if (verifyError || !verifiedRow?.id) {
+        failedCount += 1;
+        results.push({
+          legacy_local_id: lead.id,
+          supabase_uuid: String(insertedRow.id),
+          display_name: displayName,
+          status: 'failed',
+          linked_quotations_preserved: linkedQuotationsCount,
+          error: verifyError?.message
+            ? `Inserted but verification read failed: ${verifyError.message}`
+            : 'Inserted row could not be verified on read-back',
+        });
+        continue;
+      }
+
+      const verifiedUuid = String(verifiedRow.id);
+      currentReceipts = recordLeadMigrationReceipt({
+        legacy_local_id: lead.id,
+        supabase_uuid: verifiedUuid,
+        migrated_at: new Date().toISOString(),
+        display_name: displayName,
+        verified: true,
+      });
+
+      currentSupabaseLeads.push(mapSupabaseEnquiryToModel(verifiedRow));
+      migratedCount += 1;
+      results.push({
+        legacy_local_id: lead.id,
+        supabase_uuid: verifiedUuid,
+        display_name: displayName,
+        status: 'migrated',
+        linked_quotations_preserved: linkedQuotationsCount,
+      });
+    }
+
+    return {
+      started_at: startedAt,
+      completed_at: new Date().toISOString(),
+      attempted_count: candidates.length,
+      migrated_count: migratedCount,
+      already_migrated_count: alreadyMigratedCount,
+      failed_count: failedCount,
+      results,
+      backup_version_used: backupRes.snapshot?.version ?? null,
+    };
+  },
+
   async getEnquiries(): Promise<Enquiry[]> {
     const supabase = getSupabaseClient();
-    if (supabase) {
-      const { data, error } = await supabase.from('enquiries').select('*').order('created_at', { ascending: false });
-      if (!error && data && data.length > 0) {
-        const normalized = data.map((d: any) => ({
-          ...d,
-          is_archived: Boolean(d.is_archived ?? d.archived ?? false),
-        }));
-        saveToStorage('enquiries', normalized);
-        return normalized as Enquiry[];
-      }
-    }
-    return getStoredOrInitial('enquiries', INITIAL_ENQUIRIES);
+    const adapter = supabase ? createEnquiriesSupabaseAdapter(supabase) : null;
+    return fetchEnquiriesWithSupabase({
+      adapter,
+      fallbackUnconfigured: () => getStoredOrInitial('enquiries', INITIAL_ENQUIRIES),
+    });
   },
 
   async createEnquiry(enquiry: Omit<Enquiry, 'id' | 'created_at'>): Promise<Enquiry> {
-    const newEnquiry: Enquiry = {
-      ...enquiry,
-      id: 'enq-' + Date.now(),
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    };
     const supabase = getSupabaseClient();
-    if (supabase) {
-      try {
-        const payload: any = { ...newEnquiry };
-        if (typeof payload.is_archived === 'boolean') {
-          payload.archived = payload.is_archived;
-        }
-        await supabase.from('enquiries').insert(payload);
-      } catch (err) {
-        console.warn('Supabase enquiry insert warning:', err);
-      }
-    }
-    const current = await this.getEnquiries();
-    const updated = [newEnquiry, ...current];
-    saveToStorage('enquiries', updated);
+    const adapter = supabase ? createEnquiriesSupabaseAdapter(supabase) : null;
 
-    // Auto generate notification
-    const displayName = newEnquiry.title || newEnquiry.client_name || 'New Project Lead';
-    const budgetStr = newEnquiry.estimated_budget ? ` (₹${newEnquiry.estimated_budget.toLocaleString('en-IN')})` : '';
-    await this.createNotification({
-      title: 'New Project Lead Received',
-      message: `${displayName} enquired for ${newEnquiry.venue || 'Production'}${budgetStr}`,
-      type: 'new_enquiry',
-      read: false,
-      link: 'enquiries',
+    const savedLead = await createEnquiryWithSupabase({
+      enquiry,
+      adapter,
+      fallbackUnconfiguredCreate: localEnquiry => {
+        const newEnquiry: Enquiry = {
+          ...localEnquiry,
+          id: 'enq-' + Date.now(),
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        const current = getStoredOrInitial('enquiries', INITIAL_ENQUIRIES);
+        saveToStorage('enquiries', [newEnquiry, ...current]);
+        return newEnquiry;
+      },
     });
 
-    return newEnquiry;
+    // Auto generate notification only AFTER Supabase insert succeeds
+    try {
+      const displayName = savedLead.title || savedLead.client_name || 'New Project Lead';
+      const budgetStr = savedLead.estimated_budget
+        ? ` (₹${savedLead.estimated_budget.toLocaleString('en-IN')})`
+        : '';
+      await this.createNotification({
+        title: 'New Project Lead Received',
+        message: `${displayName} enquired for ${savedLead.venue || 'Production'}${budgetStr}`,
+        type: 'new_enquiry',
+        read: false,
+        link: 'enquiries',
+      });
+    } catch (notifErr) {
+      console.warn('Non-fatal notification error after creating Lead:', notifErr);
+    }
+
+    return savedLead;
   },
 
   async updateEnquiry(enquiry: Enquiry): Promise<Enquiry> {
-    const updatedWithTimestamp: Enquiry = {
-      ...enquiry,
-      updated_at: new Date().toISOString(),
-    };
     const supabase = getSupabaseClient();
-    if (supabase) {
-      try {
-        const payload: any = { ...updatedWithTimestamp };
-        if (typeof payload.is_archived === 'boolean') {
-          payload.archived = payload.is_archived;
-        }
-        const { error } = await supabase.from('enquiries').update(payload).eq('id', enquiry.id);
-        if (error) {
-          console.warn('Supabase update enquiry warning:', error);
-        }
-      } catch (err) {
-        console.warn('Supabase update enquiry exception:', err);
-      }
-    }
-    const current = await this.getEnquiries();
-    const updated = current.map(e => (e.id === enquiry.id ? updatedWithTimestamp : e));
-    saveToStorage('enquiries', updated);
-    return updatedWithTimestamp;
+    const adapter = supabase ? createEnquiriesSupabaseAdapter(supabase) : null;
+
+    return updateEnquiryWithSupabase({
+      enquiry,
+      adapter,
+      fallbackUnconfiguredUpdate: localEnquiry => {
+        const updatedWithTimestamp: Enquiry = {
+          ...localEnquiry,
+          updated_at: new Date().toISOString(),
+        };
+        const current = getStoredOrInitial('enquiries', INITIAL_ENQUIRIES);
+        const updated = current.map(e => (e.id === localEnquiry.id ? updatedWithTimestamp : e));
+        saveToStorage('enquiries', updated);
+        return updatedWithTimestamp;
+      },
+    });
   },
 
   async deleteEnquiry(id: string): Promise<void> {
     const supabase = getSupabaseClient();
-    if (supabase) {
-      try {
-        const { error } = await supabase.from('enquiries').delete().eq('id', id);
-        if (error) {
-          console.error('Failed to delete enquiry from Supabase:', error);
-        }
-      } catch (err) {
-        console.warn('Supabase delete enquiry exception:', err);
-      }
-    }
-    const current = await this.getEnquiries();
-    const updated = current.filter(e => e.id !== id);
-    saveToStorage('enquiries', updated);
+    const adapter = supabase ? createEnquiriesSupabaseAdapter(supabase) : null;
+
+    await deleteEnquiryWithSupabase({
+      id,
+      adapter,
+      fallbackUnconfiguredDelete: targetId => {
+        const current = getStoredOrInitial('enquiries', INITIAL_ENQUIRIES);
+        const updated = current.filter(e => e.id !== targetId);
+        saveToStorage('enquiries', updated);
+      },
+    });
   },
 
-  // SERVICE CATALOGUE (What the studio offers and sells — separate from Deliverables)
-  async getServices(): Promise<ServiceCatalogueItem[]> {
+  // SHARED CATALOGUE (Authoritative public.deliverable_catalogue persistence)
+  async getDeliverableCatalogue(): Promise<DeliverableCatalogueItem[]> {
     const supabase = getSupabaseClient();
-    if (supabase) {
-      try {
-        const { data, error } = await supabase.from('service_catalogue').select('*').order('sort_order', { ascending: true });
-        if (!error && data && data.length > 0) {
-          saveToStorage('service_catalogue', data);
-          return data as ServiceCatalogueItem[];
-        }
-      } catch {
-        // Fallback to local storage if table is not yet provisioned
-      }
-    }
-    return getStoredOrInitial('service_catalogue', INITIAL_SERVICES);
+    return fetchDeliverableCatalogueWithSupabase({
+      adapter: supabase
+        ? {
+            selectAll: async () =>
+              await supabase
+                .from('deliverable_catalogue')
+                .select('*')
+                .order('sort_order', { ascending: true })
+                .order('name', { ascending: true }),
+          }
+        : null,
+      storage: getDefaultPhase1Storage(),
+      initialFallback: INITIAL_DELIVERABLE_CATALOGUE,
+    });
   },
 
-  async createService(service: Omit<ServiceCatalogueItem, 'id'>): Promise<ServiceCatalogueItem> {
-    const newService: ServiceCatalogueItem = {
-      ...service,
-      id: 'srv-' + Date.now(),
-      created_at: new Date().toISOString(),
-    };
+  async createDeliverableCatalogueItem(
+    item: {
+      name: string;
+      category?: DeliverableCatalogueCategory | string;
+      description?: string;
+      applicable_brand: DeliverableBrandScope;
+      is_active?: boolean;
+      sort_order?: number;
+    },
+    existingItems: DeliverableCatalogueItem[]
+  ): Promise<DeliverableCatalogueItem> {
     const supabase = getSupabaseClient();
-    if (supabase) {
-      try {
-        await supabase.from('service_catalogue').insert(newService);
-      } catch (err) {
-        console.warn('Supabase service insert fallback:', err);
-      }
-    }
-    const current = await this.getServices();
-    const updated = [...current, newService];
-    saveToStorage('service_catalogue', updated);
-    return newService;
+    return createDeliverableCatalogueWithSupabase({
+      item,
+      existingItems,
+      adapter: supabase
+        ? {
+            insertAndReturn: async (payload: Record<string, any>) =>
+              await supabase.from('deliverable_catalogue').insert(payload).select(),
+          }
+        : null,
+      storage: getDefaultPhase1Storage(),
+      initialFallback: INITIAL_DELIVERABLE_CATALOGUE,
+    });
   },
 
-  async updateService(service: ServiceCatalogueItem): Promise<ServiceCatalogueItem> {
+  async updateDeliverableCatalogueItem(
+    item: DeliverableCatalogueItem,
+    existingItems: DeliverableCatalogueItem[]
+  ): Promise<DeliverableCatalogueItem> {
     const supabase = getSupabaseClient();
-    if (supabase) {
-      try {
-        await supabase.from('service_catalogue').update(service).eq('id', service.id);
-      } catch (err) {
-        console.warn('Supabase service update fallback:', err);
-      }
-    }
-    const current = await this.getServices();
-    const updated = current.map(s => (s.id === service.id ? service : s));
-    saveToStorage('service_catalogue', updated);
-    return service;
+    return updateDeliverableCatalogueWithSupabase({
+      item,
+      existingItems,
+      adapter: supabase
+        ? {
+            updateAndReturn: async (id: string, payload: Record<string, any>) =>
+              await supabase
+                .from('deliverable_catalogue')
+                .update(payload)
+                .eq('id', id)
+                .select(),
+          }
+        : null,
+      storage: getDefaultPhase1Storage(),
+      initialFallback: INITIAL_DELIVERABLE_CATALOGUE,
+    });
   },
 
-  async deleteService(id: string): Promise<void> {
+  async reorderDeliverableCatalogue(
+    updatedPair: [DeliverableCatalogueItem, DeliverableCatalogueItem],
+    existingItems: DeliverableCatalogueItem[]
+  ): Promise<DeliverableCatalogueItem[]> {
     const supabase = getSupabaseClient();
-    if (supabase) {
-      try {
-        await supabase.from('service_catalogue').delete().eq('id', id);
-      } catch (err) {
-        console.warn('Supabase service delete fallback:', err);
-      }
-    }
-    const current = await this.getServices();
-    const updated = current.filter(s => s.id !== id);
-    saveToStorage('service_catalogue', updated);
+    return reorderDeliverableCatalogueWithSupabase({
+      updatedPair,
+      existingItems,
+      adapter: supabase
+        ? {
+            updateAndReturn: async (id: string, payload: Record<string, any>) =>
+              await supabase
+                .from('deliverable_catalogue')
+                .update(payload)
+                .eq('id', id)
+                .select(),
+          }
+        : null,
+      storage: getDefaultPhase1Storage(),
+      initialFallback: INITIAL_DELIVERABLE_CATALOGUE,
+    });
+  },
+
+  async deleteDeliverableCatalogueItem(
+    id: string,
+    itemName: string,
+    existingDeliverables: Deliverable[],
+    existingEnquiries: Enquiry[] = []
+  ): Promise<void> {
+    const supabase = getSupabaseClient();
+    await deleteDeliverableCatalogueWithSupabase({
+      id,
+      itemName,
+      existingDeliverables,
+      existingEnquiries,
+      adapter: supabase
+        ? {
+            deleteAndReturn: async (targetId: string) =>
+              await supabase
+                .from('deliverable_catalogue')
+                .delete()
+                .eq('id', targetId)
+                .select(),
+            existsById: async (targetId: string) => {
+              const { data, error } = await supabase
+                .from('deliverable_catalogue')
+                .select('id')
+                .eq('id', targetId);
+              return { exists: Boolean(data && data.length > 0), error };
+            },
+          }
+        : null,
+      storage: getDefaultPhase1Storage(),
+      initialFallback: INITIAL_DELIVERABLE_CATALOGUE,
+    });
   },
 
   // QUOTATIONS
@@ -1912,26 +2258,17 @@ updated_at: new Date().toISOString(),
   },
 
   async getProjectTeam(): Promise<ProjectTeamAssignment[]> {
-  const supabase = getSupabaseClient();
-
-  if (supabase) {
-    const { data, error } = await supabase
-      .from('project_team')
-      .select('*');
-
-    if (!error && data && data.length > 0) {
-      const normalizedAssignments = data.map((assignment: any) => ({
-        ...assignment,
-        role: assignment.role || assignment.assignment_role || '',
-      }));
-
-      saveToStorage('project_team', normalizedAssignments);
-      return normalizedAssignments as ProjectTeamAssignment[];
-    }
-  }
-
-  return getStoredOrInitial('project_team', INITIAL_PROJECT_TEAM);
-},
+    const supabase = getSupabaseClient();
+    return fetchProjectTeamWithSupabase({
+      adapter: supabase
+        ? {
+            selectAll: async () => await supabase.from('project_team').select('*'),
+          }
+        : null,
+      storage: getDefaultPhase1Storage(),
+      initialFallback: INITIAL_PROJECT_TEAM,
+    });
+  },
 
   // Check double-booking conflict
   async checkTeamConflict(
@@ -2042,11 +2379,15 @@ async assignTeamMember(
     const rawData: any = insertRes.data;
     const createdAssignment: ProjectTeamAssignment = {
       ...rawData,
-      role: rawData.role || rawData.assignment_role || assignment.role,
+      role: rawData.assignment_role || rawData.role || assignment.role,
     };
 
-    const current = await this.getProjectTeam();
-    saveToStorage('project_team', [...current, createdAssignment]);
+    // Update secondary cache safely without extra Supabase read after committed write
+    upsertItemInCache<ProjectTeamAssignment>(
+      getDefaultPhase1Storage(),
+      'project_team',
+      createdAssignment
+    );
 
     if (conflict.hasConflict && adminOverride) {
       await this.createNotification({
@@ -2080,12 +2421,24 @@ async assignTeamMember(
 
   async removeTeamAssignment(assignmentId: string): Promise<void> {
     const supabase = getSupabaseClient();
-    if (supabase) {
-      await supabase.from('project_team').delete().eq('id', assignmentId);
-    }
-    const current = await this.getProjectTeam();
-    const updated = current.filter(a => a.id !== assignmentId);
-    saveToStorage('project_team', updated);
+    return removeTeamAssignmentWithSupabase({
+      assignmentId,
+      adapter: supabase
+        ? {
+            deleteAndReturn: async (id: string) =>
+              await supabase.from('project_team').delete().eq('id', id).select(),
+            existsById: async (id: string) => {
+              const res = await supabase.from('project_team').select('id').eq('id', id);
+              return {
+                exists: Boolean(res.data && res.data.length > 0),
+                error: res.error,
+              };
+            },
+          }
+        : null,
+      storage: getDefaultPhase1Storage(),
+      initialFallback: INITIAL_PROJECT_TEAM,
+    });
   },
 
   async updateTeamAssignment(
@@ -2166,16 +2519,15 @@ async assignTeamMember(
     const rawData: any = updateRes.data;
     const updatedAssignment: ProjectTeamAssignment = {
       ...rawData,
-      role: rawData.role || rawData.assignment_role || assignment.role,
+      role: rawData.assignment_role || rawData.role || assignment.role,
     };
 
-    const current = await this.getProjectTeam();
-
-    const updatedList = current.map(a =>
-      a.id === assignmentId ? updatedAssignment : a
+    // Update secondary cache safely without extra Supabase read after committed write
+    upsertItemInCache<ProjectTeamAssignment>(
+      getDefaultPhase1Storage(),
+      'project_team',
+      updatedAssignment
     );
-
-    saveToStorage('project_team', updatedList);
 
     return {
       success: true,
@@ -2213,39 +2565,29 @@ async assignTeamMember(
   // Authoritative flow: Supabase -> api.ts -> AppContext -> React components
   async getProjectData(): Promise<ProjectData[]> {
     const supabase = getSupabaseClient();
+    return fetchProjectDataWithSupabase({
+      adapter: supabase
+        ? {
+            selectAll: async () => {
+              let res = await supabase
+                .from('project_data')
+                .select('id, project_id, name, notes, status, data_type, created_at, updated_at')
+                .order('created_at', { ascending: false });
 
-    if (supabase) {
-      // Query public.project_data using only columns that exist in the database table
-      let { data, error } = await supabase
-        .from('project_data')
-        .select('id, project_id, name, notes, status, data_type, created_at, updated_at')
-        .order('created_at', { ascending: false });
-
-      // Fallback order by id if created_at has any issue
-      if (error && error.message?.toLowerCase().includes('created_at')) {
-        const retry = await supabase
-          .from('project_data')
-          .select('id, project_id, name, notes, status, data_type, created_at, updated_at')
-          .order('id', { ascending: true });
-        data = retry.data;
-        error = retry.error;
-      }
-
-      if (error) {
-        console.error('Failed to load project_data from Supabase:', error.message);
-        return getStoredOrInitial('project_data', INITIAL_PROJECT_DATA);
-      }
-
-      // Supabase is authoritative. Map all returned rows into model format
-      const records = (data || []).map(mapSupabaseProjectDataToModel);
-
-      // Cache after successful read from Supabase
-      saveToStorage('project_data', records);
-      return records;
-    }
-
-    // Local fallback ONLY when Supabase is genuinely not configured
-    return getStoredOrInitial('project_data', INITIAL_PROJECT_DATA);
+              if (res.error && res.error.message?.toLowerCase().includes('created_at')) {
+                res = await supabase
+                  .from('project_data')
+                  .select('id, project_id, name, notes, status, data_type, created_at, updated_at')
+                  .order('id', { ascending: true });
+              }
+              return res;
+            },
+          }
+        : null,
+      mapRow: mapSupabaseProjectDataToModel,
+      storage: getDefaultPhase1Storage(),
+      initialFallback: INITIAL_PROJECT_DATA,
+    });
   },
 
   async createProjectData(dataItem: Omit<ProjectData, 'id'>): Promise<ProjectData> {
@@ -2288,10 +2630,8 @@ async assignTeamMember(
         id: newId,
       } as ProjectData);
 
-      // Update secondary local cache from authoritative Supabase state
-      const current = await this.getProjectData();
-      const merged = [created, ...current.filter(d => d.id !== created.id)];
-      saveToStorage('project_data', merged);
+      // Update secondary cache safely without extra Supabase read after committed write
+      upsertItemInCache<ProjectData>(getDefaultPhase1Storage(), 'project_data', created, true);
 
       return created;
     }
@@ -2350,10 +2690,8 @@ async assignTeamMember(
 
       const updated = data ? mapSupabaseProjectDataToModel(data) : ({ ...dataItem, id: targetId });
 
-      // Update secondary local cache from authoritative Supabase state
-      const current = await this.getProjectData();
-      const merged = [updated, ...current.filter(d => d.id !== updated.id)];
-      saveToStorage('project_data', merged);
+      // Update secondary cache safely without extra Supabase read after committed write
+      upsertItemInCache<ProjectData>(getDefaultPhase1Storage(), 'project_data', updated, true);
 
       return updated;
     }
@@ -2384,9 +2722,8 @@ async assignTeamMember(
         }
       }
 
-      // Refresh secondary cache from Supabase after successful deletion
-      const current = await this.getProjectData();
-      saveToStorage('project_data', current.filter(d => d.id !== id));
+      // Update secondary cache safely without extra Supabase read after committed delete
+      removeItemFromCache<ProjectData>(getDefaultPhase1Storage(), 'project_data', id);
       return;
     }
 
@@ -2398,54 +2735,19 @@ async assignTeamMember(
   // DELIVERABLES
   async getDeliverables(): Promise<Deliverable[]> {
     const supabase = getSupabaseClient();
-
-    if (supabase) {
-      const { data, error } = await supabase
-        .from('deliverables')
-        .select('*')
-        .order('id', { ascending: true });
-
-      if (error) {
-        console.warn('Warning loading deliverables from Supabase:', error.message);
-        const stored = getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
-        return stored.map(d => {
-          if (d.notes && typeof d.notes === 'string' && d.notes.startsWith('__METADATA__:')) {
-            const parsed = parseDeliverableNotes(d.notes);
-            return {
-              ...d,
-              notes: parsed.userNotes,
-              assigned_at: d.assigned_at || parsed.metadata?.assigned_at,
-              first_submitted_at: d.first_submitted_at || parsed.metadata?.first_submitted_at,
-              delivered_at: d.delivered_at || parsed.metadata?.delivered_at,
-            };
+    return fetchDeliverablesWithSupabase({
+      adapter: supabase
+        ? {
+            selectAll: async () =>
+              await supabase
+                .from('deliverables')
+                .select('*')
+                .order('id', { ascending: true }),
           }
-          return d;
-        });
-      }
-
-      const deliverables = (data || []).map(mapSupabaseDeliverableToModel);
-
-      // Supabase is the source of truth.
-      // Cache after successful read.
-      saveToStorage('deliverables', deliverables);
-
-      return deliverables;
-    }
-
-    // Local fallback only when Supabase is not configured.
-    const stored = getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
-    return stored.map(d => {
-      if (d.notes && typeof d.notes === 'string' && d.notes.startsWith('__METADATA__:')) {
-        const parsed = parseDeliverableNotes(d.notes);
-        return {
-          ...d,
-          notes: parsed.userNotes,
-          assigned_at: d.assigned_at || parsed.metadata?.assigned_at,
-          first_submitted_at: d.first_submitted_at || parsed.metadata?.first_submitted_at,
-          delivered_at: d.delivered_at || parsed.metadata?.delivered_at,
-        };
-      }
-      return d;
+        : null,
+      mapRow: mapSupabaseDeliverableToModel,
+      storage: getDefaultPhase1Storage(),
+      initialFallback: INITIAL_DELIVERABLES,
     });
   },
 
@@ -2453,362 +2755,38 @@ async assignTeamMember(
     deliverable: Omit<Deliverable, 'id' | 'last_updated'>
   ): Promise<Deliverable> {
     const supabase = getSupabaseClient();
-    const now = new Date().toISOString();
-
-    const {
-      userNotes,
-      assigned_at: assignedAt,
-      first_submitted_at: firstSubmittedAt,
-      delivered_at: deliveredAt,
-      serializedNotesForFallback,
-    } = prepareDeliverableForCreate(deliverable, now);
-
-    if (supabase) {
-      const isUuid = (val?: string | null) =>
-        Boolean(val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val));
-
-      const newId = crypto.randomUUID();
-      const companyUuid = toCompanyUuid(deliverable.company_id);
-      const editorId = (deliverable.assigned_editor_id && deliverable.assigned_editor_id.trim())
-        ? deliverable.assigned_editor_id.trim()
-        : null;
-      const dueDate = deliverable.due_date || new Date().toISOString().split('T')[0];
-      const statusValue = (deliverable.status && deliverable.status.trim()) ? deliverable.status.trim() : null;
-
-      // Note: Supabase deliverables table may have column 'name' (NOT NULL in some schemas)
-      // and/or 'deliverable_type'. We provide both, and dynamically retry if columns differ.
-      let insertPayload: any = {
-        id: newId,
-        project_id: deliverable.project_id,
-        company_id: companyUuid,
-        name: deliverable.deliverable_type,
-        deliverable_type: deliverable.deliverable_type,
-        assigned_editor_id: isUuid(editorId) ? editorId : null,
-        due_date: dueDate,
-        status: statusValue,
-        priority: deliverable.priority || 'Medium',
-        external_link: deliverable.external_link || null,
-        client_feedback: deliverable.client_feedback || null,
-        notes: userNotes || null,
-        assigned_at: assignedAt || null,
-        first_submitted_at: firstSubmittedAt || null,
-        delivered_at: deliveredAt || null,
-      };
-
-      let { data, error } = await supabase
-        .from('deliverables')
-        .insert(insertPayload)
-        .select();
-
-      // Check 0: If milestone columns do not exist in Supabase schema, retry without them and embed in notes
-      if (
-        error &&
-        (error.message?.includes('assigned_at') ||
-          error.message?.includes('first_submitted_at') ||
-          error.message?.includes('delivered_at') ||
-          error.message?.includes('schema cache'))
-      ) {
-        delete insertPayload.assigned_at;
-        delete insertPayload.first_submitted_at;
-        delete insertPayload.delivered_at;
-        insertPayload.notes = serializedNotesForFallback;
-        const retry = await supabase.from('deliverables').insert(insertPayload).select();
-        data = retry.data;
-        error = retry.error;
-      }
-
-      // Check 1: If 'name' column does not exist or schema cache complaints
-      if (
-        error &&
-        error.message?.toLowerCase().includes('name') &&
-        (error.message?.includes('schema cache') || error.message?.includes('does not exist') || error.message?.includes('Could not find'))
-      ) {
-        delete insertPayload.name;
-        const retry = await supabase.from('deliverables').insert(insertPayload).select();
-        data = retry.data;
-        error = retry.error;
-      }
-
-      // Check 2: If 'deliverable_type' column does not exist or schema cache complaints
-      if (
-        error &&
-        error.message?.toLowerCase().includes('deliverable_type') &&
-        (error.message?.includes('schema cache') || error.message?.includes('does not exist') || error.message?.includes('Could not find'))
-      ) {
-        delete insertPayload.deliverable_type;
-        const retry = await supabase.from('deliverables').insert(insertPayload).select();
-        data = retry.data;
-        error = retry.error;
-      }
-
-      // Check 3: Foreign key on company_id (UUID vs text slug 'twb' / 'golden_june')
-      if (
-        error &&
-        (error.message?.includes('company_id_fkey') || error.message?.toLowerCase().includes('company_id'))
-      ) {
-        // Toggle between UUID and string slug
-        insertPayload.company_id =
-          insertPayload.company_id === companyUuid
-            ? (deliverable.company_id || 'twb')
-            : companyUuid;
-        const retry = await supabase.from('deliverables').insert(insertPayload).select();
-        data = retry.data;
-        error = retry.error;
-      }
-
-      // Check 4: Foreign key on assigned_editor_id
-      if (
-        error &&
-        (error.message?.includes('assigned_editor_id_fkey') || error.message?.toLowerCase().includes('assigned_editor_id'))
-      ) {
-        insertPayload.assigned_editor_id = null;
-        const retry = await supabase.from('deliverables').insert(insertPayload).select();
-        data = retry.data;
-        error = retry.error;
-      }
-
-      // Check 5: Check constraint on status
-      if (
-        error &&
-        (error.message?.includes('status_check') || error.message?.toLowerCase().includes('status'))
-      ) {
-        insertPayload.status = null;
-        const retry = await supabase.from('deliverables').insert(insertPayload).select();
-        data = retry.data;
-        error = retry.error;
-      }
-
-      if (error) {
-        console.error('Failed to create deliverable in Supabase:', error);
-        throw new Error(`Could not create deliverable in Supabase: ${error.message}`);
-      }
-
-      if (!data || data.length === 0) {
-        throw new Error('Supabase did not return the created deliverable record.');
-      }
-
-      const mapped = mapSupabaseDeliverableToModel(data[0]);
-      const newDeliverable: Deliverable = {
-        ...mapped,
-        notes: mapped.notes || userNotes,
-        assigned_at: mapped.assigned_at || assignedAt,
-        first_submitted_at: mapped.first_submitted_at || firstSubmittedAt,
-        delivered_at: mapped.delivered_at || deliveredAt,
-      };
-
-      const current = getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
-      saveToStorage(
-        'deliverables',
-        [
-          newDeliverable,
-          ...current.filter(d => d.id !== newDeliverable.id),
-        ]
-      );
-
-      return newDeliverable;
-    }
-
-    // Local fallback only when Supabase is not configured.
-    const newDeliverable: Deliverable = {
-      ...deliverable,
-      id: crypto.randomUUID(),
-      status: deliverable.status || ('' as DeliverableStatus),
-      notes: userNotes,
-      last_updated: now,
-      assigned_at: assignedAt,
-      first_submitted_at: firstSubmittedAt,
-      delivered_at: deliveredAt,
-    };
-
-    const current = getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
-    saveToStorage(
-      'deliverables',
-      [newDeliverable, ...current.filter(d => d.id !== newDeliverable.id)]
-    );
-
-    return newDeliverable;
+    return createDeliverableWithSupabase({
+      deliverable,
+      adapter: supabase
+        ? {
+            insertAndReturn: async (payload: Record<string, any>) =>
+              await supabase.from('deliverables').insert(payload).select(),
+          }
+        : null,
+      mapRow: mapSupabaseDeliverableToModel,
+      toCompanyUuid,
+      storage: getDefaultPhase1Storage(),
+      initialFallback: INITIAL_DELIVERABLES,
+    });
   },
 
-  async updateDeliverable(
-    deliverable: Deliverable
-  ): Promise<Deliverable> {
-    const stored = getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
-    let existing = stored.find(d => d.id === deliverable.id);
-    if (existing && existing.notes && typeof existing.notes === 'string' && existing.notes.startsWith('__METADATA__:')) {
-      const parsedExisting = parseDeliverableNotes(existing.notes);
-      existing = {
-        ...existing,
-        notes: parsedExisting.userNotes,
-        assigned_at: existing.assigned_at || parsedExisting.metadata?.assigned_at,
-        first_submitted_at: existing.first_submitted_at || parsedExisting.metadata?.first_submitted_at,
-        delivered_at: existing.delivered_at || parsedExisting.metadata?.delivered_at,
-      };
-    }
-
-    const now = new Date().toISOString();
-
-    // 1. Assignment timestamp logic:
-    // - If assigned to a new, non-empty editor ID: record current timestamp
-    // - If unassigned (empty editor ID): clear assigned_at
-    // - If editor ID did not change: preserve existing assigned_at
-    const existingEditorId = (existing?.assigned_editor_id || '').trim();
-    const newEditorId = (deliverable.assigned_editor_id || '').trim();
-
-    let assignedAt: string | undefined;
-    if (newEditorId && newEditorId !== existingEditorId) {
-      // Reassigned to a different editor (or assigned for the first time)
-      assignedAt = now;
-    } else if (newEditorId && newEditorId === existingEditorId) {
-      // Same editor retained: preserve existing assignment date
-      assignedAt = existing?.assigned_at || deliverable.assigned_at;
-    } else {
-      // Unassigned
-      assignedAt = undefined;
-    }
-
-    // 2. First Submitted milestone logic:
-    // Set first_submitted_at when transitioning to 'Submitted' only if not already set.
-    // Never overwrite on later revisions or subsequent resubmissions.
-    let firstSubmittedAt: string | undefined = existing?.first_submitted_at || deliverable.first_submitted_at;
-    if (deliverable.status === 'Submitted' && !firstSubmittedAt) {
-      firstSubmittedAt = now;
-    }
-
-    // 3. Delivered milestone logic:
-    // Set delivered_at when transitioning to 'Delivered' only if not already set.
-    // Never overwrite on later edits.
-    let deliveredAt: string | undefined = existing?.delivered_at || deliverable.delivered_at;
-    if (deliverable.status === 'Delivered' && !deliveredAt) {
-      deliveredAt = now;
-    }
-
-    // Extract clean user notes in case incoming deliverable still had metadata string
-    let userNotesToSave = deliverable.notes;
-    if (userNotesToSave && typeof userNotesToSave === 'string' && userNotesToSave.startsWith('__METADATA__:')) {
-      const parsedIncoming = parseDeliverableNotes(userNotesToSave);
-      userNotesToSave = parsedIncoming.userNotes;
-      if (!assignedAt && parsedIncoming.metadata?.assigned_at) assignedAt = parsedIncoming.metadata.assigned_at;
-      if (!firstSubmittedAt && parsedIncoming.metadata?.first_submitted_at) firstSubmittedAt = parsedIncoming.metadata.first_submitted_at;
-      if (!deliveredAt && parsedIncoming.metadata?.delivered_at) deliveredAt = parsedIncoming.metadata.delivered_at;
-    }
-
-    const updatedDeliverable: Deliverable = {
-      ...deliverable,
-      notes: userNotesToSave,
-      assigned_at: assignedAt,
-      first_submitted_at: firstSubmittedAt,
-      delivered_at: deliveredAt,
-      last_updated: now,
-    };
-
+  async updateDeliverable(deliverable: Deliverable): Promise<Deliverable> {
     const supabase = getSupabaseClient();
-
-    if (supabase) {
-      const isUuid = (val?: string | null) =>
-        Boolean(val && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(val));
-
-      const editorId = (updatedDeliverable.assigned_editor_id && updatedDeliverable.assigned_editor_id.trim())
-        ? updatedDeliverable.assigned_editor_id.trim()
-        : null;
-
-      let updatePayload: any = {
-        project_id: updatedDeliverable.project_id,
-        company_id: toCompanyUuid(updatedDeliverable.company_id),
-        name: updatedDeliverable.deliverable_type,
-        deliverable_type: updatedDeliverable.deliverable_type,
-        assigned_editor_id: isUuid(editorId) ? editorId : null,
-        due_date: updatedDeliverable.due_date || new Date().toISOString().split('T')[0],
-        status: (updatedDeliverable.status && updatedDeliverable.status.trim()) ? updatedDeliverable.status.trim() : null,
-        priority: updatedDeliverable.priority || 'Medium',
-        external_link: updatedDeliverable.external_link || null,
-        client_feedback: updatedDeliverable.client_feedback || null,
-        notes: userNotesToSave || null,
-        assigned_at: assignedAt || null,
-        first_submitted_at: firstSubmittedAt || null,
-        delivered_at: deliveredAt || null,
-      };
-
-      let { data, error } = await supabase
-        .from('deliverables')
-        .update(updatePayload)
-        .eq('id', updatedDeliverable.id)
-        .select();
-
-      // Retry without milestone columns if missing from Supabase schema cache, storing in notes metadata
-      if (
-        error &&
-        (error.message?.includes('assigned_at') ||
-          error.message?.includes('first_submitted_at') ||
-          error.message?.includes('delivered_at') ||
-          error.message?.includes('schema cache'))
-      ) {
-        delete updatePayload.assigned_at;
-        delete updatePayload.first_submitted_at;
-        delete updatePayload.delivered_at;
-        updatePayload.notes = serializeDeliverableNotes(userNotesToSave, {
-          assigned_at: assignedAt,
-          first_submitted_at: firstSubmittedAt,
-          delivered_at: deliveredAt,
-        });
-        const retry = await supabase.from('deliverables').update(updatePayload).eq('id', updatedDeliverable.id).select();
-        data = retry.data;
-        error = retry.error;
-      }
-
-      if (
-        error &&
-        error.message?.toLowerCase().includes('name') &&
-        (error.message?.includes('schema cache') || error.message?.includes('does not exist') || error.message?.includes('Could not find'))
-      ) {
-        delete updatePayload.name;
-        const retry = await supabase.from('deliverables').update(updatePayload).eq('id', updatedDeliverable.id).select();
-        data = retry.data;
-        error = retry.error;
-      } else if (
-        error &&
-        error.message?.toLowerCase().includes('deliverable_type') &&
-        (error.message?.includes('schema cache') || error.message?.includes('does not exist') || error.message?.includes('Could not find'))
-      ) {
-        delete updatePayload.deliverable_type;
-        const retry = await supabase.from('deliverables').update(updatePayload).eq('id', updatedDeliverable.id).select();
-        data = retry.data;
-        error = retry.error;
-      }
-
-      if (error) {
-        console.error('Failed to update deliverable in Supabase:', error);
-        throw new Error(`Could not update deliverable in Supabase: ${error.message}`);
-      }
-
-      if (!data || data.length === 0) {
-        throw new Error(`Could not find deliverable ${updatedDeliverable.id} to update in Supabase.`);
-      }
-
-      const mapped = mapSupabaseDeliverableToModel(data[0]);
-      const saved: Deliverable = {
-        ...mapped,
-        assigned_at: mapped.assigned_at || assignedAt,
-        first_submitted_at: mapped.first_submitted_at || firstSubmittedAt,
-        delivered_at: mapped.delivered_at || deliveredAt,
-      };
-
-      // Cache updated list in storage immediately
-      const current = getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
-      const updatedList = current.map(d =>
-        d.id === saved.id ? saved : d
-      );
-      saveToStorage('deliverables', updatedList);
-
-      return saved;
-    }
-
-    const current = getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
-    const updatedList = current.map(d =>
-      d.id === updatedDeliverable.id ? updatedDeliverable : d
-    );
-    saveToStorage('deliverables', updatedList);
-
-    return updatedDeliverable;
+    return updateDeliverableWithSupabase({
+      deliverable,
+      adapter: supabase
+        ? {
+            selectById: async (id: string) =>
+              await supabase.from('deliverables').select('*').eq('id', id).maybeSingle(),
+            updateAndReturn: async (id: string, payload: Record<string, any>) =>
+              await supabase.from('deliverables').update(payload).eq('id', id).select(),
+          }
+        : null,
+      mapRow: mapSupabaseDeliverableToModel,
+      toCompanyUuid,
+      storage: getDefaultPhase1Storage(),
+      initialFallback: INITIAL_DELIVERABLES,
+    });
   },
 
   async updateDeliverableStatus(
@@ -2818,128 +2796,30 @@ async assignTeamMember(
     updaterName: string
   ): Promise<Deliverable> {
     const supabase = getSupabaseClient();
-    const stored = getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
-    let target = stored.find(d => d.id === deliverableId);
-    if (target && target.notes && typeof target.notes === 'string' && target.notes.startsWith('__METADATA__:')) {
-      const parsed = parseDeliverableNotes(target.notes);
-      target = {
-        ...target,
-        notes: parsed.userNotes,
-        assigned_at: target.assigned_at || parsed.metadata?.assigned_at,
-        first_submitted_at: target.first_submitted_at || parsed.metadata?.first_submitted_at,
-        delivered_at: target.delivered_at || parsed.metadata?.delivered_at,
-      };
-    }
+    const savedDeliverable = await updateDeliverableStatusWithSupabase({
+      deliverableId,
+      newStatus,
+      adapter: supabase
+        ? {
+            selectById: async (id: string) =>
+              await supabase.from('deliverables').select('*').eq('id', id).maybeSingle(),
+            updateAndReturn: async (id: string, payload: Record<string, any>) =>
+              await supabase.from('deliverables').update(payload).eq('id', id).select(),
+          }
+        : null,
+      mapRow: mapSupabaseDeliverableToModel,
+      storage: getDefaultPhase1Storage(),
+      initialFallback: INITIAL_DELIVERABLES,
+    });
 
-    const now = new Date().toISOString();
-
-    // 1. Milestone rules:
-    // First Submitted: set only if transition to Submitted and currently empty
-    const firstSubmittedAt =
-      newStatus === 'Submitted' && !target?.first_submitted_at
-        ? now
-        : (target?.first_submitted_at || undefined);
-
-    // Delivered: set only if transition to Delivered and currently empty
-    const deliveredAt =
-      newStatus === 'Delivered' && !target?.delivered_at
-        ? now
-        : (target?.delivered_at || undefined);
-
-    const assignedAt = target?.assigned_at || undefined;
-
-    const statusValueForDb = (newStatus && newStatus.trim()) ? newStatus : null;
-
-    let savedDeliverable: Deliverable = {
-      ...(target || {
-        id: deliverableId,
-        project_id: '',
-        company_id: 'twb' as const,
-        deliverable_type: 'Highlight Film (4-5 mins)' as DeliverableType,
-        assigned_editor_id: '',
-        due_date: new Date().toISOString().split('T')[0],
-        status: (newStatus || '') as DeliverableStatus,
-        priority: 'High' as const,
-        last_updated: now,
-      }),
-      status: (newStatus || '') as DeliverableStatus,
-      notes: target?.notes || undefined,
-      assigned_at: assignedAt,
-      first_submitted_at: firstSubmittedAt,
-      delivered_at: deliveredAt,
-      last_updated: now,
-    };
-
-    if (supabase) {
-      let updatePayload: any = {
-        status: statusValueForDb,
-        first_submitted_at: firstSubmittedAt || null,
-        delivered_at: deliveredAt || null,
-      };
-
-      let { data, error } = await supabase
-        .from('deliverables')
-        .update(updatePayload)
-        .eq('id', deliverableId)
-        .select();
-
-      // Retry without milestone columns if missing from Supabase schema cache
-      if (
-        error &&
-        (error.message?.includes('first_submitted_at') ||
-          error.message?.includes('delivered_at') ||
-          error.message?.includes('schema cache'))
-      ) {
-        delete updatePayload.first_submitted_at;
-        delete updatePayload.delivered_at;
-        updatePayload.notes = serializeDeliverableNotes(target?.notes, {
-          assigned_at: assignedAt,
-          first_submitted_at: firstSubmittedAt,
-          delivered_at: deliveredAt,
-        });
-        const retry = await supabase
-          .from('deliverables')
-          .update(updatePayload)
-          .eq('id', deliverableId)
-          .select();
-        data = retry.data;
-        error = retry.error;
-      }
-
-      if (error) {
-        console.error('Failed to update deliverable status in Supabase:', error);
-        throw new Error(`Could not update deliverable status in Supabase: ${error.message}`);
-      }
-
-      if (data && data.length > 0) {
-        const mapped = mapSupabaseDeliverableToModel(data[0]);
-        savedDeliverable = {
-          ...savedDeliverable,
-          ...mapped,
-          assigned_at: mapped.assigned_at || assignedAt,
-          first_submitted_at: mapped.first_submitted_at || firstSubmittedAt,
-          delivered_at: mapped.delivered_at || deliveredAt,
-        };
-      }
-    }
-
-    // Always update local storage cache immediately with the persisted record
-    const currentList = getStoredOrInitial('deliverables', INITIAL_DELIVERABLES);
-    const updatedList = currentList.map(d =>
-      d.id === deliverableId ? savedDeliverable : d
-    );
-    saveToStorage('deliverables', updatedList);
-
-    // Safely send notification without crashing
+    // Safely send notification without failing the already-persisted status change
     try {
       const projects = await this.getProjects();
-      const project = projects.find(
-        p => p.id === (target?.project_id || savedDeliverable.project_id)
-      );
+      const project = projects.find(p => p.id === savedDeliverable.project_id);
 
       await this.createNotification({
         title: `Deliverable Status: ${newStatus || 'Unassigned'}`,
-        message: `${updaterName} (${updaterRole}) marked "${target?.deliverable_type || 'Deliverable'}" as "${newStatus || 'Unassigned'}" for ${project?.name || 'Project'}.`,
+        message: `${updaterName} (${updaterRole}) marked "${savedDeliverable.deliverable_type || 'Deliverable'}" as "${newStatus || 'Unassigned'}" for ${project?.name || 'Project'}.`,
         type: 'deliverable_status',
         read: false,
         link: 'deliverables',
@@ -3016,40 +2896,22 @@ async assignTeamMember(
   // FINANCE: PAYMENTS & EXPENSES
   async getPayments(): Promise<Payment[]> {
     const supabase = getSupabaseClient();
-    if (supabase) {
-      const { data, error } = await supabase
-        .from('payments')
-        .select('*')
-        .order('payment_date', { ascending: false });
-
-      if (!error && data) {
-        // Resolve company_id using stored or cached projects because public.payments does not store company_id
-        const cachedProjects = getStoredOrInitial('projects', INITIAL_PROJECTS);
-        const mapped = data.map((row: any) => {
-          let rawCompany = row.company_id;
-          if (!rawCompany) {
-            const matchedProj = cachedProjects.find((p: Project) => p.id === row.project_id);
-            rawCompany = matchedProj?.company_id || 'twb';
+    return fetchPaymentsWithSupabase({
+      adapter: supabase
+        ? {
+            selectAll: async () =>
+              await supabase
+                .from('payments')
+                .select('*')
+                .order('payment_date', { ascending: false }),
+            selectProjectCompanyRows: async () =>
+              await supabase.from('projects').select('id, company_id'),
           }
-          const isGJ = rawCompany === 'golden_june' || rawCompany === '3a19bbe1-a2bc-46db-bbbc-44ef7f5036ec';
-
-          return {
-            ...row,
-            company_id: isGJ ? 'golden_june' : 'twb',
-            amount: Number(row.amount) || 0,
-            payment_mode: mapDbToPaymentMode(row.payment_mode),
-          } as Payment;
-        });
-
-        // Supabase is the authoritative source of truth
-        saveToStorage('payments', mapped);
-        return mapped;
-      }
-      if (error) {
-        console.error('[getPayments] Error fetching payments from Supabase:', error);
-      }
-    }
-    return getStoredOrInitial('payments', INITIAL_PAYMENTS);
+        : null,
+      mapDbToPaymentMode,
+      storage: getDefaultPhase1Storage(),
+      initialFallback: INITIAL_PAYMENTS,
+    });
   },
 
   async createPayment(payment: Omit<Payment, 'id' | 'created_at'>): Promise<Payment> {
