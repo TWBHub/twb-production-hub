@@ -22,6 +22,14 @@ import { matchesClientSearch } from '../../utils/clientUtils';
 import { ModuleErrorBanner } from '../common/ModuleErrorBanner';
 
 export const ClientsView: React.FC = () => {
+  const { canAccessSection } = useApp();
+  if (!canAccessSection('clients')) {
+    return null;
+  }
+  return <ClientsViewContent />;
+};
+
+const ClientsViewContent: React.FC = () => {
   const {
     filteredClients,
     createClient,

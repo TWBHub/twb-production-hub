@@ -30,6 +30,14 @@ import { resolveCompanyUuid } from '../../utils/companyUtils';
 import { sanitizeNumericInput, parseNumericInput } from '../../utils/numberInputUtils';
 
 export const ProjectsView: React.FC = () => {
+  const { canAccessSection } = useApp();
+  if (!canAccessSection('projects')) {
+    return null;
+  }
+  return <ProjectsViewContent />;
+};
+
+const ProjectsViewContent: React.FC = () => {
   const {
     filteredProjects,
     selectedProjectId,

@@ -143,10 +143,11 @@ export interface Profile {
   email: string;
   full_name: string;
   role: UserRole;
+  is_active?: boolean;
   avatar_url?: string;
   phone?: string;
   company_id?: 'twb' | 'golden_june' | 'both';
-  status: 'Active' | 'Inactive';
+  status?: 'Active' | 'Inactive';
 }
 
 export type TeamRole = UserRole;

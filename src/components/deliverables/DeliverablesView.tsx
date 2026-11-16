@@ -19,20 +19,28 @@ import {
   DeliverableStatus,
   DeliverableType,
   Project,
+  TeamMember,
+  UserRole,
 } from '../../types';
+import { resolveVerifiedUserRole } from '../../lib/auth';
 import { filterDeliverableEditors } from '../../utils/teamMemberFilters';
 import { resolveBrandCode } from '../../utils/companyUtils';
-import {
-  canAddDeliverableCatalogueEntry,
-  getDeliverableTypeOptions,
-} from '../../utils/deliverableCatalogueUtils';
+import { getDeliverableTypeOptions } from '../../utils/deliverableCatalogueUtils';
 import {
   DELIVERABLE_WORKFLOW_STATUSES,
+  ValidDeliverableStatus,
   getDeliverableFeedbackText,
   buildDeliverableFeedbackFields,
   resolveDeliverableStatusOnCreate,
   syncCreateStatusOnEditorChange,
 } from '../../utils/deliverableMilestones';
+import {
+  canDeleteDeliverable,
+  canEditDeliverable,
+  canManageAllDeliverables,
+  getAllowedDeliverableStatusesForUser,
+  isDeliverableOwnedByEditor,
+} from '../../utils/deliverablePermissions';
 import { ModuleErrorBanner } from '../common/ModuleErrorBanner';
 import { DeliverableTypeSelector } from './DeliverableTypeSelector';
 
@@ -59,27 +67,110 @@ const getStatusBadge = (s?: DeliverableStatus | '') => {
   }
 };
 
-// Row Component: Each deliverable row has its own isolated action menu state and unique DOM keys
-interface DeliverableRowProps {
+export interface DeliverableRowPermissionState {
+  canManageAll: boolean;
+  isOwnedByCurrentEditor: boolean;
+  canEditRow: boolean;
+  canEditStatus: boolean;
+  canEditExternalLink: boolean;
+  canOpenAdminEditModal: boolean;
+  canDeleteRow: boolean;
+  allowedStatuses: ValidDeliverableStatus[];
+}
+
+/**
+ * Computes authoritative UI row permissions for a single deliverable row.
+ * - Admin / Manager: full edit, inline editor assignment, status, URL, Admin edit modal, delete.
+ * - Linked Active Editor (own assigned row): status (all 7 statuses) + inline external_link ONLY.
+ * - Linked Editor (other/unassigned row) or Unlinked/Inactive Editor: strictly read-only.
+ */
+export function getDeliverableRowPermissionState(params: {
+  role?: UserRole | string | null;
+  deliverable: Deliverable;
+  linkedEditorTeamMemberId?: string | null;
+  linkedEditorTeamMember?: TeamMember | null;
+  isUserActive?: boolean;
+}): DeliverableRowPermissionState {
+  const {
+    role,
+    deliverable,
+    linkedEditorTeamMemberId,
+    linkedEditorTeamMember,
+    isUserActive = true,
+  } = params;
+
+  const normalizedRole = resolveVerifiedUserRole(role);
+  const canManageAll = canManageAllDeliverables(normalizedRole, isUserActive);
+  const isOwnedByCurrentEditor =
+    normalizedRole === 'Editor' &&
+    isUserActive &&
+    isDeliverableOwnedByEditor({
+      deliverable,
+      linkedEditorTeamMemberId,
+      linkedEditorTeamMember,
+    });
+  const canEditRow = canEditDeliverable({
+    role: normalizedRole,
+    deliverable,
+    linkedEditorTeamMemberId,
+    linkedEditorTeamMember,
+    isUserActive,
+  });
+  const allowedStatuses = getAllowedDeliverableStatusesForUser({
+    role: normalizedRole,
+    deliverable,
+    linkedEditorTeamMemberId,
+    linkedEditorTeamMember,
+    isUserActive,
+  });
+
+  return {
+    canManageAll,
+    isOwnedByCurrentEditor,
+    canEditRow,
+    canEditStatus: canEditRow,
+    canEditExternalLink: canEditRow,
+    canOpenAdminEditModal: canManageAll,
+    canDeleteRow: canDeleteDeliverable(normalizedRole, isUserActive),
+    allowedStatuses,
+  };
+}
+
+// Row Component: Each deliverable row has its own isolated action/edit state and unique DOM keys
+export interface DeliverableRowProps {
   del: Deliverable;
   editorName: string | null;
   canManage?: boolean;
+  canEditStatus?: boolean;
+  canEditExternalLink?: boolean;
+  canOpenAdminEditModal?: boolean;
+  canDeleteRow?: boolean;
+  isOwnedByCurrentEditor?: boolean;
+  allowedStatuses?: ValidDeliverableStatus[];
   availableEditors?: { id: string; name: string }[];
   onEdit: (del: Deliverable) => void;
   onDelete: (del: Deliverable) => void;
   onStatusChange: (id: string, status: DeliverableStatus | '') => Promise<void>;
+  onEditorExternalLinkChange?: (id: string, externalLink: string | null) => Promise<void>;
   onUpdateDeliverable?: (del: Deliverable) => Promise<Deliverable>;
   onActionError: (msg: string) => void;
 }
 
-const DeliverableRow: React.FC<DeliverableRowProps> = ({
+export const DeliverableRow: React.FC<DeliverableRowProps> = ({
   del,
   editorName,
-  canManage = true,
+  canManage = false,
+  canEditStatus = false,
+  canEditExternalLink = false,
+  canOpenAdminEditModal = false,
+  canDeleteRow = false,
+  isOwnedByCurrentEditor = false,
+  allowedStatuses = [],
   availableEditors = [],
   onEdit,
   onDelete,
   onStatusChange,
+  onEditorExternalLinkChange,
   onUpdateDeliverable,
   onActionError,
 }) => {
@@ -87,8 +178,23 @@ const DeliverableRow: React.FC<DeliverableRowProps> = ({
   const [menuPosition, setMenuPosition] = useState<{ top: number; left: number } | null>(null);
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
   const [isUpdatingEditor, setIsUpdatingEditor] = useState(false);
+  const [isEditingLink, setIsEditingLink] = useState(false);
+  const [linkDraft, setLinkDraft] = useState(del.external_link || '');
+  const [isSavingLink, setIsSavingLink] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!isEditingLink) {
+      setLinkDraft(del.external_link || '');
+    }
+  }, [del.external_link, isEditingLink]);
+
+  useEffect(() => {
+    if (!canEditExternalLink && isEditingLink) {
+      setIsEditingLink(false);
+    }
+  }, [canEditExternalLink, isEditingLink]);
 
   // Available editors list for this row: ensures currently assigned editor is included even if inactive
   const rowAvailableEditors = useMemo(() => {
@@ -104,6 +210,7 @@ const DeliverableRow: React.FC<DeliverableRowProps> = ({
 
   const toggleMenu = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (!canOpenAdminEditModal) return;
     if (isMenuOpen) {
       setIsMenuOpen(false);
       setMenuPosition(null);
@@ -153,6 +260,7 @@ const DeliverableRow: React.FC<DeliverableRowProps> = ({
   }, [isMenuOpen]);
 
   const handleStatusSelect = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    if (!canEditStatus) return;
     const newStatus = e.target.value as DeliverableStatus | '';
     try {
       setIsUpdatingStatus(true);
@@ -166,6 +274,7 @@ const DeliverableRow: React.FC<DeliverableRowProps> = ({
   };
 
   const handleInlineEditorChange = async (e: React.ChangeEvent<HTMLSelectElement>) => {
+    if (!canManage || !onUpdateDeliverable) return;
     const newEditorId = e.target.value;
     let newStatus = del.status;
 
@@ -195,6 +304,24 @@ const DeliverableRow: React.FC<DeliverableRowProps> = ({
     }
   };
 
+  const handleSaveEditorLink = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!canEditExternalLink || !onEditorExternalLinkChange) return;
+    const normalizedLink = linkDraft.trim() || null;
+    try {
+      setIsSavingLink(true);
+      await onEditorExternalLinkChange(del.id, normalizedLink);
+      setIsEditingLink(false);
+    } catch (err) {
+      console.error('Failed to update review link:', err);
+      onActionError(`Could not update URL: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setIsSavingLink(false);
+    }
+  };
+
+  const statusOptions = allowedStatuses.length > 0 ? allowedStatuses : WORKFLOW_STATUSES;
+
   return (
     <tr
       key={del.id}
@@ -213,7 +340,7 @@ const DeliverableRow: React.FC<DeliverableRowProps> = ({
         )}
       </td>
 
-      {/* 2. Assigned Editor (Inline selector for Admin, text for Editor) */}
+      {/* 2. Assigned Editor (Inline selector for Admin/Manager, read-only text for Editor) */}
       <td className="py-3.5 px-4">
         {canManage ? (
           <select
@@ -241,32 +368,109 @@ const DeliverableRow: React.FC<DeliverableRowProps> = ({
         )}
       </td>
 
-      {/* 3. Status (Dropdown with immediate update & Supabase sync) */}
+      {/* 3. Status (Editable dropdown for Admin/Manager & Editor own deliverables; read-only badge otherwise) */}
       <td className="py-3.5 px-4">
-        <select
-          id={`deliverable-status-${del.id}`}
-          disabled={isUpdatingStatus}
-          value={del.status || ''}
-          onChange={handleStatusSelect}
-          className={`text-xs font-semibold rounded-lg px-2.5 py-1 border cursor-pointer focus:outline-hidden transition-colors ${getStatusBadge(
-            del.status
-          )}`}
-        >
-          {!del.status && <option value="">No Status</option>}
-          {del.status && !WORKFLOW_STATUSES.includes(del.status) && (
-            <option value={del.status}>{del.status}</option>
-          )}
-          {WORKFLOW_STATUSES.map(st => (
-            <option key={st} value={st}>
-              {st}
-            </option>
-          ))}
-        </select>
+        {canEditStatus ? (
+          <select
+            id={`deliverable-status-${del.id}`}
+            disabled={isUpdatingStatus}
+            value={del.status || ''}
+            onChange={handleStatusSelect}
+            className={`text-xs font-semibold rounded-lg px-2.5 py-1 border cursor-pointer focus:outline-hidden transition-colors ${getStatusBadge(
+              del.status
+            )}`}
+          >
+            {!del.status && (
+              <option value="" disabled={!canManage}>
+                No Status
+              </option>
+            )}
+            {del.status && !statusOptions.includes(del.status as ValidDeliverableStatus) && (
+              <option value={del.status}>{del.status}</option>
+            )}
+            {statusOptions.map(st => (
+              <option key={st} value={st}>
+                {st}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <span
+            id={`deliverable-status-readonly-${del.id}`}
+            data-status-readonly="true"
+            className={`inline-flex items-center text-xs font-semibold rounded-lg px-2.5 py-1 border ${getStatusBadge(
+              del.status
+            )}`}
+          >
+            {del.status || 'No Status'}
+          </span>
+        )}
       </td>
 
-      {/* 4. URL */}
+      {/* 4. URL (Inline Editor link editing on own deliverables; read-only link otherwise) */}
       <td className="py-3.5 px-4">
-        {del.external_link ? (
+        {canEditExternalLink && !canManage ? (
+          isEditingLink ? (
+            <form onSubmit={handleSaveEditorLink} className="flex items-center gap-1.5 flex-wrap">
+              <input
+                id={`editor-link-input-${del.id}`}
+                type="url"
+                value={linkDraft}
+                onChange={e => setLinkDraft(e.target.value)}
+                placeholder="https://frame.io/..."
+                disabled={isSavingLink}
+                className="w-44 px-2 py-1 text-xs border border-slate-300 rounded-md bg-white text-slate-900 focus:outline-hidden focus:ring-1 focus:ring-slate-400"
+              />
+              <button
+                type="submit"
+                id={`editor-link-save-${del.id}`}
+                disabled={isSavingLink}
+                className="px-2 py-1 text-[11px] font-semibold bg-slate-900 hover:bg-slate-800 text-white rounded-md transition-colors cursor-pointer disabled:opacity-50"
+              >
+                {isSavingLink ? 'Saving...' : 'Save'}
+              </button>
+              <button
+                type="button"
+                id={`editor-link-cancel-${del.id}`}
+                disabled={isSavingLink}
+                onClick={() => {
+                  setLinkDraft(del.external_link || '');
+                  setIsEditingLink(false);
+                }}
+                className="px-2 py-1 text-[11px] font-medium text-slate-600 hover:bg-slate-100 rounded-md transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+            </form>
+          ) : (
+            <div className="flex items-center gap-2 flex-wrap">
+              {del.external_link ? (
+                <a
+                  href={del.external_link}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-800 hover:underline"
+                >
+                  <span>Review URL</span>
+                  <ExternalLink className="w-3 h-3 shrink-0" />
+                </a>
+              ) : (
+                <span className="text-slate-400 italic text-[11px]">No link yet</span>
+              )}
+              <button
+                type="button"
+                id={`editor-edit-link-btn-${del.id}`}
+                onClick={() => {
+                  setLinkDraft(del.external_link || '');
+                  setIsEditingLink(true);
+                }}
+                className="px-2 py-0.5 text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-md transition-colors cursor-pointer"
+              >
+                {del.external_link ? 'Edit URL' : 'Add URL'}
+              </button>
+            </div>
+          )
+        ) : del.external_link ? (
           <a
             href={del.external_link}
             target="_blank"
@@ -277,81 +481,95 @@ const DeliverableRow: React.FC<DeliverableRowProps> = ({
             <ExternalLink className="w-3 h-3 shrink-0" />
           </a>
         ) : (
-          <span className="text-slate-400 italic text-[11px]">
-            No link yet
-          </span>
+          <span className="text-slate-400 italic text-[11px]">No link yet</span>
         )}
       </td>
 
-      {/* 5. Pencil action (Click opens Edit / Delete menu) */}
+      {/* 5. Actions (Admin/Manager Pencil menu; Editor sees clear read-only / own indicator only) */}
       <td className="py-3.5 px-4 text-right">
-        <div className="inline-block text-left relative" data-deliverable-menu={del.id}>
-          <button
-            ref={buttonRef}
-            type="button"
-            id={`action-btn-${del.id}`}
-            onClick={toggleMenu}
-            className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
-              isMenuOpen
-                ? 'bg-slate-200 text-slate-900'
-                : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
-            }`}
-            title="Deliverable actions"
-            aria-label="Deliverable actions"
-          >
-            <Pencil className="w-4 h-4" />
-          </button>
-
-          {/* Action menu via portal: fixed positioning so it is NEVER clipped by overflow or table boundary */}
-          {isMenuOpen && menuPosition && typeof document !== 'undefined' && createPortal(
-            <div
-              ref={menuRef}
-              id={`action-menu-${del.id}`}
-              style={{
-                position: 'fixed',
-                top: `${menuPosition.top}px`,
-                left: `${menuPosition.left}px`,
-                width: '144px',
-                zIndex: 9999,
-              }}
-              className="bg-white rounded-xl shadow-xl border border-slate-200 py-1 text-left animate-in fade-in zoom-in-95 duration-100"
+        {canOpenAdminEditModal ? (
+          <div className="inline-block text-left relative" data-deliverable-menu={del.id}>
+            <button
+              ref={buttonRef}
+              type="button"
+              id={`action-btn-${del.id}`}
+              onClick={toggleMenu}
+              className={`p-1.5 rounded-lg transition-colors cursor-pointer ${
+                isMenuOpen
+                  ? 'bg-slate-200 text-slate-900'
+                  : 'text-slate-500 hover:text-slate-900 hover:bg-slate-100'
+              }`}
+              title="Deliverable actions"
+              aria-label="Deliverable actions"
             >
-              <button
-                type="button"
-                id={`edit-btn-${del.id}`}
-                onMouseDown={e => e.stopPropagation()}
-                onClick={e => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  setIsMenuOpen(false);
-                  onEdit(del);
+              <Pencil className="w-4 h-4" />
+            </button>
+
+            {/* Action menu via portal: fixed positioning so it is NEVER clipped by overflow or table boundary */}
+            {isMenuOpen && menuPosition && typeof document !== 'undefined' && createPortal(
+              <div
+                ref={menuRef}
+                id={`action-menu-${del.id}`}
+                style={{
+                  position: 'fixed',
+                  top: `${menuPosition.top}px`,
+                  left: `${menuPosition.left}px`,
+                  width: '144px',
+                  zIndex: 9999,
                 }}
-                className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 transition-colors text-left font-medium cursor-pointer"
+                className="bg-white rounded-xl shadow-xl border border-slate-200 py-1 text-left animate-in fade-in zoom-in-95 duration-100"
               >
-                <Pencil className="w-3.5 h-3.5 text-slate-500" />
-                <span>Edit</span>
-              </button>
-              {canManage && (
                 <button
                   type="button"
-                  id={`delete-btn-${del.id}`}
+                  id={`edit-btn-${del.id}`}
                   onMouseDown={e => e.stopPropagation()}
                   onClick={e => {
                     e.preventDefault();
                     e.stopPropagation();
                     setIsMenuOpen(false);
-                    onDelete(del);
+                    onEdit(del);
                   }}
-                  className="w-full flex items-center gap-2 px-3 py-2 text-xs text-rose-600 hover:bg-rose-50 transition-colors text-left font-medium cursor-pointer"
+                  className="w-full flex items-center gap-2 px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 transition-colors text-left font-medium cursor-pointer"
                 >
-                  <Trash2 className="w-3.5 h-3.5 text-rose-500" />
-                  <span>Delete</span>
+                  <Pencil className="w-3.5 h-3.5 text-slate-500" />
+                  <span>Edit</span>
                 </button>
-              )}
-            </div>,
-            document.body
-          )}
-        </div>
+                {canDeleteRow && (
+                  <button
+                    type="button"
+                    id={`delete-btn-${del.id}`}
+                    onMouseDown={e => e.stopPropagation()}
+                    onClick={e => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setIsMenuOpen(false);
+                      onDelete(del);
+                    }}
+                    className="w-full flex items-center gap-2 px-3 py-2 text-xs text-rose-600 hover:bg-rose-50 transition-colors text-left font-medium cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 text-rose-500" />
+                    <span>Delete</span>
+                  </button>
+                )}
+              </div>,
+              document.body
+            )}
+          </div>
+        ) : isOwnedByCurrentEditor ? (
+          <span
+            id={`deliverable-own-badge-${del.id}`}
+            className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200"
+          >
+            Your Edit
+          </span>
+        ) : (
+          <span
+            id={`deliverable-readonly-label-${del.id}`}
+            className="text-[11px] text-slate-400 italic"
+          >
+            View only
+          </span>
+        )}
       </td>
     </tr>
   );
@@ -360,18 +578,21 @@ const DeliverableRow: React.FC<DeliverableRowProps> = ({
 export const DeliverablesView: React.FC = () => {
   const {
     currentUser,
-    isAdmin,
-    isManager,
+    userRole,
+    linkedEditorTeamMember,
+    linkedEditorTeamMemberId,
     deliverables,
     projects,
     teamMembers,
     brandFilter,
     createDeliverable,
     updateDeliverable,
+    updateDeliverableAsEditor,
     deleteDeliverable,
     updateDeliverableStatus,
     setSelectedProjectId,
     setActiveTab,
+    canAccessSection,
     deliverableCatalogue,
     createDeliverableCatalogueItem,
     moduleErrors,
@@ -379,11 +600,15 @@ export const DeliverablesView: React.FC = () => {
     isRefreshingData,
   } = useApp();
 
-  const canManage =
-    isAdmin ||
-    isManager ||
-    !currentUser ||
-    canAddDeliverableCatalogueEntry(currentUser.role);
+  const canOpenProject = canAccessSection('projects');
+
+  const isUserActive = Boolean(
+    currentUser &&
+      currentUser.is_active !== false &&
+      currentUser.status?.trim().toLowerCase() !== 'inactive'
+  );
+  const effectiveRole = userRole ?? resolveVerifiedUserRole(currentUser?.role);
+  const canManage = canManageAllDeliverables(effectiveRole, isUserActive);
 
   // Filters & Ordering State
   const [searchQuery, setSearchQuery] = useState('');
@@ -630,8 +855,18 @@ export const DeliverablesView: React.FC = () => {
     });
   }, [deliverables, projects, teamMembers, searchQuery, brandFilter, statusFilter, ordering]);
 
-  // Open Edit Modal
+  // Ensure non-manager roles can never retain open Admin/Manager modals
+  useEffect(() => {
+    if (!canManage) {
+      setEditingDeliverable(null);
+      setShowCreateModal(false);
+      setDeletingDeliverable(null);
+    }
+  }, [canManage]);
+
+  // Open Edit Modal (Admin/Manager only)
   const openEditModal = (del: Deliverable) => {
+    if (!canManage) return;
     const matchedProj = projects.find(p => p.id === del.project_id);
     const brand = resolveBrandCode(matchedProj?.company_id || del.company_id);
     setEditingDeliverable(del);
@@ -649,10 +884,10 @@ export const DeliverablesView: React.FC = () => {
     setEditModalError(null);
   };
 
-  // Handle Save Edit
+  // Handle Save Edit (Admin/Manager only)
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!editingDeliverable) return;
+    if (!editingDeliverable || !canManage) return;
 
     let resolvedType = editIsCustom ? editCustomName.trim() : String(editType || '').trim();
     if (!resolvedType) {
@@ -695,8 +930,9 @@ export const DeliverablesView: React.FC = () => {
     }
   };
 
-  // Open Create Modal
+  // Open Create Modal (Admin/Manager only)
   const openCreateModal = (defaultProjectId?: string) => {
+    if (!canManage) return;
     const validProjects = projects && projects.length > 0 ? projects : [];
     const initialProj =
       (defaultProjectId && validProjects.find(p => p.id === defaultProjectId)) ||
@@ -749,9 +985,10 @@ export const DeliverablesView: React.FC = () => {
     }
   };
 
-  // Handle Create Deliverable
+  // Handle Create Deliverable (Admin/Manager only)
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!canManage) return;
     const proj = projects.find(p => p.id === createProjectId) || projects[0];
     if (!proj) {
       setCreateModalError('Please select a valid project.');
@@ -814,16 +1051,19 @@ export const DeliverablesView: React.FC = () => {
     }
   };
 
-  // Handle Delete Deliverable
+  // Handle Delete Deliverable (Admin/Manager only)
   const handleDelete = async () => {
-    if (!deletingDeliverable) return;
+    if (!deletingDeliverable || !canManage) return;
     try {
       setIsDeleting(true);
+      setDeliverableActionError(null);
       await deleteDeliverable(deletingDeliverable.id);
       setDeletingDeliverable(null);
     } catch (err) {
       console.error('Failed to delete deliverable:', err);
-      alert(`Could not delete deliverable: ${err instanceof Error ? err.message : String(err)}`);
+      setDeliverableActionError(
+        `Could not delete deliverable: ${err instanceof Error ? err.message : String(err)}`
+      );
     } finally {
       setIsDeleting(false);
     }
@@ -944,7 +1184,9 @@ export const DeliverablesView: React.FC = () => {
           <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
             {searchQuery || statusFilter !== 'all'
               ? 'No deliverables match the active filter criteria. Try clearing filters or search.'
-              : 'Start by creating your first post-production deliverable above.'}
+              : canManage
+              ? 'Start by creating your first post-production deliverable above.'
+              : 'No deliverables are available for the selected brand yet.'}
           </p>
           {(searchQuery || statusFilter !== 'all') && (
             <button
@@ -987,7 +1229,7 @@ export const DeliverablesView: React.FC = () => {
                     />
 
                     {/* Wedding Project Name */}
-                    {group.project ? (
+                    {group.project && canOpenProject ? (
                       <button
                         type="button"
                         onClick={() => {
@@ -1056,24 +1298,59 @@ export const DeliverablesView: React.FC = () => {
                     <tbody className="divide-y divide-slate-100">
                       {group.deliverables.map(del => {
                         const editorName = getEditorName(del.assigned_editor_id);
+                        const rowPerms = getDeliverableRowPermissionState({
+                          role: effectiveRole,
+                          deliverable: del,
+                          linkedEditorTeamMemberId,
+                          linkedEditorTeamMember,
+                          isUserActive,
+                        });
 
                         return (
                           <DeliverableRow
                             key={del.id}
                             del={del}
                             editorName={editorName}
-                            canManage={canManage}
+                            canManage={rowPerms.canManageAll}
+                            canEditStatus={rowPerms.canEditStatus}
+                            canEditExternalLink={rowPerms.canEditExternalLink}
+                            canOpenAdminEditModal={rowPerms.canOpenAdminEditModal}
+                            canDeleteRow={rowPerms.canDeleteRow}
+                            isOwnedByCurrentEditor={rowPerms.isOwnedByCurrentEditor}
+                            allowedStatuses={rowPerms.allowedStatuses}
                             availableEditors={availableEditors}
                             onEdit={openEditModal}
-                            onDelete={setDeletingDeliverable}
+                            onDelete={delToDelete => {
+                              if (rowPerms.canDeleteRow) {
+                                setDeletingDeliverable(delToDelete);
+                              }
+                            }}
                             onStatusChange={async (id, status) => {
                               setDeliverableActionError(null);
-                              await updateDeliverableStatus(id, status);
+                              if (rowPerms.canManageAll) {
+                                await updateDeliverableStatus(id, status);
+                              } else {
+                                await updateDeliverableAsEditor(id, { status });
+                              }
                             }}
-                            onUpdateDeliverable={async d => {
-                              setDeliverableActionError(null);
-                              return await updateDeliverable(d);
-                            }}
+                            onEditorExternalLinkChange={
+                              rowPerms.canEditExternalLink && !rowPerms.canManageAll
+                                ? async (id, externalLink) => {
+                                    setDeliverableActionError(null);
+                                    await updateDeliverableAsEditor(id, {
+                                      external_link: externalLink,
+                                    });
+                                  }
+                                : undefined
+                            }
+                            onUpdateDeliverable={
+                              rowPerms.canManageAll
+                                ? async d => {
+                                    setDeliverableActionError(null);
+                                    return await updateDeliverable(d);
+                                  }
+                                : undefined
+                            }
                             onActionError={msg => setDeliverableActionError(msg)}
                           />
                         );
@@ -1087,8 +1364,8 @@ export const DeliverablesView: React.FC = () => {
         </div>
       )}
 
-      {/* Edit Deliverable Modal */}
-      {editingDeliverable && (
+      {/* Edit Deliverable Modal (Admin & Manager only) */}
+      {canManage && editingDeliverable && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6 border border-slate-200 my-8">
             <div className="flex items-start justify-between mb-4">
@@ -1238,8 +1515,8 @@ export const DeliverablesView: React.FC = () => {
         </div>
       )}
 
-      {/* Create Deliverable Modal */}
-      {showCreateModal && (
+      {/* Create Deliverable Modal (Admin & Manager only) */}
+      {canManage && showCreateModal && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-2xl shadow-xl max-w-lg w-full p-6 border border-slate-200 my-8">
             <div className="flex items-start justify-between mb-4">
@@ -1396,8 +1673,8 @@ export const DeliverablesView: React.FC = () => {
         </div>
       )}
 
-      {/* Delete Deliverable Confirmation Modal */}
-      {deletingDeliverable && (
+      {/* Delete Deliverable Confirmation Modal (Admin & Manager only) */}
+      {canManage && deletingDeliverable && (
         <div className="fixed inset-0 z-70 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl shadow-xl max-w-md w-full p-6 border border-slate-200">
             <div className="flex items-center gap-3 text-rose-600 mb-3">

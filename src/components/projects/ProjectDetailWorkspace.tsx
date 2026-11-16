@@ -104,6 +104,17 @@ export const ProjectDetailWorkspace: React.FC<ProjectWorkspaceProps> = ({
   projectId,
   onClose,
 }) => {
+  const { canAccessSection } = useApp();
+  if (!canAccessSection('projects')) {
+    return null;
+  }
+  return <ProjectDetailWorkspaceContent projectId={projectId} onClose={onClose} />;
+};
+
+const ProjectDetailWorkspaceContent: React.FC<ProjectWorkspaceProps> = ({
+  projectId,
+  onClose,
+}) => {
   const {
   projects,
   updateProject,

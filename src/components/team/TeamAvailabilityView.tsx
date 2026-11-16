@@ -69,6 +69,12 @@ const dateIsBetween = (
 };
 
 export const TeamAvailabilityView: React.FC = () => {
+  const { canAccessSection } = useApp();
+  if (!canAccessSection('team-availability')) return null;
+  return <TeamAvailabilityViewContent />;
+};
+
+const TeamAvailabilityViewContent: React.FC = () => {
   const {
   projects,
   projectTeam,

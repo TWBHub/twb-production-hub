@@ -34,10 +34,13 @@ export const DataManagementView: React.FC = () => {
     updateProject,
     setSelectedProjectId,
     setActiveTab,
+    canAccessSection,
     moduleErrors,
     refreshAllData,
     isRefreshingData,
   } = useApp();
+
+  const canOpenProject = canAccessSection('projects');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [ordering, setOrdering] = useState<'recently_added' | 'name_asc'>('recently_added');
@@ -323,7 +326,7 @@ export const DataManagementView: React.FC = () => {
               <div className="bg-slate-50/80 px-4 py-3.5 border-b border-slate-200 rounded-t-2xl flex flex-wrap items-center justify-between gap-3">
                 <div className="flex items-center gap-2.5 flex-wrap">
                   {/* Wedding Project Name */}
-                  {group.project ? (
+                  {group.project && canOpenProject ? (
                     <button
                       type="button"
                       onClick={() => {

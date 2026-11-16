@@ -17,7 +17,15 @@ import { NotificationsView } from './components/notifications/NotificationsView'
 import { SettingsView } from './components/settings/SettingsView';
 
 const AppContent: React.FC = () => {
-  const { activeTab, currentUser, authLoading } = useApp();
+  const {
+    activeTab,
+    currentUser,
+    authLoading,
+    userRole,
+    isPasswordRecovery,
+    profileVerificationState,
+    canAccessSection,
+  } = useApp();
 
   // 1. Loading Authentication state & persistent session
   if (authLoading) {
@@ -34,13 +42,27 @@ const AppContent: React.FC = () => {
     );
   }
 
-  // 2. Unauthenticated: Render dedicated Supabase Login View
-  if (!currentUser) {
+  // 2. Unauthenticated, unverified, password recovery, or temporary profile verification failure:
+  //    Keep user out of protected dashboard and render dedicated Auth / Recovery / Retry view
+  if (
+    !currentUser ||
+    !userRole ||
+    isPasswordRecovery ||
+    profileVerificationState === 'temporary_error'
+  ) {
     return <LoginView />;
   }
 
-  // 3. Authenticated: Render dashboard and navigation
+  // 3. Authenticated with verified profile: Render dashboard and navigation
   const renderActiveView = () => {
+    if (!currentUser || !userRole) {
+      return null;
+    }
+
+    if (!canAccessSection(activeTab)) {
+      return userRole === 'Editor' ? <DeliverablesView /> : <DashboardView />;
+    }
+
     switch (activeTab) {
       case 'dashboard':
         return <DashboardView />;
@@ -70,7 +92,7 @@ const AppContent: React.FC = () => {
       case 'settings':
         return <SettingsView />;
       default:
-        return <DashboardView />;
+        return userRole === 'Editor' ? <DeliverablesView /> : <DashboardView />;
     }
   };
 

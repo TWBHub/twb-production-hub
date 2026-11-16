@@ -45,6 +45,7 @@ export const Sidebar: React.FC<{ mobileOpen: boolean; setMobileOpen: (open: bool
     currentUser,
     deliverables,
     isEditorOnly,
+    linkedEditorTeamMemberId,
   } = useApp();
 
   // Close drawer on Escape key press
@@ -58,9 +59,13 @@ export const Sidebar: React.FC<{ mobileOpen: boolean; setMobileOpen: (open: bool
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [mobileOpen, setMobileOpen]);
 
-  const editorActiveDeliverables = deliverables.filter(
-    d => d.status === 'In Progress' || d.status === 'Submitted'
-  ).length;
+  const editorActiveDeliverables = linkedEditorTeamMemberId
+    ? deliverables.filter(
+        d =>
+          d.assigned_editor_id === linkedEditorTeamMemberId &&
+          (d.status === 'In Progress' || d.status === 'Submitted')
+      ).length
+    : 0;
 
   const navItems: NavItem[] = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -157,26 +162,11 @@ export const Sidebar: React.FC<{ mobileOpen: boolean; setMobileOpen: (open: bool
 
         {/* Navigation List */}
         <nav className="flex-1 overflow-y-auto px-3 py-3 space-y-0.5">
-          {navItems.map(item => {
-            const allowed = canAccessSection(item.id);
-            const isActive = activeTab === item.id;
-            const Icon = item.icon;
-
-            if (!allowed) {
-              return (
-                <div
-                  key={item.id}
-                  className="flex items-center justify-between px-3 py-2 rounded-md text-xs text-slate-600 cursor-not-allowed opacity-50"
-                  title="Restricted for your current role"
-                >
-                  <div className="flex items-center gap-3">
-                    <Icon className="w-4 h-4 text-slate-600" />
-                    <span>{item.label}</span>
-                  </div>
-                  <ShieldAlert className="w-3 h-3 text-slate-600" />
-                </div>
-              );
-            }
+          {navItems
+            .filter(item => canAccessSection(item.id))
+            .map(item => {
+              const isActive = activeTab === item.id;
+              const Icon = item.icon;
 
             return (
               <button
@@ -210,8 +200,8 @@ export const Sidebar: React.FC<{ mobileOpen: boolean; setMobileOpen: (open: bool
                   </span>
                 )}
               </button>
-            );
-          })}
+              );
+            })}
         </nav>
 
         {/* User Profile */}
@@ -267,6 +257,8 @@ export const Header: React.FC<{ onOpenMobile?: () => void; onMobileMenuToggle?: 
     activeTab,
     setActiveTab,
     unreadNotificationCount,
+    canAccessSettings,
+    canAccessNotifications,
   } = useApp();
 
   const handleToggle = onOpenMobile || onMobileMenuToggle || (() => {});
@@ -327,27 +319,29 @@ export const Header: React.FC<{ onOpenMobile?: () => void; onMobileMenuToggle?: 
 
       {/* Right section: Supabase status, Profile Chip, Notifications, Logout */}
       <div className="flex items-center gap-2 sm:gap-3">
-        {/* Supabase Status Pill */}
-        <button
-          id="btn-supabase-status"
-          onClick={() => setActiveTab('settings')}
-          className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-full border transition-colors ${
-            supabaseStatus.connected
-              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-              : 'bg-[#F1D099]/20 text-[#5e430c] border-[#F1D099]/50 hover:bg-[#F1D099]/30'
-          }`}
-          title={supabaseStatus.message}
-        >
-          <Database className="w-3.5 h-3.5" />
-          <span>
-            {supabaseStatus.connected ? 'Supabase Live' : 'Supabase Ready'}
-          </span>
-          <span
-            className={`w-1.5 h-1.5 rounded-full ${
-              supabaseStatus.connected ? 'bg-emerald-500' : 'bg-[#F1D099]'
+        {/* Supabase Status Pill (Settings shortcut — hidden for roles without Settings access) */}
+        {canAccessSettings && (
+          <button
+            id="btn-supabase-status"
+            onClick={() => setActiveTab('settings')}
+            className={`hidden sm:flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-medium rounded-full border transition-colors ${
+              supabaseStatus.connected
+                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                : 'bg-[#F1D099]/20 text-[#5e430c] border-[#F1D099]/50 hover:bg-[#F1D099]/30'
             }`}
-          />
-        </button>
+            title={supabaseStatus.message}
+          >
+            <Database className="w-3.5 h-3.5" />
+            <span>
+              {supabaseStatus.connected ? 'Supabase Live' : 'Supabase Ready'}
+            </span>
+            <span
+              className={`w-1.5 h-1.5 rounded-full ${
+                supabaseStatus.connected ? 'bg-emerald-500' : 'bg-[#F1D099]'
+              }`}
+            />
+          </button>
+        )}
 
         {/* User Profile display with Verified Role */}
         <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1">
@@ -361,20 +355,22 @@ export const Header: React.FC<{ onOpenMobile?: () => void; onMobileMenuToggle?: 
           </div>
         </div>
 
-        {/* Notification Bell */}
-        <button
-          id="btn-notifications-header"
-          onClick={() => setActiveTab('notifications')}
-          className="relative p-2 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
-          aria-label="Notifications"
-        >
-          <Bell className="w-5 h-5" />
-          {unreadNotificationCount > 0 && (
-            <span className="absolute top-1 right-1 w-4 h-4 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-pulse">
-              {unreadNotificationCount}
-            </span>
-          )}
-        </button>
+        {/* Notification Bell (hidden for roles without Notifications access) */}
+        {canAccessNotifications && (
+          <button
+            id="btn-notifications-header"
+            onClick={() => setActiveTab('notifications')}
+            className="relative p-2 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-100 transition-colors"
+            aria-label="Notifications"
+          >
+            <Bell className="w-5 h-5" />
+            {unreadNotificationCount > 0 && (
+              <span className="absolute top-1 right-1 w-4 h-4 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-pulse">
+                {unreadNotificationCount}
+              </span>
+            )}
+          </button>
+        )}
 
         {/* Sign Out Action Button */}
         <button

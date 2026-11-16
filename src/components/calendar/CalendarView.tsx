@@ -28,6 +28,14 @@ import {
 import { CalendarEntryModal } from './CalendarEntryModal';
 
 export const CalendarView: React.FC = () => {
+  const { canAccessSection } = useApp();
+  if (!canAccessSection('calendar')) {
+    return null;
+  }
+  return <CalendarViewContent />;
+};
+
+const CalendarViewContent: React.FC = () => {
   const {
     calendarEvents,
     createCalendarEvent,

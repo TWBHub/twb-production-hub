@@ -52,6 +52,14 @@ const PIPELINE_STAGES: Array<{ id: EnquiryStatus; label: string; color: string; 
 ];
 
 export const EnquiriesView: React.FC = () => {
+  const { canAccessSection } = useApp();
+  if (!canAccessSection('enquiries')) {
+    return null;
+  }
+  return <EnquiriesViewContent />;
+};
+
+const EnquiriesViewContent: React.FC = () => {
   const {
     filteredEnquiries,
     createEnquiry,

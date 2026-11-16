@@ -92,6 +92,7 @@ import {
   createDeliverableWithSupabase,
   updateDeliverableWithSupabase,
   updateDeliverableStatusWithSupabase,
+  updateDeliverableAsEditorWithSupabase,
   getDefaultPhase1Storage,
   upsertItemInCache,
   removeItemFromCache,
@@ -2826,6 +2827,72 @@ async assignTeamMember(
       });
     } catch (notifErr) {
       console.warn('Could not record status notification:', notifErr);
+    }
+
+    return savedDeliverable;
+  },
+
+  async updateDeliverableAsEditor(params: {
+    deliverableId: string;
+    changes: {
+      status?: DeliverableStatus;
+      external_link?: string | null;
+      [key: string]: unknown;
+    };
+    actorRole: UserRole | string | null | undefined;
+    updaterName?: string;
+    linkedEditorTeamMemberId?: string | null;
+    linkedEditorTeamMember?: TeamMember | null;
+    isActorActive?: boolean;
+    nowIso?: string;
+  }): Promise<Deliverable> {
+    const supabase = getSupabaseClient();
+    const savedDeliverable = await updateDeliverableAsEditorWithSupabase({
+      deliverableId: params.deliverableId,
+      changes: params.changes,
+      actorRole: params.actorRole,
+      linkedEditorTeamMemberId: params.linkedEditorTeamMemberId,
+      linkedEditorTeamMember: params.linkedEditorTeamMember,
+      isActorActive: params.isActorActive,
+      adapter: supabase
+        ? {
+            selectById: async (id: string) =>
+              await supabase.from('deliverables').select('*').eq('id', id).maybeSingle(),
+            updateAndReturn: async (id: string, payload: Record<string, any>) =>
+              await supabase.from('deliverables').update(payload).eq('id', id).select(),
+          }
+        : null,
+      mapRow: mapSupabaseDeliverableToModel,
+      storage: getDefaultPhase1Storage(),
+      initialFallback: INITIAL_DELIVERABLES,
+      nowIso: params.nowIso,
+    });
+
+    // Best-effort status notification — must never fail an already-persisted Editor deliverable update
+    if (params.changes.status !== undefined) {
+      try {
+        let projectName = 'Project';
+        try {
+          const projects = await this.getProjects();
+          const project = projects.find(p => p.id === savedDeliverable.project_id);
+          if (project?.name) {
+            projectName = project.name;
+          }
+        } catch {
+          // Editors may not have access to Projects; still attempt notification creation
+        }
+
+        const actorLabel = params.updaterName?.trim() || 'Editor';
+        await this.createNotification({
+          title: `Deliverable Status: ${savedDeliverable.status || 'Unassigned'}`,
+          message: `${actorLabel} (${params.actorRole || 'Editor'}) marked "${savedDeliverable.deliverable_type || 'Deliverable'}" as "${savedDeliverable.status || 'Unassigned'}" for ${projectName}.`,
+          type: 'deliverable_status',
+          read: false,
+          link: 'deliverables',
+        });
+      } catch (notifErr) {
+        console.warn('Could not record editor deliverable status notification:', notifErr);
+      }
     }
 
     return savedDeliverable;

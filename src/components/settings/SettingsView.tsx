@@ -39,6 +39,12 @@ import {
 } from '../../utils/deliverableCatalogueUtils';
 
 export const SettingsView: React.FC = () => {
+  const { canAccessSection } = useApp();
+  if (!canAccessSection('settings')) return null;
+  return <SettingsViewContent />;
+};
+
+const SettingsViewContent: React.FC = () => {
   const {
     companies,
     updateCompany,

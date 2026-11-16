@@ -7,7 +7,10 @@ import {
   Project,
   ProjectData,
   ProjectTeamAssignment,
+  TeamMember,
+  UserRole,
 } from '../types';
+import { resolveVerifiedUserRole } from '../lib/auth';
 import { resolveBrandCode } from './companyUtils';
 import {
   computeMilestonesOnStatusChange,
@@ -18,6 +21,12 @@ import {
   serializeDeliverableNotes,
   validateDeliverableStatus,
 } from './deliverableMilestones';
+import {
+  EDITOR_ALLOWED_DELIVERABLE_STATUSES,
+  EDITOR_EDITABLE_DELIVERABLE_FIELDS,
+  resolveEffectiveLinkedEditorId,
+  validateDeliverableUpdateFields,
+} from './deliverablePermissions';
 
 export const PHASE1_STORAGE_PREFIX = 'twbhub_';
 
@@ -925,3 +934,260 @@ export async function updateDeliverableStatusWithSupabase(params: {
   upsertItemInCache<Deliverable>(storage, 'deliverables', saved);
   return saved;
 }
+
+/**
+ * 6C. Dedicated Editor-Safe Deliverable Update — Strictly enforces Editor ownership
+ * (`team_members.profile_id === currentUser.id` -> `deliverable.assigned_editor_id`)
+ * against the authoritative Supabase baseline before any write, and permits modifying
+ * ONLY `status` (any of the 7 workflow statuses) and/or `external_link`.
+ *
+ * Protected fields (`project_id`, `company_id`, `name`, `deliverable_type`,
+ * `assigned_editor_id`, `due_date`, `priority`, `notes`, `client_feedback`, etc.)
+ * are rejected and never written directly. When updating `status`, existing `notes`
+ * (`user_notes`) and milestone timestamps are preserved cleanly via `serializeDeliverableNotes`.
+ * When updating only `external_link`, `notes` and `client_feedback` are not modified at all.
+ */
+export async function updateDeliverableAsEditorWithSupabase(params: {
+  deliverableId: string;
+  changes: {
+    status?: DeliverableStatus;
+    external_link?: string | null;
+    [key: string]: unknown;
+  };
+  actorRole: UserRole | string | null | undefined;
+  linkedEditorTeamMemberId?: string | null;
+  linkedEditorTeamMember?: TeamMember | null;
+  isActorActive?: boolean;
+  adapter: DeliverableMutationAdapter | null;
+  mapRow: (row: any) => Deliverable;
+  storage?: Phase1StorageAdapter | null;
+  initialFallback?: Deliverable[];
+  nowIso?: string;
+}): Promise<Deliverable> {
+  const {
+    deliverableId,
+    changes,
+    actorRole,
+    linkedEditorTeamMemberId,
+    linkedEditorTeamMember,
+    isActorActive = true,
+    adapter,
+    mapRow,
+    storage = getDefaultPhase1Storage(),
+    initialFallback = [],
+    nowIso = new Date().toISOString(),
+  } = params;
+
+  const cleanId = typeof deliverableId === 'string' ? deliverableId.trim() : '';
+  if (!cleanId) {
+    throw new Error('Deliverable ID is required for Editor update.');
+  }
+
+  if (!isActorActive) {
+    throw new Error('Inactive accounts cannot update deliverables.');
+  }
+
+  const normalizedRole = resolveVerifiedUserRole(actorRole);
+  if (normalizedRole !== 'Editor') {
+    throw new Error('Editor deliverable update path requires an active verified Editor role.');
+  }
+
+  const resolvedEditorId = resolveEffectiveLinkedEditorId({
+    linkedEditorTeamMemberId,
+    linkedEditorTeamMember,
+  });
+  if (!resolvedEditorId) {
+    throw new Error(
+      'Editor account is not linked to an active Team Member profile and cannot modify deliverables.'
+    );
+  }
+
+  // Pre-validate requested fields before touching DB so disallowed fields/statuses perform 0 DB writes
+  const preValidation = validateDeliverableUpdateFields({
+    role: normalizedRole,
+    deliverable: {
+      id: cleanId,
+      assigned_editor_id: resolvedEditorId,
+    },
+    updatedFields: changes,
+    linkedEditorTeamMemberId,
+    linkedEditorTeamMember,
+    isUserActive: isActorActive,
+  });
+
+  if (!preValidation.allowed || !preValidation.sanitizedEditorPatch) {
+    throw new Error(preValidation.reason || 'Invalid Editor deliverable update request.');
+  }
+
+  if (!adapter) {
+    const current = readUnconfiguredOrInitial<Deliverable>(storage, 'deliverables', initialFallback);
+    let target = current.find(d => d.id === cleanId);
+    if (!target) {
+      throw new Error(`Deliverable "${cleanId}" was not found locally.`);
+    }
+    if (target.notes && typeof target.notes === 'string' && target.notes.startsWith('__METADATA__:')) {
+      const parsed = parseDeliverableNotes(target.notes);
+      target = {
+        ...target,
+        notes: parsed.userNotes,
+        assigned_at: target.assigned_at || parsed.metadata?.assigned_at,
+        first_submitted_at: target.first_submitted_at || parsed.metadata?.first_submitted_at,
+        delivered_at: target.delivered_at || parsed.metadata?.delivered_at,
+      };
+    }
+
+    const validation = validateDeliverableUpdateFields({
+      role: normalizedRole,
+      deliverable: target,
+      updatedFields: changes,
+      linkedEditorTeamMemberId,
+      linkedEditorTeamMember,
+      isUserActive: isActorActive,
+    });
+    if (!validation.allowed || !validation.sanitizedEditorPatch) {
+      throw new Error(validation.reason || 'Permission denied for Editor deliverable update.');
+    }
+
+    const patch = validation.sanitizedEditorPatch;
+    const nextMilestones =
+      patch.status !== undefined
+        ? computeMilestonesOnStatusChange(target, patch.status, nowIso)
+        : {
+            assigned_at: target.assigned_at,
+            first_submitted_at: target.first_submitted_at,
+            delivered_at: target.delivered_at,
+          };
+
+    const updatedLocal: Deliverable = {
+      ...target,
+      status: patch.status !== undefined ? patch.status : target.status,
+      external_link:
+        patch.external_link !== undefined
+          ? patch.external_link || undefined
+          : target.external_link,
+      assigned_at: nextMilestones.assigned_at,
+      first_submitted_at: nextMilestones.first_submitted_at,
+      delivered_at: nextMilestones.delivered_at,
+      last_updated: nowIso,
+    };
+
+    writeCachedArray(
+      storage,
+      'deliverables',
+      current.map(d => (d.id === cleanId ? updatedLocal : d))
+    );
+    return updatedLocal;
+  }
+
+  // 1. Fetch authoritative baseline row from Supabase before validating ownership or writing
+  const { data: existingRow, error: fetchError } = await adapter.selectById(cleanId);
+  if (fetchError) {
+    throw new Error(
+      `Could not load deliverable "${cleanId}" from Supabase before Editor update: ${fetchError.message}`
+    );
+  }
+  if (!existingRow) {
+    throw new Error(`Deliverable "${cleanId}" was not found in Supabase.`);
+  }
+
+  const existing = mapRow(existingRow);
+
+  // 2. Enforce ownership and allowed fields/statuses against authoritative Supabase baseline
+  const validation = validateDeliverableUpdateFields({
+    role: normalizedRole,
+    deliverable: existing,
+    updatedFields: changes,
+    linkedEditorTeamMemberId,
+    linkedEditorTeamMember,
+    isUserActive: isActorActive,
+  });
+
+  if (!validation.allowed || !validation.sanitizedEditorPatch) {
+    throw new Error(validation.reason || 'Permission denied for Editor deliverable update.');
+  }
+
+  const { sanitizedEditorPatch } = validation;
+  const updatePayload: Record<string, any> = {
+    updated_at: nowIso,
+  };
+
+  if (sanitizedEditorPatch.external_link !== undefined) {
+    updatePayload.external_link = sanitizedEditorPatch.external_link;
+  }
+
+  let milestones: {
+    assigned_at?: string;
+    first_submitted_at?: string;
+    delivered_at?: string;
+  } = {
+    assigned_at: existing.assigned_at,
+    first_submitted_at: existing.first_submitted_at,
+    delivered_at: existing.delivered_at,
+  };
+
+  if (sanitizedEditorPatch.status !== undefined) {
+    // Double-check against canonical 7-status constraint
+    const validatedStatus =
+      (EDITOR_ALLOWED_DELIVERABLE_STATUSES as readonly string[]).includes(sanitizedEditorPatch.status)
+        ? sanitizedEditorPatch.status
+        : validateDeliverableStatus(sanitizedEditorPatch.status);
+    milestones = computeMilestonesOnStatusChange(existing, validatedStatus, nowIso);
+    updatePayload.status = validatedStatus;
+    updatePayload.notes = serializeDeliverableNotes(existing.notes, milestones);
+  }
+
+  // Safety guard: guarantee no protected fields ever enter the update payload
+  const allowedPayloadKeys = new Set<string>([
+    ...EDITOR_EDITABLE_DELIVERABLE_FIELDS,
+    'notes',
+    'updated_at',
+  ]);
+  for (const key of Object.keys(updatePayload)) {
+    if (!allowedPayloadKeys.has(key)) {
+      delete updatePayload[key];
+    }
+  }
+
+  let activePayload = { ...updatePayload };
+  let { data, error } = await adapter.updateAndReturn(cleanId, activePayload);
+
+  if (
+    error &&
+    error.message?.toLowerCase().includes('updated_at') &&
+    (error.message?.includes('schema cache') ||
+      error.message?.includes('does not exist') ||
+      error.message?.includes('Could not find'))
+  ) {
+    const retryPayload = { ...activePayload };
+    delete retryPayload.updated_at;
+    const retry = await adapter.updateAndReturn(cleanId, retryPayload);
+    data = retry.data;
+    error = retry.error;
+  }
+
+  if (error) {
+    throw new Error(`Could not update deliverable as Editor in Supabase: ${error.message}`);
+  }
+
+  if (!data || data.length === 0) {
+    throw new Error(
+      `Could not update deliverable "${cleanId}" as Editor in Supabase: 0 rows affected (check permissions or record existence).`
+    );
+  }
+
+  const mapped = mapRow(data[0]);
+  const saved: Deliverable = {
+    ...mapped,
+    notes: mapped.notes !== undefined ? mapped.notes : existing.notes,
+    client_feedback:
+      mapped.client_feedback !== undefined ? mapped.client_feedback : existing.client_feedback,
+    last_updated: data[0]?.updated_at || data[0]?.last_updated || mapped.last_updated || nowIso,
+    assigned_at: mapped.assigned_at ?? milestones.assigned_at,
+    first_submitted_at: mapped.first_submitted_at ?? milestones.first_submitted_at,
+    delivered_at: mapped.delivered_at ?? milestones.delivered_at,
+  };
+
+  upsertItemInCache<Deliverable>(storage, 'deliverables', saved);
+  return saved;
+}
+

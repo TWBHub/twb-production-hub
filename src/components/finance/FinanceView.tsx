@@ -49,6 +49,12 @@ import { formatDisplayDate } from '../../utils/dateUtils';
 import { ModuleErrorBanner } from '../common/ModuleErrorBanner';
 
 export const FinanceView: React.FC = () => {
+  const { canAccessSection } = useApp();
+  if (!canAccessSection('finance')) return null;
+  return <FinanceViewContent />;
+};
+
+const FinanceViewContent: React.FC = () => {
   const {
     projects,
     filteredProjects,

@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
 import { Session, User } from '@supabase/supabase-js';
 import {
   BrandId,
@@ -24,16 +24,35 @@ import {
   DeliverableCatalogueItem,
 } from '../types';
 import { apiService } from '../services/api';
-import { INITIAL_PROFILES } from '../services/seedData';
 import {
   getSession,
   getUserProfile,
+  ProfileLookupResult,
   signInWithEmail,
-  signUpWithEmail,
   signOut,
+  resetPasswordForEmail,
+  verifyRecoveryOtp,
+  updateUserPassword,
   onAuthStateChange,
   canAccessTab,
+  getDefaultLandingTab,
+  resolveVerifiedUserRole,
 } from '../lib/auth';
+import {
+  canAddDeliverableCatalogueEntry,
+  canEditDeliverableCatalogueEntry,
+} from '../utils/deliverableCatalogueUtils';
+import {
+  EditorDeliverablePatch,
+  canCreateDeliverable,
+  canDeleteDeliverable,
+  canManageAllDeliverables,
+  canSetDeliverableStatus,
+  extractEditorDeliverableChanges,
+  isDeliverableOwnedByEditor,
+  resolveLinkedEditorTeamMember,
+  validateDeliverableUpdateFields,
+} from '../utils/deliverablePermissions';
 
 export type ModuleErrorKey =
   | 'clients'
@@ -52,24 +71,25 @@ interface AppContextType {
   currentUser: Profile | null;
   session: Session | null;
   authLoading: boolean;
-  login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
-  signUp: (
+  authError: string | null;
+  clearAuthError: () => void;
+  profileVerificationState: 'idle' | 'verified' | 'temporary_error';
+  retryProfileVerification: () => Promise<{ success: boolean; error?: string }>;
+  isPasswordRecovery: boolean;
+  requestPasswordReset: (email: string) => Promise<{ success: boolean; error?: string }>;
+  verifyPasswordRecoveryOtp: (
     email: string,
-    password: string,
-    options?: {
-      fullName?: string;
-      role?: UserRole;
-      companyId?: 'twb' | 'golden_june' | 'both';
-      phone?: string;
-    }
-  ) => Promise<{ success: boolean; error?: string; sessionEstablished?: boolean }>;
+    token: string
+  ) => Promise<{ success: boolean; error?: string }>;
+  completePasswordRecovery: (newPassword: string) => Promise<{ success: boolean; error?: string }>;
+  login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
   refreshUserProfile: () => Promise<Profile | null>;
   availableProfiles: Profile[];
 
   // Navigation
   activeTab: string;
-  setActiveTab: (tab: string) => void;
+  setActiveTab: React.Dispatch<React.SetStateAction<string>>;
   selectedProjectId: string | null;
   setSelectedProjectId: (id: string | null) => void;
   selectedEnquiryId: string | null;
@@ -169,6 +189,16 @@ assignTeamMember: (
   deleteProjectData: (id: string) => Promise<void>;
   createDeliverable: (deliverable: Omit<Deliverable, 'id' | 'last_updated'>) => Promise<Deliverable>;
   updateDeliverable: (deliverable: Deliverable) => Promise<Deliverable>;
+  updateDeliverableAsEditor: (
+    deliverableId: string,
+    changes:
+      | EditorDeliverablePatch
+      | {
+          status?: DeliverableStatus;
+          external_link?: string | null;
+          [key: string]: unknown;
+        }
+  ) => Promise<Deliverable>;
   deleteDeliverable: (id: string) => Promise<void>;
   updateDeliverableStatus: (deliverableId: string, status: DeliverableStatus) => Promise<void>;
   createPayment: (payment: Omit<Payment, 'id' | 'created_at'>) => Promise<Payment>;
@@ -185,15 +215,340 @@ assignTeamMember: (
   markAllNotificationsRead: () => Promise<void>;
   updateCompany: (company: Company) => Promise<void>;
 
-  // Role permissions helpers
+  // Role permissions & verified Editor identity helpers
   canAccessSection: (section: string) => boolean;
   canManageFinance: boolean;
   canManageTeam: boolean;
   canCreateProject: boolean;
+  canManageDeliverables: boolean;
+  canManageProjectData: boolean;
+  canAccessSettings: boolean;
+  canAccessNotifications: boolean;
+  linkedEditorTeamMember: TeamMember | null;
+  linkedEditorTeamMemberId: string | null;
   isEditorOnly: boolean;
   isAdmin: boolean;
   isManager: boolean;
-  userRole: UserRole;
+  userRole: UserRole | null;
+}
+
+export interface AppDeliverableActionDeps {
+  currentUser: Profile | null;
+  userRole: UserRole | null;
+  isUserActive: boolean;
+  deliverables: Deliverable[];
+  deliverableCatalogue: DeliverableCatalogueItem[];
+  enquiries: Enquiry[];
+  linkedEditorTeamMember: TeamMember | null;
+  linkedEditorTeamMemberId: string | null;
+  api: {
+    createDeliverable: (d: Omit<Deliverable, 'id' | 'last_updated'>) => Promise<Deliverable>;
+    updateDeliverable: (d: Deliverable) => Promise<Deliverable>;
+    updateDeliverableStatus: (
+      deliverableId: string,
+      status: DeliverableStatus,
+      updaterRole: UserRole,
+      updaterName: string
+    ) => Promise<Deliverable>;
+    updateDeliverableAsEditor: (params: {
+      deliverableId: string;
+      changes: {
+        status?: DeliverableStatus;
+        external_link?: string | null;
+      };
+      actorRole: UserRole | string | null | undefined;
+      updaterName?: string;
+      linkedEditorTeamMemberId?: string | null;
+      linkedEditorTeamMember?: TeamMember | null;
+      isActorActive?: boolean;
+    }) => Promise<Deliverable>;
+    deleteDeliverable: (id: string) => Promise<void>;
+    createDeliverableCatalogueItem: typeof apiService.createDeliverableCatalogueItem;
+    updateDeliverableCatalogueItem: typeof apiService.updateDeliverableCatalogueItem;
+    reorderDeliverableCatalogue: typeof apiService.reorderDeliverableCatalogue;
+    deleteDeliverableCatalogueItem: typeof apiService.deleteDeliverableCatalogueItem;
+  };
+  setDeliverables: React.Dispatch<React.SetStateAction<Deliverable[]>>;
+  setDeliverableCatalogue: React.Dispatch<React.SetStateAction<DeliverableCatalogueItem[]>>;
+  refreshAllData: () => Promise<void>;
+}
+
+/**
+ * Authoritative deliverable & catalogue mutation coordinator used by AppProvider.
+ * Enforces role, linked Editor ownership, and field-level permissions before any API/DB write.
+ */
+export function createAppDeliverableActions(deps: AppDeliverableActionDeps) {
+  const assertActiveRole = (): UserRole => {
+    if (!deps.currentUser || !deps.isUserActive || !deps.userRole) {
+      throw new Error(
+        'Permission denied: An active verified account is required to modify deliverables.'
+      );
+    }
+    return deps.userRole;
+  };
+
+  const createDeliverable = async (
+    deliverable: Omit<Deliverable, 'id' | 'last_updated'>
+  ): Promise<Deliverable> => {
+    const role = assertActiveRole();
+    if (!canCreateDeliverable(role, deps.isUserActive)) {
+      throw new Error('Permission denied: Only Admins and Managers can create deliverables.');
+    }
+    const created = await deps.api.createDeliverable(deliverable);
+    deps.setDeliverables(prev => [created, ...prev.filter(d => d.id !== created.id)]);
+    await deps.refreshAllData();
+    return created;
+  };
+
+  const deleteDeliverable = async (id: string): Promise<void> => {
+    const role = assertActiveRole();
+    if (!canDeleteDeliverable(role, deps.isUserActive)) {
+      throw new Error('Permission denied: Only Admins and Managers can delete deliverables.');
+    }
+    await deps.api.deleteDeliverable(id);
+    deps.setDeliverables(prev => prev.filter(d => d.id !== id));
+    await deps.refreshAllData();
+  };
+
+  const updateDeliverableAsEditor = async (
+    deliverableId: string,
+    changes:
+      | EditorDeliverablePatch
+      | {
+          status?: DeliverableStatus;
+          external_link?: string | null;
+          [key: string]: unknown;
+        }
+  ): Promise<Deliverable> => {
+    const role = assertActiveRole();
+    if (role !== 'Editor') {
+      throw new Error(
+        'Permission denied: Editor deliverable update route requires an active Editor account.'
+      );
+    }
+    if (!deps.linkedEditorTeamMember || !deps.linkedEditorTeamMemberId) {
+      throw new Error(
+        'Permission denied: Your Editor account is not linked to an active Team Member profile.'
+      );
+    }
+
+    const existing = deps.deliverables.find(d => d.id === deliverableId) || null;
+    const validation = validateDeliverableUpdateFields({
+      role,
+      deliverable: existing,
+      updatedFields: { ...changes } as Record<string, unknown>,
+      linkedEditorTeamMemberId: deps.linkedEditorTeamMemberId,
+      linkedEditorTeamMember: deps.linkedEditorTeamMember,
+      isUserActive: deps.isUserActive,
+    });
+
+    if (!validation.allowed || !validation.sanitizedEditorPatch) {
+      throw new Error(
+        validation.reason ||
+          'Permission denied: Editors may only update status or external link on their own assigned deliverables.'
+      );
+    }
+
+    const updated = await deps.api.updateDeliverableAsEditor({
+      deliverableId,
+      changes: validation.sanitizedEditorPatch,
+      actorRole: role,
+      updaterName: deps.currentUser?.full_name || 'Editor',
+      linkedEditorTeamMemberId: deps.linkedEditorTeamMemberId,
+      linkedEditorTeamMember: deps.linkedEditorTeamMember,
+      isActorActive: deps.isUserActive,
+    });
+
+    deps.setDeliverables(prev => prev.map(d => (d.id === deliverableId ? updated : d)));
+    await deps.refreshAllData();
+    return updated;
+  };
+
+  const updateDeliverable = async (deliverable: Deliverable): Promise<Deliverable> => {
+    const role = assertActiveRole();
+
+    if (canManageAllDeliverables(role, deps.isUserActive)) {
+      const updated = await deps.api.updateDeliverable(deliverable);
+      deps.setDeliverables(prev => prev.map(d => (d.id === deliverable.id ? updated : d)));
+      await deps.refreshAllData();
+      return updated;
+    }
+
+    if (role === 'Editor') {
+      if (!deps.linkedEditorTeamMember || !deps.linkedEditorTeamMemberId) {
+        throw new Error(
+          'Permission denied: Your Editor account is not linked to an active Team Member profile.'
+        );
+      }
+      const existing = deps.deliverables.find(d => d.id === deliverable.id) || null;
+      if (!existing) {
+        throw new Error('Permission denied: Target deliverable could not be verified.');
+      }
+      if (
+        !isDeliverableOwnedByEditor({
+          deliverable: existing,
+          linkedEditorTeamMemberId: deps.linkedEditorTeamMemberId,
+          linkedEditorTeamMember: deps.linkedEditorTeamMember,
+        })
+      ) {
+        throw new Error(
+          'Permission denied: Editors can only update deliverables assigned to their own linked team member record.'
+        );
+      }
+
+      const { changes, disallowedFields } = extractEditorDeliverableChanges(existing, deliverable);
+      if (disallowedFields.length > 0) {
+        throw new Error(
+          `Permission denied: Editors cannot modify protected deliverable fields (${disallowedFields.join(', ')}).`
+        );
+      }
+
+      return await updateDeliverableAsEditor(deliverable.id, changes);
+    }
+
+    throw new Error('Permission denied: You are not authorized to update deliverables.');
+  };
+
+  const updateDeliverableStatus = async (
+    deliverableId: string,
+    status: DeliverableStatus
+  ): Promise<void> => {
+    const role = assertActiveRole();
+
+    if (canManageAllDeliverables(role, deps.isUserActive)) {
+      const updated = await deps.api.updateDeliverableStatus(
+        deliverableId,
+        status,
+        role,
+        deps.currentUser?.full_name || 'Studio Member'
+      );
+
+      if (updated) {
+        deps.setDeliverables(prev =>
+          prev.map(d => (d.id === deliverableId ? updated : d))
+        );
+      }
+
+      await deps.refreshAllData();
+      return;
+    }
+
+    if (role === 'Editor') {
+      if (!deps.linkedEditorTeamMember || !deps.linkedEditorTeamMemberId) {
+        throw new Error(
+          'Permission denied: Your Editor account is not linked to an active Team Member profile.'
+        );
+      }
+      const existing = deps.deliverables.find(d => d.id === deliverableId) || null;
+      if (
+        !canSetDeliverableStatus({
+          role,
+          deliverable: existing,
+          status,
+          linkedEditorTeamMemberId: deps.linkedEditorTeamMemberId,
+          linkedEditorTeamMember: deps.linkedEditorTeamMember,
+          isUserActive: deps.isUserActive,
+        })
+      ) {
+        throw new Error(
+          'Permission denied: Editors can only set valid workflow statuses on deliverables assigned to their own linked team member record.'
+        );
+      }
+
+      await updateDeliverableAsEditor(deliverableId, { status });
+      return;
+    }
+
+    throw new Error('Permission denied: You are not authorized to update deliverable statuses.');
+  };
+
+  const createDeliverableCatalogueItem = async (item: {
+    name: string;
+    category?: DeliverableCatalogueCategory | string;
+    description?: string;
+    applicable_brand: DeliverableBrandScope;
+    is_active?: boolean;
+    sort_order?: number;
+  }): Promise<DeliverableCatalogueItem> => {
+    const role = assertActiveRole();
+    if (!canAddDeliverableCatalogueEntry(role)) {
+      throw new Error(
+        'Permission denied: Only Admins and Managers can add deliverable catalogue entries.'
+      );
+    }
+    const created = await deps.api.createDeliverableCatalogueItem(
+      item,
+      deps.deliverableCatalogue
+    );
+    await deps.refreshAllData();
+    return created;
+  };
+
+  const updateDeliverableCatalogueItem = async (
+    item: DeliverableCatalogueItem
+  ): Promise<DeliverableCatalogueItem> => {
+    const role = assertActiveRole();
+    if (!canEditDeliverableCatalogueEntry(role)) {
+      throw new Error(
+        'Permission denied: Only Admins can update deliverable catalogue entries.'
+      );
+    }
+    const updated = await deps.api.updateDeliverableCatalogueItem(
+      item,
+      deps.deliverableCatalogue
+    );
+    await deps.refreshAllData();
+    return updated;
+  };
+
+  const reorderDeliverableCatalogue = async (
+    updatedPair: [DeliverableCatalogueItem, DeliverableCatalogueItem]
+  ): Promise<DeliverableCatalogueItem[]> => {
+    const role = assertActiveRole();
+    if (!canEditDeliverableCatalogueEntry(role)) {
+      throw new Error(
+        'Permission denied: Only Admins can reorder deliverable catalogue entries.'
+      );
+    }
+    const updated = await deps.api.reorderDeliverableCatalogue(
+      updatedPair,
+      deps.deliverableCatalogue
+    );
+    await deps.refreshAllData();
+    return updated;
+  };
+
+  const deleteDeliverableCatalogueItem = async (
+    id: string,
+    itemName: string
+  ): Promise<void> => {
+    const role = assertActiveRole();
+    if (!canEditDeliverableCatalogueEntry(role)) {
+      throw new Error(
+        'Permission denied: Only Admins can delete deliverable catalogue entries.'
+      );
+    }
+    await deps.api.deleteDeliverableCatalogueItem(
+      id,
+      itemName,
+      deps.deliverables,
+      deps.enquiries
+    );
+    deps.setDeliverableCatalogue(prev => prev.filter(item => item.id !== id));
+    await deps.refreshAllData();
+  };
+
+  return {
+    createDeliverable,
+    updateDeliverable,
+    updateDeliverableAsEditor,
+    deleteDeliverable,
+    updateDeliverableStatus,
+    createDeliverableCatalogueItem,
+    updateDeliverableCatalogueItem,
+    reorderDeliverableCatalogue,
+    deleteDeliverableCatalogueItem,
+  };
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -212,15 +567,76 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return (localStorage.getItem('twbhub_brand_filter') as BrandId) || 'all';
   });
 
-  const [activeTab, setActiveTab] = useState<string>('dashboard');
+  const [activeTab, setActiveTabState] = useState<string>('dashboard');
   const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null);
   const [selectedEnquiryId, setSelectedEnquiryId] = useState<string | null>(null);
 
-  // Supabase Auth states (no hardcoded current user)
+  // Supabase Auth states (strictly verified against public.profiles)
   const [currentUser, setCurrentUser] = useState<Profile | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
-  const [availableProfiles] = useState<Profile[]>(INITIAL_PROFILES);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [profileVerificationState, setProfileVerificationState] = useState<
+    'idle' | 'verified' | 'temporary_error'
+  >('idle');
+  const [isPasswordRecovery, setIsPasswordRecovery] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    const hash = window.location.hash || '';
+    const search = new URLSearchParams(window.location.search);
+    return hash.includes('type=recovery') || search.get('type') === 'recovery';
+  });
+  const isPasswordRecoveryRef = React.useRef<boolean>(isPasswordRecovery);
+  const currentUserRef = React.useRef<Profile | null>(null);
+  const activeTabRef = React.useRef<string>(activeTab);
+  const isMountedRef = React.useRef<boolean>(true);
+  const authStateVersionRef = React.useRef<number>(0);
+  const activeLoginVersionRef = React.useRef<number>(0);
+  const scheduledAuthTimersRef = React.useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
+  const loginInFlightRef = React.useRef<boolean>(false);
+  const otpRecoveryInFlightRef = React.useRef<boolean>(false);
+  const preserveAuthErrorRef = React.useRef<boolean>(false);
+  const [availableProfiles] = useState<Profile[]>([]);
+
+  useEffect(() => {
+    isPasswordRecoveryRef.current = isPasswordRecovery;
+  }, [isPasswordRecovery]);
+
+  useEffect(() => {
+    currentUserRef.current = currentUser;
+  }, [currentUser]);
+
+  useEffect(() => {
+    activeTabRef.current = activeTab;
+  }, [activeTab]);
+
+  // Guarded navigation setter: validates against verified role and authoritative policy
+  const setActiveTab: React.Dispatch<React.SetStateAction<string>> = useCallback(
+    nextTabOrUpdater => {
+      const activeProfile = currentUserRef.current;
+      const verifiedRole = activeProfile
+        ? resolveVerifiedUserRole(activeProfile.role)
+        : null;
+
+      if (!activeProfile || !verifiedRole) {
+        activeTabRef.current = 'dashboard';
+        setActiveTabState('dashboard');
+        return;
+      }
+
+      setActiveTabState(prev => {
+        const requestedTab =
+          typeof nextTabOrUpdater === 'function'
+            ? nextTabOrUpdater(prev)
+            : nextTabOrUpdater;
+        const nextTab = canAccessTab(requestedTab, verifiedRole)
+          ? requestedTab
+          : getDefaultLandingTab(verifiedRole);
+        activeTabRef.current = nextTab;
+        return nextTab;
+      });
+    },
+    []
+  );
 
   const [supabaseStatus, setSupabaseStatus] = useState<{ connected: boolean; message: string; checking: boolean }>({
     connected: false,
@@ -422,148 +838,380 @@ const refreshAllData = useCallback(async () => {
 }, []);
 
 
-  // Refresh profile from Supabase profiles table
-  const refreshUserProfile = useCallback(async (): Promise<Profile | null> => {
-    if (!session?.user) return null;
-    try {
-      const { profile } = await getUserProfile(session.user.id);
-      if (profile) {
-        setCurrentUser(profile);
-        return profile;
+  const clearAuthError = useCallback(() => {
+    preserveAuthErrorRef.current = false;
+    setAuthError(null);
+  }, []);
+
+  const clearAuthenticatedAppState = useCallback(() => {
+    currentUserRef.current = null;
+    setSession(null);
+    setCurrentUser(null);
+    setProfileVerificationState('idle');
+    setSelectedProjectId(null);
+    setSelectedEnquiryId(null);
+    activeTabRef.current = 'dashboard';
+    setActiveTabState('dashboard');
+    setCompanies([]);
+    setClients([]);
+    setEnquiries([]);
+    setEnquiriesError(null);
+    setModuleErrors({});
+    setProjects([]);
+    setTeamMembers([]);
+    setEditors([]);
+    setProjectTeam([]);
+    setProjectData([]);
+    setDeliverables([]);
+    setPayments([]);
+    setExpenses([]);
+    setCalendarEvents([]);
+    setNotifications([]);
+    setQuotations([]);
+    setDeliverableCatalogue([]);
+  }, []);
+
+  const scheduleDeferredAuthTask = useCallback((task: () => Promise<void> | void) => {
+    const timerId = setTimeout(() => {
+      scheduledAuthTimersRef.current.delete(timerId);
+      if (!isMountedRef.current) return;
+      void Promise.resolve(task()).catch(err => {
+        console.warn('Deferred auth verification error:', err);
+      });
+    }, 0);
+    scheduledAuthTimersRef.current.add(timerId);
+  }, []);
+
+  const verifyAndApplySessionProfile = useCallback(
+    async (
+      targetSession: Session,
+      options?: {
+        redirectOnSuccess?: boolean;
+        bypassRecoveryCheck?: boolean;
+        precomputedLookup?: ProfileLookupResult;
+        expectedVersion?: number;
       }
-    } catch (err) {
-      console.warn('Failed to refresh user profile:', err);
-    }
-    return null;
-  }, [session]);
+    ): Promise<{ success: boolean; error?: string }> => {
+      const opVersion =
+        options?.expectedVersion !== undefined
+          ? options.expectedVersion
+          : ++authStateVersionRef.current;
 
-  // Auth Operations: Login
-  const login = async (email: string, password: string): Promise<{ success: boolean; error?: string }> => {
-    try {
-      const result = await signInWithEmail(email, password);
-      if (result.error) {
-        return { success: false, error: result.error.message };
+      const isStale = () =>
+        !isMountedRef.current || authStateVersionRef.current !== opVersion;
+
+      if (isStale()) {
+        return { success: false };
       }
 
-      if (result.session && result.user) {
-        setSession(result.session);
-        // Retrieve user profile and role from the Supabase profiles table
-        const { profile } = await getUserProfile(result.user.id);
-        const resolvedProfile: Profile = profile || {
-          id: result.user.id,
-          email: result.user.email || email,
-          full_name: result.user.user_metadata?.full_name || email.split('@')[0],
-          role: (result.user.user_metadata?.role as UserRole) || 'Team Member',
-          phone: result.user.user_metadata?.phone || '',
-          company_id: result.user.user_metadata?.company_id || 'both',
-          status: 'Active',
-        };
-
-        setCurrentUser(resolvedProfile);
-
-        // Route to the appropriate dashboard depending on role
-        if ((resolvedProfile.role || '').trim().toLowerCase() === 'editor') {
-          setActiveTab('deliverables');
-        } else {
-          setActiveTab('dashboard');
-        }
-
-        await refreshAllData();
+      if (isPasswordRecoveryRef.current && !options?.bypassRecoveryCheck) {
+        setSession(targetSession);
+        currentUserRef.current = null;
+        setCurrentUser(null);
+        setProfileVerificationState('idle');
+        setAuthError(null);
         return { success: true };
       }
 
-      return { success: false, error: 'No session established. Please verify credentials.' };
-    } catch (err: any) {
-      return { success: false, error: err.message || 'Login attempt failed.' };
-    }
-  };
+      const lookup =
+        options?.precomputedLookup ?? (await getUserProfile(targetSession.user.id));
 
-  // Auth Operations: SignUp
-  const signUp = async (
-    email: string,
-    password: string,
-    options?: {
-      fullName?: string;
-      role?: UserRole;
-      companyId?: 'twb' | 'golden_june' | 'both';
-      phone?: string;
+      if (isStale()) {
+        return { success: false };
+      }
+
+      if (lookup.status === 'ok' && lookup.profile) {
+        preserveAuthErrorRef.current = false;
+        setSession(targetSession);
+        currentUserRef.current = lookup.profile;
+        setCurrentUser(lookup.profile);
+        setProfileVerificationState('verified');
+        setAuthError(null);
+
+        const defaultTab = getDefaultLandingTab(lookup.profile.role);
+        if (options?.redirectOnSuccess) {
+          setActiveTab(defaultTab);
+        } else if (!canAccessTab(activeTabRef.current, lookup.profile.role)) {
+          setActiveTab(defaultTab);
+        }
+
+        return { success: true };
+      }
+
+      if (lookup.status === 'temporary_error') {
+        const msg =
+          lookup.error?.message ||
+          'Temporary database or network error while verifying your studio profile. Please retry.';
+        preserveAuthErrorRef.current = false;
+        setSession(targetSession);
+        currentUserRef.current = null;
+        setCurrentUser(null);
+        setProfileVerificationState('temporary_error');
+        setAuthError(msg);
+        return { success: false, error: msg };
+      }
+
+      // Confirmed inactive account ('inactive'), missing profile ('not_found'),
+      // or unsupported role ('unsupported_role', including legacy 'team')
+      const denialMessage =
+        lookup.status === 'inactive'
+          ? 'Your account has been deactivated. Please contact an administrator.'
+          : lookup.status === 'unsupported_role'
+            ? 'Access denied: Your account role is not supported for TWBHub access. Please contact your administrator.'
+            : 'Access denied: No studio profile was found for this account. Please contact your administrator.';
+
+      preserveAuthErrorRef.current = true;
+      isPasswordRecoveryRef.current = false;
+      setIsPasswordRecovery(false);
+      clearAuthenticatedAppState();
+      setAuthError(denialMessage);
+
+      try {
+        await signOut();
+      } catch (err) {
+        console.warn('Sign out after failed profile verification:', err);
+      }
+
+      if (isStale()) {
+        return { success: false, error: denialMessage };
+      }
+
+      setAuthError(denialMessage);
+      return { success: false, error: denialMessage };
+    },
+    [clearAuthenticatedAppState, setActiveTab]
+  );
+
+  const verifyAndApplySessionProfileRef = React.useRef(verifyAndApplySessionProfile);
+  useEffect(() => {
+    verifyAndApplySessionProfileRef.current = verifyAndApplySessionProfile;
+  }, [verifyAndApplySessionProfile]);
+
+  // Refresh profile from Supabase profiles table
+  const refreshUserProfile = useCallback(async (): Promise<Profile | null> => {
+    const opVersion = ++authStateVersionRef.current;
+    const activeSession = session || (await getSession());
+    if (!isMountedRef.current || authStateVersionRef.current !== opVersion) {
+      return null;
     }
-  ): Promise<{ success: boolean; error?: string; sessionEstablished?: boolean }> => {
+    if (!activeSession?.user) return null;
+    const result = await verifyAndApplySessionProfile(activeSession, {
+      expectedVersion: opVersion,
+    });
+    if (
+      result.success &&
+      isMountedRef.current &&
+      authStateVersionRef.current === opVersion
+    ) {
+      return currentUserRef.current;
+    }
+    return null;
+  }, [session, verifyAndApplySessionProfile]);
+
+  const retryProfileVerification = useCallback(async (): Promise<{
+    success: boolean;
+    error?: string;
+  }> => {
+    const opVersion = ++authStateVersionRef.current;
+    const activeSession = session || (await getSession());
+    if (!isMountedRef.current || authStateVersionRef.current !== opVersion) {
+      return { success: false };
+    }
+    if (!activeSession?.user) {
+      const msg = 'Your session is no longer active. Please sign in again.';
+      clearAuthenticatedAppState();
+      setAuthError(msg);
+      return { success: false, error: msg };
+    }
+    return verifyAndApplySessionProfile(activeSession, {
+      redirectOnSuccess: true,
+      expectedVersion: opVersion,
+    });
+  }, [session, clearAuthenticatedAppState, verifyAndApplySessionProfile]);
+
+  // Auth Operations: Login
+  const login = async (
+    email: string,
+    password: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    const loginVersion = ++authStateVersionRef.current;
+    activeLoginVersionRef.current = loginVersion;
+    loginInFlightRef.current = true;
+    preserveAuthErrorRef.current = false;
+    setAuthError(null);
+    setIsPasswordRecovery(false);
+    isPasswordRecoveryRef.current = false;
+
     try {
-      const result = await signUpWithEmail(email, password, options);
+      const result = await signInWithEmail(email, password);
+      if (!isMountedRef.current || authStateVersionRef.current !== loginVersion) {
+        return { success: false };
+      }
+
       if (result.error) {
+        setAuthError(result.error.message);
         return { success: false, error: result.error.message };
       }
 
       if (result.session && result.user) {
-        setSession(result.session);
-        const { profile } = await getUserProfile(result.user.id);
-        const resolvedProfile: Profile = profile || {
-          id: result.user.id,
-          email: result.user.email || email,
-          full_name: options?.fullName || email.split('@')[0],
-          role: options?.role || 'Team Member',
-          phone: options?.phone || '',
-          company_id: options?.companyId || 'both',
-          status: 'Active',
-        };
-
-        setCurrentUser(resolvedProfile);
-
-        if ((resolvedProfile.role || '').trim().toLowerCase() === 'editor') {
-          setActiveTab('deliverables');
-        } else {
-          setActiveTab('dashboard');
-        }
-
-        await refreshAllData();
-        return { success: true, sessionEstablished: true };
+        const verified = await verifyAndApplySessionProfile(result.session, {
+          redirectOnSuccess: true,
+          expectedVersion: loginVersion,
+        });
+        return verified;
       }
 
-      return { success: true, sessionEstablished: false };
+      const fallbackMsg = 'No session established. Please verify your credentials.';
+      setAuthError(fallbackMsg);
+      return { success: false, error: fallbackMsg };
     } catch (err: any) {
-      return { success: false, error: err.message || 'Account registration failed.' };
+      if (!isMountedRef.current || authStateVersionRef.current !== loginVersion) {
+        return { success: false };
+      }
+      const msg = err?.message || 'Login attempt failed.';
+      setAuthError(msg);
+      return { success: false, error: msg };
+    } finally {
+      if (activeLoginVersionRef.current === loginVersion) {
+        loginInFlightRef.current = false;
+      }
     }
   };
 
-  // Auth Operations: Logout
+  // Auth Operations: Password Recovery Request (Email OTP)
+  const requestPasswordReset = async (
+    email: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    const { error } = await resetPasswordForEmail(email);
+    if (error) {
+      return { success: false, error: error.message };
+    }
+    return { success: true };
+  };
+
+  // Auth Operations: Verify Recovery OTP and Establish Recovery Session (without changing password)
+  const verifyPasswordRecoveryOtp = async (
+    email: string,
+    token: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (otpRecoveryInFlightRef.current) {
+      return { success: false, error: 'Verification is already in progress. Please wait.' };
+    }
+
+    const otpVersion = ++authStateVersionRef.current;
+    otpRecoveryInFlightRef.current = true;
+    preserveAuthErrorRef.current = false;
+    setAuthError(null);
+
+    try {
+      const result = await verifyRecoveryOtp(email, token);
+      if (!isMountedRef.current || authStateVersionRef.current !== otpVersion) {
+        return { success: false };
+      }
+      if (result.error || !result.session) {
+        return {
+          success: false,
+          error: result.error?.message || 'Failed to verify recovery code. Please try again.',
+        };
+      }
+
+      isPasswordRecoveryRef.current = true;
+      currentUserRef.current = null;
+      setIsPasswordRecovery(true);
+      setSession(result.session);
+      setCurrentUser(null);
+      setProfileVerificationState('idle');
+      setAuthError(null);
+      return { success: true };
+    } catch (err: any) {
+      return {
+        success: false,
+        error: err?.message || 'Recovery code verification failed.',
+      };
+    } finally {
+      otpRecoveryInFlightRef.current = false;
+    }
+  };
+
+  // Auth Operations: Complete Password Recovery (Set New Password)
+  const completePasswordRecovery = async (
+    newPassword: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    const recoveryVersion = ++authStateVersionRef.current;
+    const { error } = await updateUserPassword(newPassword);
+    if (!isMountedRef.current || authStateVersionRef.current !== recoveryVersion) {
+      return { success: false };
+    }
+    if (error) {
+      return { success: false, error: error.message };
+    }
+
+    isPasswordRecoveryRef.current = false;
+    setIsPasswordRecovery(false);
+
+    if (typeof window !== 'undefined' && (window.location.hash || window.location.search)) {
+      window.history.replaceState({}, document.title, window.location.pathname);
+    }
+
+    const activeSession = (await getSession()) || session;
+    if (!isMountedRef.current || authStateVersionRef.current !== recoveryVersion) {
+      return { success: false };
+    }
+    if (!activeSession?.user) {
+      const msg = 'Password updated. Please sign in with your new password.';
+      clearAuthenticatedAppState();
+      setAuthError(null);
+      return { success: true, error: msg };
+    }
+
+    return verifyAndApplySessionProfile(activeSession, {
+      redirectOnSuccess: true,
+      bypassRecoveryCheck: true,
+      expectedVersion: recoveryVersion,
+    });
+  };
+
+  // Auth Operations: Logout (also safely clears any active recovery session without changing password)
   const logout = async (): Promise<void> => {
+    // Synchronously invalidate all in-flight auth checks and clear authenticated state first
+    authStateVersionRef.current += 1;
+    preserveAuthErrorRef.current = false;
+    otpRecoveryInFlightRef.current = false;
+    loginInFlightRef.current = false;
+    isPasswordRecoveryRef.current = false;
+    setIsPasswordRecovery(false);
+    clearAuthenticatedAppState();
+    setAuthError(null);
+    setAuthLoading(false);
+
     try {
       await signOut();
     } catch (err) {
       console.warn('Sign out warning:', err);
-    } finally {
-      setSession(null);
-      setCurrentUser(null);
-      setSelectedProjectId(null);
-      setActiveTab('dashboard');
     }
   };
 
   // Persistent session listener and initial check
   useEffect(() => {
-    let isMounted = true;
+    isMountedRef.current = true;
 
     const restoreSession = async () => {
+      const restoreVersion = ++authStateVersionRef.current;
       try {
         setAuthLoading(true);
         const existingSession = await getSession();
-        if (existingSession?.user && isMounted) {
-          setSession(existingSession);
-          // Query Supabase profiles table
-          const { profile } = await getUserProfile(existingSession.user.id);
-          if (profile && isMounted) {
-            setCurrentUser(profile);
-            // Verify permission on restored active view
-            if (!canAccessTab(activeTab, profile.role)) {
-              setActiveTab((profile.role || '').trim().toLowerCase() === 'editor' ? 'deliverables' : 'dashboard');
-            }
-          }
+        if (!isMountedRef.current || authStateVersionRef.current !== restoreVersion) {
+          return;
+        }
+        if (existingSession?.user) {
+          await verifyAndApplySessionProfileRef.current(existingSession, {
+            expectedVersion: restoreVersion,
+          });
         }
       } catch (err) {
         console.warn('Session restoration failed:', err);
       } finally {
-        if (isMounted) {
+        if (isMountedRef.current && authStateVersionRef.current === restoreVersion) {
           setAuthLoading(false);
         }
       }
@@ -571,29 +1219,117 @@ const refreshAllData = useCallback(async () => {
 
     restoreSession();
 
-    // Listen for Auth state changes
-    const { unsubscribe } = onAuthStateChange(async (event, changedSession) => {
-      if (!isMounted) return;
+    // Synchronous Auth state listener — never directly awaits Supabase operations inside the callback
+    const { unsubscribe } = onAuthStateChange((event, changedSession) => {
+      if (!isMountedRef.current) return;
+
+      if (event === 'PASSWORD_RECOVERY') {
+        authStateVersionRef.current += 1;
+        preserveAuthErrorRef.current = false;
+        isPasswordRecoveryRef.current = true;
+        currentUserRef.current = null;
+        setIsPasswordRecovery(true);
+        setSession(changedSession);
+        setCurrentUser(null);
+        setProfileVerificationState('idle');
+        setAuthError(null);
+        setAuthLoading(false);
+        return;
+      }
+
+      if (event === 'SIGNED_OUT') {
+        authStateVersionRef.current += 1;
+        loginInFlightRef.current = false;
+        otpRecoveryInFlightRef.current = false;
+        isPasswordRecoveryRef.current = false;
+        setIsPasswordRecovery(false);
+        clearAuthenticatedAppState();
+        setAuthLoading(false);
+        if (!preserveAuthErrorRef.current) {
+          setAuthError(null);
+        }
+        return;
+      }
 
       if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
-        if (changedSession?.user) {
+        if (!changedSession?.user) return;
+
+        if (otpRecoveryInFlightRef.current || isPasswordRecoveryRef.current) {
+          isPasswordRecoveryRef.current = true;
+          currentUserRef.current = null;
+          setIsPasswordRecovery(true);
           setSession(changedSession);
-          const { profile } = await getUserProfile(changedSession.user.id);
-          if (profile && isMounted) {
-            setCurrentUser(profile);
-          }
+          setCurrentUser(null);
+          setProfileVerificationState('idle');
+          setAuthLoading(false);
+          return;
         }
-      } else if (event === 'SIGNED_OUT') {
-        setSession(null);
-        setCurrentUser(null);
+
+        if (event === 'SIGNED_IN' && loginInFlightRef.current) {
+          return;
+        }
+
+        const isActiveUserTokenRefresh =
+          event === 'TOKEN_REFRESHED' &&
+          Boolean(
+            currentUserRef.current &&
+              currentUserRef.current.id === changedSession.user.id
+          );
+
+        if (isActiveUserTokenRefresh) {
+          setSession(changedSession);
+        }
+
+        const eventVersion = ++authStateVersionRef.current;
+
+        scheduleDeferredAuthTask(async () => {
+          if (!isMountedRef.current || authStateVersionRef.current !== eventVersion) {
+            return;
+          }
+
+          try {
+            if (isActiveUserTokenRefresh) {
+              const refreshLookup = await getUserProfile(changedSession.user.id);
+              if (!isMountedRef.current || authStateVersionRef.current !== eventVersion) {
+                return;
+              }
+
+              if (refreshLookup.status === 'ok' && refreshLookup.profile) {
+                currentUserRef.current = refreshLookup.profile;
+                setCurrentUser(refreshLookup.profile);
+              } else if (
+                refreshLookup.status === 'inactive' ||
+                refreshLookup.status === 'not_found' ||
+                refreshLookup.status === 'unsupported_role'
+              ) {
+                await verifyAndApplySessionProfileRef.current(changedSession, {
+                  precomputedLookup: refreshLookup,
+                  expectedVersion: eventVersion,
+                });
+              }
+              return;
+            }
+
+            await verifyAndApplySessionProfileRef.current(changedSession, {
+              expectedVersion: eventVersion,
+            });
+          } finally {
+            if (isMountedRef.current && authStateVersionRef.current === eventVersion) {
+              setAuthLoading(false);
+            }
+          }
+        });
       }
     });
 
     return () => {
-      isMounted = false;
+      isMountedRef.current = false;
+      authStateVersionRef.current += 1;
+      scheduledAuthTimersRef.current.forEach(timerId => clearTimeout(timerId));
+      scheduledAuthTimersRef.current.clear();
       unsubscribe();
     };
-  }, []);
+  }, [clearAuthenticatedAppState, scheduleDeferredAuthTask]);
 
   useEffect(() => {
     checkSupabase();
@@ -602,29 +1338,47 @@ const refreshAllData = useCallback(async () => {
     }
   }, [checkSupabase, refreshAllData, currentUser]);
 
-  // Role permissions helpers (case-insensitive to support both lowercase Supabase roles and Title Case)
-  const userRole = currentUser?.role || 'Team Member';
-  const normalizedRole = (currentUser?.role || '').trim().toLowerCase();
-  const isAdmin = normalizedRole === 'admin';
-  const isManager = normalizedRole === 'manager';
-  const isTeamMember = normalizedRole === 'team member' || normalizedRole === 'team_member';
-  const isEditorOnly = normalizedRole === 'editor';
+  // Role permissions helpers derived strictly from verified currentUser.role
+  const userRole = currentUser ? resolveVerifiedUserRole(currentUser.role) : null;
+  const isAdmin = userRole === 'Admin';
+  const isManager = userRole === 'Manager';
+  const isEditorOnly = userRole === 'Editor';
 
   const canManageFinance = isAdmin || isManager;
   const canManageTeam = isAdmin || isManager;
   const canCreateProject = isAdmin || isManager;
+  const canManageDeliverables = isAdmin || isManager;
+  const canManageProjectData = isAdmin || isManager;
 
-  const canAccessSection = (section: string): boolean => {
-    if (!currentUser) return false;
-    if (isAdmin || isManager) return true;
-    if (isEditorOnly) {
-      return ['dashboard', 'data', 'deliverables', 'editors', 'notifications', 'calendar', 'settings'].includes(section);
-    }
-    if (isTeamMember) {
-      return ['dashboard', 'projects', 'calendar', 'team-availability', 'data', 'deliverables', 'notifications', 'settings'].includes(section);
-    }
-    return false;
-  };
+  const canAccessSection = useCallback(
+    (section: string): boolean => {
+      if (!currentUser || !userRole) return false;
+      return canAccessTab(section, userRole);
+    },
+    [currentUser, userRole]
+  );
+
+  const canAccessSettings = canAccessSection('settings');
+  const canAccessNotifications = canAccessSection('notifications');
+
+  const isUserActive = Boolean(
+    currentUser &&
+      currentUser.is_active !== false &&
+      currentUser.status?.trim().toLowerCase() !== 'inactive'
+  );
+
+  // Authoritative Editor identity resolution:
+  // auth.uid() -> profiles.id -> team_members.profile_id -> team_members.id
+  // Fails closed (null) if unverified, non-Editor, unlinked, inactive, or ambiguous.
+  const linkedEditorTeamMember = useMemo<TeamMember | null>(() => {
+    return resolveLinkedEditorTeamMember({
+      currentUser,
+      profileVerificationState,
+      teamMembers,
+    });
+  }, [currentUser, profileVerificationState, teamMembers]);
+
+  const linkedEditorTeamMemberId = linkedEditorTeamMember?.id ?? null;
 
   // Brand Filtering logic
 
@@ -639,39 +1393,11 @@ const matchBrand = (companyId: string) => {
   return companyId === brandFilter || companyId === companyUuid;
 };
 
-  // Deliverables filter with Role enforcement
-  const filteredDeliverables = deliverables.filter(d => {
-    if (!matchBrand(d.company_id)) return false;
-    if (isEditorOnly && currentUser) {
-      // Editor only sees deliverables assigned to them or their active tasks
-      const currentEditor = editors.find(
-        e =>
-          e.email?.toLowerCase() === currentUser.email.toLowerCase() ||
-          e.name?.toLowerCase() === currentUser.full_name.toLowerCase()
-      );
-      if (currentEditor && d.assigned_editor_id !== currentEditor.id) {
-        return false;
-      }
-    }
-    return true;
-  });
+  // Deliverables list visibility: brand filter only (all deliverables remain visible to linked and unlinked Editors;
+  // row-level edit ownership is tracked separately via linkedEditorTeamMemberId and canManageDeliverables)
+  const filteredDeliverables = deliverables.filter(d => matchBrand(d.company_id));
 
-  const filteredProjects = projects.filter(p => {
-    if (!matchBrand(p.company_id)) return false;
-    if (isTeamMember && currentUser) {
-      // Team members only see projects they are assigned to
-      const myTeamMember = teamMembers.find(
-        t =>
-          t.email?.toLowerCase() === currentUser.email.toLowerCase() ||
-          t.name?.toLowerCase() === currentUser.full_name.toLowerCase()
-      );
-      if (myTeamMember) {
-        const isAssigned = projectTeam.some(pt => pt.project_id === p.id && pt.team_member_id === myTeamMember.id);
-        if (!isAssigned && p.status !== 'Shooting') return false;
-      }
-    }
-    return true;
-  });
+  const filteredProjects = projects.filter(p => matchBrand(p.company_id));
 
   const resolveItemCompanyId = (projectId?: string, fallbackCompanyId?: string): string => {
     if (projectId) {
@@ -736,47 +1462,32 @@ const matchBrand = (companyId: string) => {
     await refreshAllData();
   };
 
-  const createDeliverableCatalogueItem = async (item: {
-    name: string;
-    category?: DeliverableCatalogueCategory | string;
-    description?: string;
-    applicable_brand: DeliverableBrandScope;
-    is_active?: boolean;
-    sort_order?: number;
-  }) => {
-    const created = await apiService.createDeliverableCatalogueItem(
-      item,
-      deliverableCatalogue
-    );
-    await refreshAllData();
-    return created;
-  };
+  const deliverableActions = createAppDeliverableActions({
+    currentUser,
+    userRole,
+    isUserActive,
+    deliverables,
+    deliverableCatalogue,
+    enquiries,
+    linkedEditorTeamMember,
+    linkedEditorTeamMemberId,
+    api: apiService,
+    setDeliverables,
+    setDeliverableCatalogue,
+    refreshAllData,
+  });
 
-  const updateDeliverableCatalogueItem = async (item: DeliverableCatalogueItem) => {
-    const updated = await apiService.updateDeliverableCatalogueItem(
-      item,
-      deliverableCatalogue
-    );
-    await refreshAllData();
-    return updated;
-  };
-
-  const reorderDeliverableCatalogue = async (
-    updatedPair: [DeliverableCatalogueItem, DeliverableCatalogueItem]
-  ) => {
-    const updated = await apiService.reorderDeliverableCatalogue(
-      updatedPair,
-      deliverableCatalogue
-    );
-    await refreshAllData();
-    return updated;
-  };
-
-  const deleteDeliverableCatalogueItem = async (id: string, itemName: string) => {
-    await apiService.deleteDeliverableCatalogueItem(id, itemName, deliverables, enquiries);
-    setDeliverableCatalogue(prev => prev.filter(item => item.id !== id));
-    await refreshAllData();
-  };
+  const {
+    createDeliverableCatalogueItem,
+    updateDeliverableCatalogueItem,
+    reorderDeliverableCatalogue,
+    deleteDeliverableCatalogueItem,
+    createDeliverable,
+    updateDeliverable,
+    updateDeliverableAsEditor,
+    deleteDeliverable,
+    updateDeliverableStatus,
+  } = deliverableActions;
 
   const createQuotation = async (quotation: Omit<Quotation, 'id' | 'created_at' | 'updated_at'>) => {
     const created = await apiService.createQuotation(quotation);
@@ -890,43 +1601,8 @@ const deleteTeamMember = async (id: string) => {
     await refreshAllData();
   };
 
-  const createDeliverable = async (deliverable: Omit<Deliverable, 'id' | 'last_updated'>) => {
-    const created = await apiService.createDeliverable(deliverable);
-    setDeliverables(prev => [created, ...prev.filter(d => d.id !== created.id)]);
-    await refreshAllData();
-    return created;
-  };
-
-  const updateDeliverable = async (deliverable: Deliverable) => {
-    const updated = await apiService.updateDeliverable(deliverable);
-    setDeliverables(prev => prev.map(d => (d.id === deliverable.id ? updated : d)));
-    await refreshAllData();
-    return updated;
-  };
-
-  const deleteDeliverable = async (id: string) => {
-    await apiService.deleteDeliverable(id);
-    setDeliverables(prev => prev.filter(d => d.id !== id));
-    await refreshAllData();
-  };
-
-  const updateDeliverableStatus = async (deliverableId: string, status: DeliverableStatus) => {
-    // Persist to Supabase deliverables table first (never leave optimistic state on failure)
-    const updated = await apiService.updateDeliverableStatus(
-      deliverableId,
-      status,
-      currentUser?.role || 'Team Member',
-      currentUser?.full_name || 'Studio Member'
-    );
-
-    if (updated) {
-      setDeliverables(prev =>
-        prev.map(d => (d.id === deliverableId ? updated : d))
-      );
-    }
-
-    await refreshAllData();
-  };
+  // Deliverable mutations (createDeliverable, updateDeliverable, updateDeliverableAsEditor,
+  // deleteDeliverable, updateDeliverableStatus) are provided by deliverableActions above.
 
   const createPayment = async (payment: Omit<Payment, 'id' | 'created_at'>) => {
     const created = await apiService.createPayment(payment);
@@ -1009,8 +1685,15 @@ const deleteExpense = async (id: string) => {
         currentUser,
         session,
         authLoading,
+        authError,
+        clearAuthError,
+        profileVerificationState,
+        retryProfileVerification,
+        isPasswordRecovery,
+        requestPasswordReset,
+        verifyPasswordRecoveryOtp,
+        completePasswordRecovery,
         login,
-        signUp,
         logout,
         refreshUserProfile,
         availableProfiles,
@@ -1079,6 +1762,7 @@ assignTeamMember,
         deleteProjectData,
         createDeliverable,
         updateDeliverable,
+        updateDeliverableAsEditor,
         deleteDeliverable,
         updateDeliverableStatus,
         createPayment,
@@ -1098,6 +1782,12 @@ assignTeamMember,
         canManageFinance,
         canManageTeam,
         canCreateProject,
+        canManageDeliverables,
+        canManageProjectData,
+        canAccessSettings,
+        canAccessNotifications,
+        linkedEditorTeamMember,
+        linkedEditorTeamMemberId,
         isEditorOnly,
         isAdmin,
         isManager,

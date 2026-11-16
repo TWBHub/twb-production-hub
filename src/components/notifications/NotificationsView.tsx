@@ -20,6 +20,12 @@ import { NotificationType, AppNotification } from '../../types';
 import { formatDisplayDate } from '../../utils/dateUtils';
 
 export const NotificationsView: React.FC = () => {
+  const { canAccessSection } = useApp();
+  if (!canAccessSection('notifications')) return null;
+  return <NotificationsViewContent />;
+};
+
+const NotificationsViewContent: React.FC = () => {
   const {
     notifications,
     unreadNotificationCount,

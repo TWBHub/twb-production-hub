@@ -40,6 +40,12 @@ const EMPTY_FORM: MemberForm = {
 };
 
 export const TeamMembersView: React.FC = () => {
+  const { canAccessSection } = useApp();
+  if (!canAccessSection('team-members')) return null;
+  return <TeamMembersViewContent />;
+};
+
+const TeamMembersViewContent: React.FC = () => {
   const {
     teamMembers,
     createTeamMember,

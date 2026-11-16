@@ -94,10 +94,14 @@ export const EditorsWorkloadView: React.FC = () => {
     brandFilter,
     setSelectedProjectId,
     setActiveTab,
+    canAccessSection,
     refreshAllData,
     moduleErrors,
     isRefreshingData,
   } = useApp();
+
+  const canOpenProjects = canAccessSection('projects');
+  const canOpenTeamMembers = canAccessSection('team-members');
 
   const [searchQuery, setSearchQuery] = useState('');
   const [workloadFilter, setWorkloadFilter] = useState<'all' | 'available' | 'near_capacity' | 'at_capacity' | 'overloaded'>('all');
@@ -380,6 +384,7 @@ export const EditorsWorkloadView: React.FC = () => {
   }, [unifiedEditors, searchQuery, workloadFilter, ordering, editorWorkloadMap, projectMap]);
 
   const navigateToProject = (projectId: string) => {
+    if (!canAccessSection('projects')) return;
     setSelectedProjectId(projectId);
     setActiveTab('projects');
   };
@@ -609,14 +614,16 @@ export const EditorsWorkloadView: React.FC = () => {
               ? 'No editors match the active search or filter criteria. Try clearing filters.'
               : 'No editors are currently designated in your team roster. To designate editors, visit Team Members and assign the "Editor" category to relevant team members.'}
           </p>
-          <button
-            type="button"
-            onClick={() => setActiveTab('team-members')}
-            className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-xl bg-slate-900 text-white hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
-          >
-            <Users className="w-3.5 h-3.5" />
-            <span>Manage Team Members</span>
-          </button>
+          {canOpenTeamMembers && (
+            <button
+              type="button"
+              onClick={() => setActiveTab('team-members')}
+              className="mt-4 inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold rounded-xl bg-slate-900 text-white hover:bg-slate-800 transition-colors cursor-pointer shadow-xs"
+            >
+              <Users className="w-3.5 h-3.5" />
+              <span>Manage Team Members</span>
+            </button>
+          )}
         </div>
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -797,14 +804,20 @@ export const EditorsWorkloadView: React.FC = () => {
                                   </div>
                                   <div className="text-xs text-slate-600 flex items-center gap-1.5 flex-wrap">
                                     <span>Project:</span>
-                                    <button
-                                      type="button"
-                                      onClick={() => proj && navigateToProject(proj.id)}
-                                      className="font-bold text-blue-600 hover:underline inline-flex items-center gap-0.5 cursor-pointer"
-                                    >
-                                      <span>{proj?.name || 'Unknown Project'}</span>
-                                      <ArrowUpRight className="w-3 h-3" />
-                                    </button>
+                                    {canOpenProjects ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => proj && navigateToProject(proj.id)}
+                                        className="font-bold text-blue-600 hover:underline inline-flex items-center gap-0.5 cursor-pointer"
+                                      >
+                                        <span>{proj?.name || 'Unknown Project'}</span>
+                                        <ArrowUpRight className="w-3 h-3" />
+                                      </button>
+                                    ) : (
+                                      <span className="font-bold text-slate-800">
+                                        {proj?.name || 'Unknown Project'}
+                                      </span>
+                                    )}
                                     {proj?.company_id && (
                                       <span
                                         className={`text-[9px] font-semibold uppercase px-1.5 py-0.2 rounded ${
@@ -936,13 +949,19 @@ export const EditorsWorkloadView: React.FC = () => {
                                         Delivered
                                       </span>
                                     </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => proj && navigateToProject(proj.id)}
-                                      className="text-[11px] text-blue-600 hover:underline shrink-0"
-                                    >
-                                      {proj?.name}
-                                    </button>
+                                    {canOpenProjects ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => proj && navigateToProject(proj.id)}
+                                        className="text-[11px] text-blue-600 hover:underline shrink-0"
+                                      >
+                                        {proj?.name}
+                                      </button>
+                                    ) : (
+                                      <span className="text-[11px] font-medium text-slate-600 shrink-0">
+                                        {proj?.name}
+                                      </span>
+                                    )}
                                   </div>
 
                                   <div className="grid grid-cols-2 gap-2 text-[10px] text-slate-500 pt-1 border-t border-slate-200/50">

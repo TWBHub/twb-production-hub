@@ -504,7 +504,8 @@ describe('Shared Deliverables Catalogue', () => {
     assert.strictEqual(canEditDeliverableCatalogueEntry('editor'), false);
 
     assert.strictEqual(canAccessTab('settings', 'admin'), true);
-    assert.strictEqual(canAccessTab('settings', 'manager'), false);
+    assert.strictEqual(canAccessTab('settings', 'manager'), true);
+    assert.strictEqual(canAccessTab('settings', 'editor'), false);
     assert.strictEqual(canAccessTab('deliverables', 'editor'), true);
     assert.strictEqual(hasRole('manager', ['Admin', 'Manager']), true);
     assert.strictEqual(checkRouteAccess('settings', 'admin').allowed, true);

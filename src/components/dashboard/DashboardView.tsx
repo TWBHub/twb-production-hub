@@ -28,6 +28,14 @@ import { formatDisplayDate } from '../../utils/dateUtils';
 import { ModuleErrorBanner } from '../common/ModuleErrorBanner';
 
 export const DashboardView: React.FC = () => {
+  const { canAccessSection } = useApp();
+  if (!canAccessSection('dashboard')) {
+    return null;
+  }
+  return <DashboardViewContent />;
+};
+
+const DashboardViewContent: React.FC = () => {
   const {
     brandFilter,
     filteredProjects,
