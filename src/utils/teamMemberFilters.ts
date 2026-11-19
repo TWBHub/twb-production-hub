@@ -28,17 +28,31 @@ export function isProductionTeamMember(
   return member.categories.some(cat => PRODUCTION_CATEGORIES.includes(cat));
 }
 
+export function isActiveTeamMemberDirectoryRecord(
+  member?: (Partial<TeamMember> & { active?: unknown }) | null
+): boolean {
+  if (!member) return false;
+  if (member.active === false) return false;
+  if (member.is_active === false) return false;
+  if (
+    typeof member.status === 'string' &&
+    member.status.trim().toLowerCase() === 'inactive'
+  ) {
+    return false;
+  }
+  return true;
+}
+
 /**
  * Checks whether a team member is an active/eligible production team member.
  * Preserves existing active/inactive eligibility rules:
- * - status !== 'Inactive'
- * - is_active !== false
+ * - status !== 'Inactive' (case-insensitive)
+ * - active !== false and is_active !== false
  */
 export function isEligibleProductionTeamMember(
-  member?: Partial<TeamMember> | null
+  member?: (Partial<TeamMember> & { active?: unknown }) | null
 ): boolean {
-  if (!member) return false;
-  if (member.status === 'Inactive' || member.is_active === false) return false;
+  if (!isActiveTeamMemberDirectoryRecord(member)) return false;
   return isProductionTeamMember(member);
 }
 
@@ -53,21 +67,83 @@ export function isDeliverableEditor(
   member?: Partial<TeamMember> | null
 ): boolean {
   if (!member || !Array.isArray(member.categories)) return false;
-  return member.categories.includes(EDITOR_CATEGORY);
+  return member.categories.some(
+    cat => typeof cat === 'string' && cat.trim().toLowerCase() === 'editor'
+  );
 }
 
 /**
  * Checks whether a team member is an active/eligible deliverable editor.
  * Preserves existing active/inactive eligibility rules:
- * - status !== 'Inactive'
- * - is_active !== false
+ * - status !== 'Inactive' (case-insensitive)
+ * - active !== false and is_active !== false
  */
 export function isEligibleDeliverableEditor(
-  member?: Partial<TeamMember> | null
+  member?: (Partial<TeamMember> & { active?: unknown }) | null
 ): boolean {
-  if (!member) return false;
-  if (member.status === 'Inactive' || member.is_active === false) return false;
+  if (!isActiveTeamMemberDirectoryRecord(member)) return false;
   return isDeliverableEditor(member);
+}
+
+export interface DeliverableEditorAssignmentValidationResult {
+  valid: boolean;
+  reason?: string;
+}
+
+/**
+ * Validates whether `targetEditorId` can be assigned on a deliverable create or update.
+ * - Unassigned (`null`, `undefined`, or `''`) is always valid.
+ * - Preserving an unchanged `assigned_editor_id` (`targetEditorId === previousEditorId`) is valid
+ *   so existing assignments to later-deactivated Team Members remain intact on non-reassignment edits.
+ * - New assignments (create, or update changing `assigned_editor_id`) require an active Team Member
+ *   with the `Editor` category.
+ */
+export function validateDeliverableEditorAssignment(params: {
+  targetEditorId?: string | null;
+  previousEditorId?: string | null;
+  targetMember?: (Partial<TeamMember> & { active?: unknown }) | null;
+  teamMembers?: readonly (TeamMember & { active?: unknown })[];
+}): DeliverableEditorAssignmentValidationResult {
+  const cleanTargetId =
+    typeof params.targetEditorId === 'string' ? params.targetEditorId.trim() : '';
+  if (!cleanTargetId) {
+    return { valid: true };
+  }
+
+  const cleanPreviousId =
+    typeof params.previousEditorId === 'string' ? params.previousEditorId.trim() : '';
+  if (cleanPreviousId && cleanTargetId === cleanPreviousId) {
+    return { valid: true };
+  }
+
+  const resolvedMember =
+    params.targetMember !== undefined
+      ? params.targetMember
+      : params.teamMembers?.find(member => member.id === cleanTargetId) ?? null;
+
+  if (!resolvedMember) {
+    return {
+      valid: false,
+      reason: 'Assigned editor team member record was not found.',
+    };
+  }
+
+  if (!isActiveTeamMemberDirectoryRecord(resolvedMember)) {
+    return {
+      valid: false,
+      reason:
+        'Inactive team members cannot be assigned to new or reassigned deliverables.',
+    };
+  }
+
+  if (!isDeliverableEditor(resolvedMember)) {
+    return {
+      valid: false,
+      reason: 'Selected team member does not include the Editor category.',
+    };
+  }
+
+  return { valid: true };
 }
 
 /**

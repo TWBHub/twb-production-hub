@@ -33,12 +33,18 @@ import {
 import {
   PHASE1_STORAGE_PREFIX,
   Phase1StorageAdapter,
+  createDeliverableWithSupabase,
   getDefaultPhase1Storage,
   readCachedArray,
   updateDeliverableAsEditorWithSupabase,
   updateDeliverableWithSupabase,
   writeCachedArray,
 } from './phase1PersistenceUtils';
+import {
+  filterDeliverableEditors,
+  isEligibleDeliverableEditor,
+  validateDeliverableEditorAssignment,
+} from './teamMemberFilters';
 import {
   apiService,
   mapSupabaseDeliverableToModel,
@@ -200,18 +206,29 @@ describe('Stage 2B.3B — Deliverable Permission Helpers & Authoritative Ownersh
       null
     );
 
-    // Inactive team member -> null
+    // Inactive Team Member directory record with active Editor profile -> STILL resolves linked Editor identity
+    // (directory activity is independent of portal login activity)
     assert.strictEqual(
       resolveLinkedEditorTeamMember({
         currentUser: editorProfile,
         profileVerificationState: 'verified',
-        teamMembers: [{ ...activeEditorMember, is_active: false }],
-      }),
-      null
+        teamMembers: [{ ...activeEditorMember, is_active: false, status: 'Inactive' }],
+      })?.id,
+      EDITOR_MEMBER_ID
     );
     assert.strictEqual(
       isActiveDeliverableTeamMember({ ...activeEditorMember, status: 'Inactive' }),
       false
+    );
+
+    // Non-Editor category on Team Member record -> null
+    assert.strictEqual(
+      resolveLinkedEditorTeamMember({
+        currentUser: editorProfile,
+        profileVerificationState: 'verified',
+        teamMembers: [{ ...activeEditorMember, categories: ['Photo'] }],
+      }),
+      null
     );
 
     // Unverified profile state or inactive profile -> null
@@ -305,13 +322,26 @@ describe('Stage 2B.3B — Deliverable Permission Helpers & Authoritative Ownersh
       false
     );
 
-    // Inactive linked team member -> false
+    // Directory-inactive linked Team Member with active portal login -> retains access to existing assigned deliverables
     assert.strictEqual(
       canEditDeliverable({
         role: 'Editor',
         deliverable: ownDeliverable,
         linkedEditorTeamMemberId: EDITOR_MEMBER_ID,
-        linkedEditorTeamMember: { ...activeEditorMember, status: 'Inactive' },
+        linkedEditorTeamMember: { ...activeEditorMember, status: 'Inactive', is_active: false },
+        isUserActive: true,
+      }),
+      true
+    );
+
+    // Disabled portal login -> false regardless of Team Member directory status
+    assert.strictEqual(
+      canEditDeliverable({
+        role: 'Editor',
+        deliverable: ownDeliverable,
+        linkedEditorTeamMemberId: EDITOR_MEMBER_ID,
+        linkedEditorTeamMember: activeEditorMember,
+        isUserActive: false,
       }),
       false
     );
@@ -706,7 +736,7 @@ describe('Stage 2B.3B — Dedicated Editor-Safe Deliverable Persistence & Admin 
     );
     assert.strictEqual(updateCount, 0);
 
-    // 4. Inactive Team Member -> throws
+    // 4. Non-Editor category linked Team Member -> throws with 0 DB writes
     await assert.rejects(
       () =>
         updateDeliverableAsEditorWithSupabase({
@@ -714,12 +744,12 @@ describe('Stage 2B.3B — Dedicated Editor-Safe Deliverable Persistence & Admin 
           changes: { status: 'In Progress' },
           actorRole: 'Editor',
           linkedEditorTeamMemberId: EDITOR_MEMBER_ID,
-          linkedEditorTeamMember: { ...activeEditorMember, is_active: false },
+          linkedEditorTeamMember: { ...activeEditorMember, categories: ['Photo'] },
           adapter: makeAdapter(null),
           mapRow: mapSupabaseDeliverableToModel,
           storage,
         }),
-      /not linked to an active Team Member/i
+      /not linked/i
     );
     assert.strictEqual(updateCount, 0);
 
@@ -1453,6 +1483,422 @@ describe('Stage 2B.3C — Deliverables UI Row Controls & Modal Isolation', () =>
     assert.ok(contextSrc.includes('const filteredDeliverables = deliverables.filter(d => matchBrand(d.company_id));'));
     assert.ok(contextSrc.includes('createAppDeliverableActions'));
     assert.ok(contextSrc.includes('updateDeliverableAsEditor'));
+  });
+});
+
+describe('Directory Activity vs Portal Login Independence & Assignment Eligibility (Scenarios 6, 7, 8)', () => {
+  const activeSupabaseEditor: TeamMember & { active?: boolean } = {
+    id: EDITOR_MEMBER_ID,
+    profile_id: EDITOR_PROFILE_ID,
+    name: 'Riya Sharma',
+    email: 'riya.editor@twb.studio',
+    phone: '9999999999',
+    role: 'Editor',
+    role_title: 'Senior Film Editor',
+    categories: ['Editor'],
+    active: true,
+    is_active: true,
+    status: 'Active',
+  };
+
+  const inactiveDirectoryEditor: TeamMember & { active?: boolean } = {
+    ...activeSupabaseEditor,
+    active: false,
+    is_active: false,
+    status: 'Inactive',
+  };
+
+  const otherActiveEditor: TeamMember & { active?: boolean } = {
+    ...otherEditorMember,
+    categories: ['Editor'],
+    active: true,
+    is_active: true,
+    status: 'Active',
+  };
+
+  const nonEditorActiveMember: TeamMember & { active?: boolean } = {
+    id: '99998888-7777-4666-8555-444433332222',
+    name: 'Arjun Photo',
+    email: 'arjun@twb.studio',
+    phone: '7777777777',
+    role_title: 'Lead Photographer',
+    categories: ['Photo'],
+    active: true,
+    is_active: true,
+    status: 'Active',
+  };
+
+  it('Scenario 6: Inactive Team Member with active Editor portal login retains full access to existing assigned deliverables', async () => {
+    const resolved = resolveLinkedEditorTeamMember({
+      currentUser: editorProfile,
+      profileVerificationState: 'verified',
+      teamMembers: [inactiveDirectoryEditor, otherActiveEditor],
+    });
+    assert.strictEqual(resolved?.id, EDITOR_MEMBER_ID);
+
+    const rowPerms = getDeliverableRowPermissionState({
+      role: 'Editor',
+      deliverable: ownDeliverable,
+      linkedEditorTeamMemberId: EDITOR_MEMBER_ID,
+      linkedEditorTeamMember: inactiveDirectoryEditor,
+      isUserActive: true,
+    });
+    assert.strictEqual(rowPerms.isOwnedByCurrentEditor, true);
+    assert.strictEqual(rowPerms.canEditStatus, true);
+    assert.strictEqual(rowPerms.canEditExternalLink, true);
+    assert.deepStrictEqual(rowPerms.allowedStatuses, [...DELIVERABLE_WORKFLOW_STATUSES]);
+
+    // Persistence succeeds on own deliverable even when Team Member record is directory-inactive
+    const storage = createMemoryStorage();
+    let dbRow: Record<string, any> = {
+      id: DELIVERABLE_OWN_ID,
+      project_id: PROJECT_ID,
+      company_id: TWB_COMPANY_UUID,
+      deliverable_type: 'Highlight Film (4-5 mins)',
+      assigned_editor_id: EDITOR_MEMBER_ID,
+      due_date: '2026-12-15',
+      status: 'Assigned',
+      priority: 'High',
+      external_link: 'https://frame.io/initial',
+      notes: 'Admin notes kept intact',
+      updated_at: '2026-11-01T10:00:00.000Z',
+    };
+
+    const updated = await updateDeliverableAsEditorWithSupabase({
+      deliverableId: DELIVERABLE_OWN_ID,
+      changes: {
+        status: 'Submitted',
+        external_link: 'https://frame.io/inactive-member-still-works',
+      },
+      actorRole: 'Editor',
+      linkedEditorTeamMemberId: EDITOR_MEMBER_ID,
+      linkedEditorTeamMember: inactiveDirectoryEditor,
+      isActorActive: true,
+      adapter: {
+        selectById: async () => ({ data: dbRow, error: null }),
+        updateAndReturn: async (_id, payload) => {
+          dbRow = { ...dbRow, ...payload };
+          return { data: [dbRow], error: null };
+        },
+      },
+      mapRow: mapSupabaseDeliverableToModel,
+      storage,
+      nowIso: '2026-11-17T10:00:00.000Z',
+    });
+
+    assert.strictEqual(updated.status, 'Submitted');
+    assert.strictEqual(updated.external_link, 'https://frame.io/inactive-member-still-works');
+    assert.strictEqual(updated.notes, 'Admin notes kept intact');
+
+    // Portal login disabled (profiles.is_active === false) still blocks access immediately
+    assert.strictEqual(
+      resolveLinkedEditorTeamMember({
+        currentUser: { ...editorProfile, is_active: false },
+        profileVerificationState: 'verified',
+        teamMembers: [inactiveDirectoryEditor],
+      }),
+      null
+    );
+  });
+
+  it('Scenario 7 & 8: Rejects inactive Team Members for new/reassigned deliverables across UI filters, AppContext, persistence, and API while keeping active Editors eligible and existing assignments editable', async () => {
+    // UI selector checks (including raw Supabase `active: false` rows!)
+    const supabaseActiveFalseOnly: TeamMember & { active?: boolean } = {
+      ...activeSupabaseEditor,
+      id: '12121212-1212-4121-8121-121212121212',
+      active: false,
+      is_active: undefined,
+      status: 'Active',
+    };
+    assert.strictEqual(isEligibleDeliverableEditor(activeSupabaseEditor), true);
+    assert.strictEqual(isEligibleDeliverableEditor(inactiveDirectoryEditor), false);
+    assert.strictEqual(isEligibleDeliverableEditor(supabaseActiveFalseOnly), false);
+    assert.strictEqual(isEligibleDeliverableEditor(nonEditorActiveMember), false);
+
+    const selectable = filterDeliverableEditors([
+      inactiveDirectoryEditor,
+      supabaseActiveFalseOnly,
+      otherActiveEditor,
+      nonEditorActiveMember,
+    ]);
+    assert.deepStrictEqual(
+      selectable.map(m => m.id),
+      [OTHER_EDITOR_MEMBER_ID]
+    );
+
+    // Edit modal preserves ONLY current assigned editor so existing assignments stay intact
+    const editSelectable = filterDeliverableEditors(
+      [inactiveDirectoryEditor, otherActiveEditor],
+      { currentEditorId: EDITOR_MEMBER_ID }
+    );
+    assert.deepStrictEqual(
+      new Set(editSelectable.map(m => m.id)),
+      new Set([EDITOR_MEMBER_ID, OTHER_EDITOR_MEMBER_ID])
+    );
+
+    // Direct validation helper checks
+    assert.strictEqual(
+      validateDeliverableEditorAssignment({
+        targetEditorId: EDITOR_MEMBER_ID,
+        previousEditorId: null,
+        teamMembers: [inactiveDirectoryEditor],
+      }).valid,
+      false
+    );
+    assert.strictEqual(
+      validateDeliverableEditorAssignment({
+        targetEditorId: EDITOR_MEMBER_ID,
+        previousEditorId: EDITOR_MEMBER_ID,
+        teamMembers: [inactiveDirectoryEditor],
+      }).valid,
+      true
+    );
+    assert.strictEqual(
+      validateDeliverableEditorAssignment({
+        targetEditorId: OTHER_EDITOR_MEMBER_ID,
+        previousEditorId: null,
+        teamMembers: [otherActiveEditor],
+      }).valid,
+      true
+    );
+
+    // Persistence layer: reject inactive & non-Editor on create/reassignment with 0 DB writes
+    const storage = createMemoryStorage();
+    let insertCalls = 0;
+    let updateCalls = 0;
+    const roster = [inactiveDirectoryEditor, otherActiveEditor, nonEditorActiveMember];
+    const resolveTeamMemberById = async (id: string) =>
+      roster.find(member => member.id === id) ?? null;
+
+    await assert.rejects(
+      () =>
+        createDeliverableWithSupabase({
+          deliverable: {
+            project_id: PROJECT_ID,
+            company_id: 'twb',
+            deliverable_type: 'Teaser / Reel (60s)',
+            assigned_editor_id: EDITOR_MEMBER_ID,
+            due_date: '2026-12-20',
+            status: 'Assigned',
+            priority: 'Medium',
+          },
+          adapter: {
+            insertAndReturn: async payload => {
+              insertCalls++;
+              return { data: [payload], error: null };
+            },
+          },
+          resolveTeamMemberById,
+          mapRow: mapSupabaseDeliverableToModel,
+          toCompanyUuid,
+          storage,
+        }),
+      /Inactive team members cannot be assigned/i
+    );
+    assert.strictEqual(insertCalls, 0);
+
+    // Check 4 regression check: DB trigger error citing assigned_editor_id must fail loudly, NEVER silently null out assigned_editor_id
+    await assert.rejects(
+      () =>
+        createDeliverableWithSupabase({
+          deliverable: {
+            project_id: PROJECT_ID,
+            company_id: 'twb',
+            deliverable_type: 'Teaser / Reel (60s)',
+            assigned_editor_id: OTHER_EDITOR_MEMBER_ID,
+            due_date: '2026-12-20',
+            status: 'Assigned',
+            priority: 'Medium',
+          },
+          adapter: {
+            insertAndReturn: async () => ({
+              data: null,
+              error: {
+                message:
+                  'Cannot assign deliverable assigned_editor_id to an inactive or non-Editor team member.',
+              },
+            }),
+          },
+          mapRow: mapSupabaseDeliverableToModel,
+          toCompanyUuid,
+          storage,
+        }),
+      /inactive or non-Editor team member/i
+    );
+
+    // Scenario 8: Active Editor succeeds on create
+    const createdActive = await createDeliverableWithSupabase({
+      deliverable: {
+        project_id: PROJECT_ID,
+        company_id: 'twb',
+        deliverable_type: 'Teaser / Reel (60s)',
+        assigned_editor_id: OTHER_EDITOR_MEMBER_ID,
+        due_date: '2026-12-20',
+        status: 'Assigned',
+        priority: 'Medium',
+      },
+      adapter: {
+        insertAndReturn: async payload => {
+          insertCalls++;
+          return { data: [{ ...payload, updated_at: '2026-11-17T10:00:00.000Z' }], error: null };
+        },
+      },
+      resolveTeamMemberById,
+      mapRow: mapSupabaseDeliverableToModel,
+      toCompanyUuid,
+      storage,
+    });
+    assert.strictEqual(insertCalls, 1);
+    assert.strictEqual(createdActive.assigned_editor_id, OTHER_EDITOR_MEMBER_ID);
+
+    // Update: reject reassigning deliverable from otherActiveEditor -> inactiveDirectoryEditor
+    let existingRow: Record<string, any> = {
+      id: DELIVERABLE_OTHER_ID,
+      project_id: PROJECT_ID,
+      company_id: TWB_COMPANY_UUID,
+      deliverable_type: 'Highlight Film (4-5 mins)',
+      assigned_editor_id: OTHER_EDITOR_MEMBER_ID,
+      due_date: '2026-12-15',
+      status: 'Assigned',
+      priority: 'High',
+    };
+    await assert.rejects(
+      () =>
+        updateDeliverableWithSupabase({
+          deliverable: {
+            ...otherDeliverable,
+            assigned_editor_id: EDITOR_MEMBER_ID,
+          },
+          adapter: {
+            selectById: async () => ({ data: existingRow, error: null }),
+            updateAndReturn: async (_id, payload) => {
+              updateCalls++;
+              return { data: [{ ...existingRow, ...payload }], error: null };
+            },
+          },
+          resolveTeamMemberById,
+          mapRow: mapSupabaseDeliverableToModel,
+          toCompanyUuid,
+          storage,
+        }),
+      /Inactive team members cannot be assigned/i
+    );
+    assert.strictEqual(updateCalls, 0);
+
+    // Existing deliverable already assigned to inactiveDirectoryEditor stays editable on non-reassignment fields
+    existingRow = { ...existingRow, id: DELIVERABLE_OWN_ID, assigned_editor_id: EDITOR_MEMBER_ID };
+    const preservedExistingEdit = await updateDeliverableWithSupabase({
+      deliverable: {
+        ...ownDeliverable,
+        status: 'Approved',
+        priority: 'Urgent',
+      },
+      adapter: {
+        selectById: async () => ({ data: existingRow, error: null }),
+        updateAndReturn: async (_id, payload) => {
+          updateCalls++;
+          return { data: [{ ...existingRow, ...payload }], error: null };
+        },
+      },
+      resolveTeamMemberById,
+      mapRow: mapSupabaseDeliverableToModel,
+      toCompanyUuid,
+      storage,
+    });
+    assert.strictEqual(updateCalls, 1);
+    assert.strictEqual(preservedExistingEdit.assigned_editor_id, EDITOR_MEMBER_ID);
+    assert.strictEqual(preservedExistingEdit.status, 'Approved');
+
+    // AppContext admin actions guard against inactive Editor assignment while allowing active Editor & non-reassignment updates
+    let apiCreateCalls = 0;
+    let apiUpdateCalls = 0;
+    const adminProfile: Profile = {
+      id: '99999999-9999-4999-8999-999999999999',
+      email: 'admin@twb.studio',
+      full_name: 'Studio Admin',
+      role: 'Admin',
+      is_active: true,
+      status: 'Active',
+    };
+    const appActions = createAppDeliverableActions({
+      currentUser: adminProfile,
+      userRole: 'Admin',
+      isUserActive: true,
+      deliverables: [ownDeliverable, otherDeliverable],
+      deliverableCatalogue: [],
+      enquiries: [],
+      teamMembers: roster,
+      linkedEditorTeamMember: null,
+      linkedEditorTeamMemberId: null,
+      api: {
+        createDeliverable: async d => {
+          apiCreateCalls++;
+          return { ...ownDeliverable, ...d, id: 'new-del-1' };
+        },
+        updateDeliverable: async d => {
+          apiUpdateCalls++;
+          return d;
+        },
+        updateDeliverableStatus: async (_id, status) => ({ ...ownDeliverable, status }),
+        updateDeliverableAsEditor: async () => ownDeliverable,
+        deleteDeliverable: async () => {},
+        createDeliverableCatalogueItem: async item => ({
+          id: 'cat-1',
+          name: item.name,
+          category: 'Film',
+          company_id: null,
+          applicable_brand: item.applicable_brand,
+          is_active: true,
+          sort_order: 10,
+        }),
+        updateDeliverableCatalogueItem: async item => item,
+        reorderDeliverableCatalogue: async pair => pair,
+        deleteDeliverableCatalogueItem: async () => {},
+      },
+      setDeliverables: () => {},
+      setDeliverableCatalogue: () => {},
+      refreshAllData: async () => {},
+    });
+
+    await assert.rejects(
+      () =>
+        appActions.createDeliverable({
+          project_id: PROJECT_ID,
+          company_id: 'twb',
+          deliverable_type: 'Highlight Film (4-5 mins)',
+          assigned_editor_id: EDITOR_MEMBER_ID,
+          due_date: '2026-12-20',
+          status: 'Assigned',
+          priority: 'Medium',
+        }),
+      /Inactive team members cannot be assigned/i
+    );
+    await assert.rejects(
+      () =>
+        appActions.updateDeliverable({
+          ...otherDeliverable,
+          assigned_editor_id: EDITOR_MEMBER_ID,
+        }),
+      /Inactive team members cannot be assigned/i
+    );
+    assert.strictEqual(apiCreateCalls, 0);
+    assert.strictEqual(apiUpdateCalls, 0);
+
+    await appActions.createDeliverable({
+      project_id: PROJECT_ID,
+      company_id: 'twb',
+      deliverable_type: 'Highlight Film (4-5 mins)',
+      assigned_editor_id: OTHER_EDITOR_MEMBER_ID,
+      due_date: '2026-12-20',
+      status: 'Assigned',
+      priority: 'Medium',
+    });
+    await appActions.updateDeliverable({
+      ...ownDeliverable,
+      status: 'Delivered',
+    });
+    assert.strictEqual(apiCreateCalls, 1);
+    assert.strictEqual(apiUpdateCalls, 1);
   });
 });
 

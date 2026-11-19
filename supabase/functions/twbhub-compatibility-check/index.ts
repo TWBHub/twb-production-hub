@@ -15,16 +15,8 @@ interface CompatibilityCheckResponse {
   profile_role: string | null;
   profile_is_active: boolean | null;
   effective_database_role: string | null;
+  database_current_user: string | null;
   errors: string[];
-}
-
-function sanitizeErrorMessage(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err ?? 'Unknown error');
-  return raw
-    .replace(/sb_(secret|publishable|temp)_[A-Za-z0-9._-]+/g, '[REDACTED_API_KEY]')
-    .replace(/eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g, '[REDACTED_JWT]')
-    .replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[REDACTED_EMAIL]')
-    .slice(0, 240);
 }
 
 function jsonResponse(payload: CompatibilityCheckResponse, status = 200): Response {
@@ -38,21 +30,16 @@ function jsonResponse(payload: CompatibilityCheckResponse, status = 200): Respon
   });
 }
 
-function parseDefaultKeyFromJsonEnv(envName: string): { key: string | null; error: string | null } {
+function parseDefaultKeyFromJsonEnv(envName: string): string | null {
   const raw = Deno.env.get(envName);
-  if (!raw) {
-    return { key: null, error: `Missing ${envName} environment variable.` };
-  }
+  if (!raw) return null;
 
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     const defaultKey = typeof parsed?.default === 'string' ? parsed.default.trim() : '';
-    if (!defaultKey) {
-      return { key: null, error: `Missing "default" key entry inside ${envName}.` };
-    }
-    return { key: defaultKey, error: null };
+    return defaultKey || null;
   } catch {
-    return { key: null, error: `Invalid JSON format in ${envName}.` };
+    return null;
   }
 }
 
@@ -71,7 +58,8 @@ Deno.serve(async (req: Request): Promise<Response> => {
         profile_role: null,
         profile_is_active: null,
         effective_database_role: null,
-        errors: ['Method not allowed. Use POST.'],
+        database_current_user: null,
+        errors: ['Method not allowed.'],
       },
       405
     );
@@ -80,17 +68,10 @@ Deno.serve(async (req: Request): Promise<Response> => {
   const errors: string[] = [];
 
   const supabaseUrl = Deno.env.get('SUPABASE_URL')?.trim() || '';
-  if (!supabaseUrl) {
-    errors.push('Missing SUPABASE_URL environment variable.');
-  }
+  const publishableKey = parseDefaultKeyFromJsonEnv('SUPABASE_PUBLISHABLE_KEYS');
+  const secretKey = parseDefaultKeyFromJsonEnv('SUPABASE_SECRET_KEYS');
 
-  const publishableResult = parseDefaultKeyFromJsonEnv('SUPABASE_PUBLISHABLE_KEYS');
-  if (publishableResult.error) errors.push(publishableResult.error);
-
-  const secretResult = parseDefaultKeyFromJsonEnv('SUPABASE_SECRET_KEYS');
-  if (secretResult.error) errors.push(secretResult.error);
-
-  if (!supabaseUrl || !publishableResult.key || !secretResult.key) {
+  if (!supabaseUrl || !publishableKey || !secretKey) {
     return jsonResponse(
       {
         caller_authenticated: false,
@@ -100,15 +81,20 @@ Deno.serve(async (req: Request): Promise<Response> => {
         profile_role: null,
         profile_is_active: null,
         effective_database_role: null,
-        errors,
+        database_current_user: null,
+        errors: ['Required Edge Function configuration is missing.'],
       },
       500
     );
   }
 
   // Extract incoming caller Bearer token
-  const authHeader = req.headers.get('Authorization') || '';
-  if (!authHeader.toLowerCase().startsWith('bearer ') || authHeader.length <= 7) {
+  const rawAuthHeader = req.headers.get('Authorization') || '';
+  const bearerToken = rawAuthHeader.toLowerCase().startsWith('bearer ')
+    ? rawAuthHeader.slice(7).trim()
+    : '';
+
+  if (!bearerToken) {
     return jsonResponse(
       {
         caller_authenticated: false,
@@ -118,6 +104,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
         profile_role: null,
         profile_is_active: null,
         effective_database_role: null,
+        database_current_user: null,
         errors: ['Missing or invalid Bearer Authorization header.'],
       },
       401
@@ -125,9 +112,9 @@ Deno.serve(async (req: Request): Promise<Response> => {
   }
 
   // Client 1: Isolated Caller Client (publishable key + incoming Authorization header only)
-  const callerClient = createClient(supabaseUrl, publishableResult.key, {
+  const callerClient = createClient(supabaseUrl, publishableKey, {
     global: {
-      headers: { Authorization: authHeader },
+      headers: { Authorization: `Bearer ${bearerToken}` },
     },
     auth: {
       autoRefreshToken: false,
@@ -137,7 +124,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
   });
 
   // Client 2: Isolated Privileged Client (SUPABASE_SECRET_KEYS.default; NEVER receives caller Authorization header)
-  const adminClient = createClient(supabaseUrl, secretResult.key, {
+  const adminClient = createClient(supabaseUrl, secretKey, {
     auth: {
       autoRefreshToken: false,
       persistSession: false,
@@ -159,17 +146,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
           profile_role: null,
           profile_is_active: null,
           effective_database_role: null,
-          errors: [
-            error
-              ? `Caller authentication failed: ${sanitizeErrorMessage(error)}`
-              : 'Caller token did not resolve to an active user.',
-          ],
+          database_current_user: null,
+          errors: ['Caller authentication failed.'],
         },
         401
       );
     }
     callerUserId = data.user.id;
-  } catch (err) {
+  } catch {
     return jsonResponse(
       {
         caller_authenticated: false,
@@ -179,14 +163,14 @@ Deno.serve(async (req: Request): Promise<Response> => {
         profile_role: null,
         profile_is_active: null,
         effective_database_role: null,
-        errors: [`Caller authentication error: ${sanitizeErrorMessage(err)}`],
+        database_current_user: null,
+        errors: ['Caller authentication failed.'],
       },
       401
     );
   }
 
-  // Check C (used to authorize Check A strictly against public.profiles, never user_metadata):
-  // Read caller's actual database profile via privileged client (read-only).
+  // Check C: Read caller's actual database profile via privileged client (read-only).
   let privilegedProfileReadSuccess = false;
   let profileRole: string | null = null;
   let profileIsActive: boolean | null = null;
@@ -199,16 +183,16 @@ Deno.serve(async (req: Request): Promise<Response> => {
       .maybeSingle();
 
     if (profileErr) {
-      errors.push(`Privileged profile read failed: ${sanitizeErrorMessage(profileErr)}`);
+      errors.push('Privileged profile lookup failed.');
     } else if (!profileRow) {
-      errors.push('No public.profiles row found for authenticated caller.');
+      errors.push('No profile found for authenticated caller.');
     } else {
       privilegedProfileReadSuccess = true;
       profileRole = typeof profileRow.role === 'string' ? profileRow.role : null;
       profileIsActive = typeof profileRow.is_active === 'boolean' ? profileRow.is_active : null;
     }
-  } catch (err) {
-    errors.push(`Privileged profile read error: ${sanitizeErrorMessage(err)}`);
+  } catch {
+    errors.push('Privileged profile lookup failed.');
   }
 
   const callerIsAdmin =
@@ -217,16 +201,17 @@ Deno.serve(async (req: Request): Promise<Response> => {
     (profileRole || '').trim().toLowerCase() === 'admin';
 
   if (!callerIsAdmin) {
-    errors.push('Forbidden: an active Admin profile in public.profiles is required.');
+    errors.push('Forbidden: an active Admin profile is required.');
     return jsonResponse(
       {
         caller_authenticated: true,
         caller_is_admin: false,
         admin_api_success: false,
-        privileged_profile_read_success: false,
-        profile_role: null,
-        profile_is_active: null,
+        privileged_profile_read_success: privilegedProfileReadSuccess,
+        profile_role: profileRole,
+        profile_is_active: profileIsActive,
         effective_database_role: null,
+        database_current_user: null,
         errors,
       },
       403
@@ -240,24 +225,40 @@ Deno.serve(async (req: Request): Promise<Response> => {
       page: 1,
       perPage: 1,
     });
-    if (listErr) {
-      errors.push(`Auth Admin listUsers failed: ${sanitizeErrorMessage(listErr)}`);
-    } else if (Array.isArray(listData?.users)) {
+    if (!listErr && Array.isArray(listData?.users)) {
       adminApiSuccess = true;
     } else {
-      errors.push('Auth Admin listUsers returned an unexpected response shape.');
+      errors.push('Auth Admin API request failed.');
     }
-  } catch (err) {
-    errors.push(`Auth Admin API error: ${sanitizeErrorMessage(err)}`);
+  } catch {
+    errors.push('Auth Admin API request failed.');
   }
 
-  // Check D: Effective PostgreSQL role via PostgREST
-  // No safe read-only SQL diagnostic RPC exists in public schema yet, and no DB changes
-  // are permitted in Stage 0.5 without explicit approval. Never assume service_role.
-  const effectiveDatabaseRole: string | null = null;
-  errors.push(
-    'effective_database_role not verified: no pre-existing read-only PostgREST diagnostic function exposes auth.role() / current_user without creating a temporary SQL function.'
-  );
+  // Check D: Verify effective PostgreSQL role via read-only diagnostic RPC
+  let effectiveDatabaseRole: string | null = null;
+  let databaseCurrentUser: string | null = null;
+  try {
+    const { data: roleDiag, error: roleDiagErr } = await adminClient.rpc('twbhub_diag_db_role');
+    if (roleDiagErr || !roleDiag || typeof roleDiag !== 'object' || Array.isArray(roleDiag)) {
+      errors.push('Database role diagnostic RPC failed.');
+    } else {
+      const diagRecord = roleDiag as Record<string, unknown>;
+      const authRole = typeof diagRecord.auth_role === 'string' ? diagRecord.auth_role : null;
+      const currentDbUser =
+        typeof diagRecord.current_user === 'string' ? diagRecord.current_user : null;
+
+      if (authRole === null && currentDbUser === null) {
+        errors.push('Database role diagnostic RPC failed.');
+      } else {
+        effectiveDatabaseRole = authRole;
+        databaseCurrentUser = currentDbUser;
+      }
+    }
+  } catch {
+    effectiveDatabaseRole = null;
+    databaseCurrentUser = null;
+    errors.push('Database role diagnostic RPC failed.');
+  }
 
   return jsonResponse(
     {
@@ -268,6 +269,7 @@ Deno.serve(async (req: Request): Promise<Response> => {
       profile_role: profileRole,
       profile_is_active: profileIsActive,
       effective_database_role: effectiveDatabaseRole,
+      database_current_user: databaseCurrentUser,
       errors,
     },
     200

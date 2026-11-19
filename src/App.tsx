@@ -23,6 +23,7 @@ const AppContent: React.FC = () => {
     authLoading,
     userRole,
     isPasswordRecovery,
+    isInvitePasswordSetupRequired,
     profileVerificationState,
     canAccessSection,
   } = useApp();
@@ -42,12 +43,13 @@ const AppContent: React.FC = () => {
     );
   }
 
-  // 2. Unauthenticated, unverified, password recovery, or temporary profile verification failure:
-  //    Keep user out of protected dashboard and render dedicated Auth / Recovery / Retry view
+  // 2. Unauthenticated, unverified, password recovery, pending invite setup, or temporary profile verification failure:
+  //    Keep user out of protected dashboard and render dedicated Auth / Onboarding / Recovery view
   if (
     !currentUser ||
     !userRole ||
     isPasswordRecovery ||
+    isInvitePasswordSetupRequired ||
     profileVerificationState === 'temporary_error'
   ) {
     return <LoginView />;

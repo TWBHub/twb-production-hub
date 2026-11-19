@@ -16,9 +16,15 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import { getSupabaseConfig, saveSupabaseConfig } from '../../lib/supabase';
+import {
+  INVITE_PASSWORD_MAX_LENGTH,
+  INVITE_PASSWORD_MIN_LENGTH,
+  validateInviteSetupPassword,
+} from '../../utils/inviteOnboarding';
 
 export const LoginView: React.FC = () => {
   const {
+    session,
     login,
     logout,
     supabaseStatus,
@@ -28,9 +34,13 @@ export const LoginView: React.FC = () => {
     profileVerificationState,
     retryProfileVerification,
     isPasswordRecovery,
+    isInvitePasswordSetupRequired,
+    isInviteSyncPending,
     requestPasswordReset,
     verifyPasswordRecoveryOtp,
     completePasswordRecovery,
+    completeEditorInvitePasswordSetup,
+    retryEditorInviteSessionSync,
   } = useApp();
 
   const [mode, setMode] = useState<'signin' | 'forgot' | 'verify_otp'>('signin');
@@ -49,6 +59,7 @@ export const LoginView: React.FC = () => {
   const [isRetryingVerification, setIsRetryingVerification] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const submitVersionRef = React.useRef(0);
 
   // Supabase Configuration Drawer/Modal
   const [showConfigModal, setShowConfigModal] = useState(false);
@@ -227,6 +238,82 @@ export const LoginView: React.FC = () => {
     }
   };
 
+  const handleInviteSetupSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (isSubmitting) return;
+    setErrorMessage(null);
+    setSuccessMessage(null);
+    clearAuthError();
+
+    if (isInviteSyncPending) {
+      const attemptVersion = ++submitVersionRef.current;
+      setIsSubmitting(true);
+      try {
+        const result = await retryEditorInviteSessionSync();
+        if (submitVersionRef.current !== attemptVersion) return;
+        if (result.success) {
+          setNewPassword('');
+          setConfirmPassword('');
+          if (result.error) {
+            setSuccessMessage(result.error);
+            setMode('signin');
+          }
+        } else if (result.error) {
+          setErrorMessage(result.error);
+        }
+      } catch (err: any) {
+        if (submitVersionRef.current !== attemptVersion) return;
+        setErrorMessage(
+          err?.message || 'Unable to sync Editor session yet. Please try again.'
+        );
+      } finally {
+        if (submitVersionRef.current === attemptVersion) {
+          setIsSubmitting(false);
+        }
+      }
+      return;
+    }
+
+    const validation = validateInviteSetupPassword(newPassword);
+    if (!validation.valid) {
+      setErrorMessage(validation.error || 'Please enter a valid password.');
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setErrorMessage('Passwords do not match. Please confirm your new password.');
+      return;
+    }
+
+    const attemptVersion = ++submitVersionRef.current;
+    setIsSubmitting(true);
+    try {
+      const result = await completeEditorInvitePasswordSetup(newPassword);
+      if (submitVersionRef.current !== attemptVersion) return;
+      if (result.success) {
+        setNewPassword('');
+        setConfirmPassword('');
+        if (result.error) {
+          setSuccessMessage(result.error);
+          setMode('signin');
+        }
+      } else {
+        setErrorMessage(
+          result.error || 'Failed to complete Editor account setup. Please try again.'
+        );
+      }
+    } catch (err: any) {
+      if (submitVersionRef.current !== attemptVersion) return;
+      setErrorMessage(
+        err?.message || 'Failed to complete Editor account setup. Please try again.'
+      );
+    } finally {
+      if (submitVersionRef.current === attemptVersion) {
+        setIsSubmitting(false);
+      }
+    }
+  };
+
   const handleRetryVerification = async () => {
     setErrorMessage(null);
     setSuccessMessage(null);
@@ -244,6 +331,8 @@ export const LoginView: React.FC = () => {
   };
 
   const handleManualSignOut = async () => {
+    submitVersionRef.current += 1;
+    setIsSubmitting(false);
     setOtpCode('');
     setNewPassword('');
     setConfirmPassword('');
@@ -299,22 +388,26 @@ export const LoginView: React.FC = () => {
                   ? 'Set New Password'
                   : profileVerificationState === 'temporary_error'
                     ? 'Profile Verification Unavailable'
-                    : mode === 'forgot'
-                      ? 'Reset Studio Password'
-                      : mode === 'verify_otp'
-                        ? 'Verify Recovery Code'
-                        : 'Studio Sign In'}
+                    : isInvitePasswordSetupRequired
+                      ? 'Complete Your TWB Hub Account Setup'
+                      : mode === 'forgot'
+                        ? 'Reset Studio Password'
+                        : mode === 'verify_otp'
+                          ? 'Verify Recovery Code'
+                          : 'Studio Sign In'}
               </h2>
               <p className="text-[11px] text-slate-400 mt-0.5">
                 {isPasswordRecovery
                   ? 'Choose a strong password for your studio account.'
                   : profileVerificationState === 'temporary_error'
                     ? 'Your session is active, but your studio profile could not be verified.'
-                    : mode === 'forgot'
-                      ? 'Enter your studio email to receive a 6-digit recovery code.'
-                      : mode === 'verify_otp'
-                        ? 'Enter the 6-digit code sent to your studio email.'
-                        : 'Invitation-only access verified against studio records.'}
+                    : isInvitePasswordSetupRequired
+                      ? 'Create your password before accessing your Editor workspace.'
+                      : mode === 'forgot'
+                        ? 'Enter your studio email to receive a 6-digit recovery code.'
+                        : mode === 'verify_otp'
+                          ? 'Enter the 6-digit code sent to your studio email.'
+                          : 'Invitation-only access verified against studio records.'}
               </p>
             </div>
             <ShieldCheck className="w-5 h-5 text-[#F1D099] shrink-0" />
@@ -458,6 +551,137 @@ export const LoginView: React.FC = () => {
                 <span>Sign Out</span>
               </button>
             </div>
+          ) : isInvitePasswordSetupRequired ? (
+            /* View 2B: Invited Editor Mandatory Password Setup */
+            <form onSubmit={handleInviteSetupSubmit} className="space-y-4">
+              {session?.user?.email && (
+                <div>
+                  <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                    Invited Studio Email
+                  </label>
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
+                      <Mail className="w-4 h-4" />
+                    </div>
+                    <input
+                      id="invite-setup-email"
+                      type="email"
+                      readOnly
+                      value={session.user.email}
+                      className="w-full pl-10 pr-3.5 py-2.5 bg-slate-950/60 border border-slate-800 rounded-xl text-xs text-slate-300 cursor-default focus:outline-none"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {isInviteSyncPending ? (
+                <div className="p-3.5 rounded-xl bg-amber-950/40 border border-amber-800/70 text-amber-200 text-xs leading-relaxed">
+                  Your password has been saved. Click <span className="font-semibold text-white">Retry Session Sync</span> below to finish verifying your session without re-entering your password.
+                </div>
+              ) : (
+                <>
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="block text-xs font-medium text-slate-300">
+                        New Password <span className="text-[#F1D099]">*</span>
+                      </label>
+                      <span className="text-[11px] text-slate-500">
+                        {INVITE_PASSWORD_MIN_LENGTH}–{INVITE_PASSWORD_MAX_LENGTH} characters
+                      </span>
+                    </div>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
+                        <Lock className="w-4 h-4" />
+                      </div>
+                      <input
+                        id="invite-new-password"
+                        type={showNewPassword ? 'text' : 'password'}
+                        autoComplete="new-password"
+                        required
+                        disabled={isSubmitting}
+                        minLength={INVITE_PASSWORD_MIN_LENGTH}
+                        maxLength={INVITE_PASSWORD_MAX_LENGTH}
+                        value={newPassword}
+                        onChange={e => setNewPassword(e.target.value)}
+                        placeholder="Create a strong password"
+                        className="w-full pl-10 pr-10 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 disabled:opacity-60 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-[#F1D099] focus:border-transparent transition-all"
+                      />
+                      <button
+                        type="button"
+                        disabled={isSubmitting}
+                        onClick={() => setShowNewPassword(!showNewPassword)}
+                        className="absolute inset-y-0 right-0 pr-3.5 flex items-center text-slate-500 hover:text-slate-300 disabled:opacity-50 transition-colors"
+                        aria-label={showNewPassword ? 'Hide password' : 'Show password'}
+                      >
+                        {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-medium text-slate-300 mb-1.5">
+                      Confirm Password <span className="text-[#F1D099]">*</span>
+                    </label>
+                    <div className="relative">
+                      <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-500">
+                        <Lock className="w-4 h-4" />
+                      </div>
+                      <input
+                        id="invite-confirm-password"
+                        type={showNewPassword ? 'text' : 'password'}
+                        autoComplete="new-password"
+                        required
+                        disabled={isSubmitting}
+                        minLength={INVITE_PASSWORD_MIN_LENGTH}
+                        maxLength={INVITE_PASSWORD_MAX_LENGTH}
+                        value={confirmPassword}
+                        onChange={e => setConfirmPassword(e.target.value)}
+                        placeholder="Re-enter your password"
+                        className="w-full pl-10 pr-3.5 py-2.5 bg-slate-950 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 disabled:opacity-60 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-[#F1D099] focus:border-transparent transition-all"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              <button
+                id="btn-invite-setup-submit"
+                type="submit"
+                disabled={isSubmitting}
+                className="w-full mt-2 py-3 px-4 rounded-xl bg-[#F1D099] hover:bg-[#e7c385] active:bg-[#dbb573] disabled:opacity-50 disabled:cursor-not-allowed text-slate-950 font-bold text-xs shadow-lg shadow-[#F1D099]/15 flex items-center justify-center gap-2 transition-all cursor-pointer"
+              >
+                {isSubmitting ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-slate-950 border-t-transparent rounded-full animate-spin" />
+                    <span>
+                      {isInviteSyncPending
+                        ? 'Syncing Session...'
+                        : 'Completing Account Setup...'}
+                    </span>
+                  </>
+                ) : isInviteSyncPending ? (
+                  <>
+                    <RefreshCw className="w-4 h-4" />
+                    <span>Retry Session Sync</span>
+                  </>
+                ) : (
+                  <>
+                    <span>Create Password &amp; Continue</span>
+                    <ArrowRight className="w-4 h-4" />
+                  </>
+                )}
+              </button>
+
+              <button
+                id="btn-invite-setup-cancel"
+                type="button"
+                onClick={handleManualSignOut}
+                className="w-full py-2.5 px-4 rounded-xl bg-slate-950 hover:bg-slate-800 border border-slate-800 text-slate-300 font-semibold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer"
+              >
+                <LogOut className="w-3.5 h-3.5" />
+                <span>Cancel &amp; Sign Out</span>
+              </button>
+            </form>
           ) : mode === 'forgot' ? (
             /* View 3: Forgot Password (Request 6-digit Email OTP) */
             <form onSubmit={handleForgotPasswordSubmit} className="space-y-4">

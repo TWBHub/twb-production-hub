@@ -179,6 +179,30 @@ export interface TeamMember {
   notes?: string;
 }
 
+export type EditorAccountStatusState =
+  | 'Not Invited'
+  | 'Invitation Pending'
+  | 'Login Active'
+  | 'Login Disabled';
+
+export interface EditorAccountStatusSummary {
+  team_member_id: string;
+  profile_id: string | null;
+  account_status: EditorAccountStatusState;
+  team_member_active: boolean;
+  team_member_directory_active: boolean;
+  team_member_status: string | null;
+  is_editor_category: boolean;
+  profile_role: string | null;
+  profile_is_active: boolean | null;
+  auth_banned: boolean;
+  email_confirmed: boolean;
+  password_setup_required: boolean;
+  invited_at: string | null;
+  last_sign_in_at: string | null;
+  integrity_warning: string | null;
+}
+
 export interface Editor {
   id: string;
   name: string;

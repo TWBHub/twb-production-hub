@@ -119,6 +119,144 @@ export const getCurrentUser = async (): Promise<User | null> => {
   }
 };
 
+const isInvalidAuthSessionError = (error: unknown): boolean => {
+  if (!error || typeof error !== 'object') return false;
+  const errObj = error as { status?: number; code?: string; message?: string };
+  const status = errObj.status;
+  const code = (errObj.code || '').toLowerCase();
+  const msg = (errObj.message || '').toLowerCase();
+  return (
+    status === 401 ||
+    status === 403 ||
+    code === 'user_not_found' ||
+    code === 'session_not_found' ||
+    code === 'user_banned' ||
+    msg.includes('invalid jwt') ||
+    msg.includes('user from sub claim') ||
+    msg.includes('session from session_id claim') ||
+    msg.includes('banned')
+  );
+};
+
+/**
+ * Fetches fresh server-side Auth user metadata via getUser() without falling back to cached JWTs.
+ */
+export const getAuthoritativeAuthUser = async (): Promise<{
+  user: User | null;
+  invalidSession: boolean;
+  error: Error | null;
+}> => {
+  const client = getSupabaseClient();
+  if (!client) {
+    return {
+      user: null,
+      invalidSession: false,
+      error: new Error('Supabase connection is not configured.'),
+    };
+  }
+  try {
+    const {
+      data: { user },
+      error,
+    } = await client.auth.getUser();
+    if (error) {
+      return {
+        user: null,
+        invalidSession: isInvalidAuthSessionError(error),
+        error: new Error(error.message),
+      };
+    }
+    return { user: user ?? null, invalidSession: !user, error: null };
+  } catch (err: any) {
+    return {
+      user: null,
+      invalidSession: false,
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
+  }
+};
+
+export interface RefreshAuthSessionResult {
+  session: Session | null;
+  user: User | null;
+  authoritativeUser: User | null;
+  invalidSession: boolean;
+  error: Error | null;
+}
+
+/**
+ * Refreshes the active Supabase Auth session and fetches authoritative user metadata
+ * so updated server-controlled app_metadata flags are reflected immediately without trusting stale tokens.
+ */
+export const refreshAuthSession = async (): Promise<RefreshAuthSessionResult> => {
+  const client = getSupabaseClient();
+  if (!client) {
+    return {
+      session: null,
+      user: null,
+      authoritativeUser: null,
+      invalidSession: false,
+      error: new Error('Supabase connection is not configured.'),
+    };
+  }
+  try {
+    const { data, error } = await client.auth.refreshSession();
+    if (error) {
+      return {
+        session: null,
+        user: null,
+        authoritativeUser: null,
+        invalidSession: isInvalidAuthSessionError(error),
+        error: new Error(error.message),
+      };
+    }
+
+    const refreshedSession = data.session ?? null;
+    let freshUser = data.user ?? refreshedSession?.user ?? null;
+    let authoritativeUser: User | null = null;
+    let lookupError: Error | null = null;
+
+    if (refreshedSession) {
+      const userCheck = await getAuthoritativeAuthUser();
+      if (userCheck.invalidSession) {
+        return {
+          session: null,
+          user: null,
+          authoritativeUser: null,
+          invalidSession: true,
+          error: userCheck.error ?? new Error('Session is no longer valid.'),
+        };
+      }
+      if (userCheck.user) {
+        authoritativeUser = userCheck.user;
+        freshUser = userCheck.user;
+      } else if (userCheck.error) {
+        lookupError = userCheck.error;
+      }
+    }
+
+    return {
+      session: refreshedSession
+        ? freshUser
+          ? { ...refreshedSession, user: freshUser }
+          : refreshedSession
+        : null,
+      user: freshUser,
+      authoritativeUser,
+      invalidSession: false,
+      error: lookupError,
+    };
+  } catch (err: any) {
+    return {
+      session: null,
+      user: null,
+      authoritativeUser: null,
+      invalidSession: false,
+      error: err instanceof Error ? err : new Error(String(err)),
+    };
+  }
+};
+
 /**
  * Subscribes to Supabase auth state changes (sign in, sign out, token refresh, password recovery)
  */

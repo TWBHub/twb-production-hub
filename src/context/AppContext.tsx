@@ -26,8 +26,9 @@ import {
 import { apiService } from '../services/api';
 import {
   getSession,
+  getAuthoritativeAuthUser,
+  refreshAuthSession,
   getUserProfile,
-  ProfileLookupResult,
   signInWithEmail,
   signOut,
   resetPasswordForEmail,
@@ -38,6 +39,12 @@ import {
   getDefaultLandingTab,
   resolveVerifiedUserRole,
 } from '../lib/auth';
+import { completeInvitePasswordSetup } from '../services/editorAccounts';
+import {
+  createAuthOnboardingCoordinator,
+  isRecoveryUrlPresent,
+  parseSupabaseAuthUrlError,
+} from '../utils/inviteOnboarding';
 import {
   canAddDeliverableCatalogueEntry,
   canEditDeliverableCatalogueEntry,
@@ -53,6 +60,7 @@ import {
   resolveLinkedEditorTeamMember,
   validateDeliverableUpdateFields,
 } from '../utils/deliverablePermissions';
+import { validateDeliverableEditorAssignment } from '../utils/teamMemberFilters';
 
 export type ModuleErrorKey =
   | 'clients'
@@ -76,12 +84,16 @@ interface AppContextType {
   profileVerificationState: 'idle' | 'verified' | 'temporary_error';
   retryProfileVerification: () => Promise<{ success: boolean; error?: string }>;
   isPasswordRecovery: boolean;
+  isInvitePasswordSetupRequired: boolean;
+  isInviteSyncPending: boolean;
   requestPasswordReset: (email: string) => Promise<{ success: boolean; error?: string }>;
   verifyPasswordRecoveryOtp: (
     email: string,
     token: string
   ) => Promise<{ success: boolean; error?: string }>;
   completePasswordRecovery: (newPassword: string) => Promise<{ success: boolean; error?: string }>;
+  completeEditorInvitePasswordSetup: (newPassword: string) => Promise<{ success: boolean; error?: string }>;
+  retryEditorInviteSessionSync: () => Promise<{ success: boolean; error?: string }>;
   login: (email: string, password: string) => Promise<{ success: boolean; error?: string }>;
   logout: () => Promise<void>;
   refreshUserProfile: () => Promise<Profile | null>;
@@ -239,6 +251,7 @@ export interface AppDeliverableActionDeps {
   deliverables: Deliverable[];
   deliverableCatalogue: DeliverableCatalogueItem[];
   enquiries: Enquiry[];
+  teamMembers?: TeamMember[];
   linkedEditorTeamMember: TeamMember | null;
   linkedEditorTeamMemberId: string | null;
   api: {
@@ -293,6 +306,19 @@ export function createAppDeliverableActions(deps: AppDeliverableActionDeps) {
     const role = assertActiveRole();
     if (!canCreateDeliverable(role, deps.isUserActive)) {
       throw new Error('Permission denied: Only Admins and Managers can create deliverables.');
+    }
+    if (deps.teamMembers && deliverable.assigned_editor_id?.trim()) {
+      const assignmentCheck = validateDeliverableEditorAssignment({
+        targetEditorId: deliverable.assigned_editor_id,
+        previousEditorId: null,
+        teamMembers: deps.teamMembers,
+      });
+      if (!assignmentCheck.valid) {
+        throw new Error(
+          assignmentCheck.reason ||
+            'Inactive or non-Editor team members cannot be assigned to new deliverables.'
+        );
+      }
     }
     const created = await deps.api.createDeliverable(deliverable);
     deps.setDeliverables(prev => [created, ...prev.filter(d => d.id !== created.id)]);
@@ -368,6 +394,20 @@ export function createAppDeliverableActions(deps: AppDeliverableActionDeps) {
     const role = assertActiveRole();
 
     if (canManageAllDeliverables(role, deps.isUserActive)) {
+      if (deps.teamMembers && deliverable.assigned_editor_id?.trim()) {
+        const existing = deps.deliverables.find(d => d.id === deliverable.id) || null;
+        const assignmentCheck = validateDeliverableEditorAssignment({
+          targetEditorId: deliverable.assigned_editor_id,
+          previousEditorId: existing?.assigned_editor_id ?? null,
+          teamMembers: deps.teamMembers,
+        });
+        if (!assignmentCheck.valid) {
+          throw new Error(
+            assignmentCheck.reason ||
+              'Inactive or non-Editor team members cannot be assigned to deliverables.'
+          );
+        }
+      }
       const updated = await deps.api.updateDeliverable(deliverable);
       deps.setDeliverables(prev => prev.map(d => (d.id === deliverable.id ? updated : d)));
       await deps.refreshAllData();
@@ -581,25 +621,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   >('idle');
   const [isPasswordRecovery, setIsPasswordRecovery] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
-    const hash = window.location.hash || '';
-    const search = new URLSearchParams(window.location.search);
-    return hash.includes('type=recovery') || search.get('type') === 'recovery';
+    const urlError = parseSupabaseAuthUrlError(window.location);
+    if (urlError.hasError) return false;
+    return isRecoveryUrlPresent(window.location);
   });
-  const isPasswordRecoveryRef = React.useRef<boolean>(isPasswordRecovery);
+  const [isInvitePasswordSetupRequired, setIsInvitePasswordSetupRequired] =
+    useState<boolean>(false);
+  const [isInviteSyncPending, setIsInviteSyncPending] = useState<boolean>(false);
   const currentUserRef = React.useRef<Profile | null>(null);
   const activeTabRef = React.useRef<string>(activeTab);
-  const isMountedRef = React.useRef<boolean>(true);
-  const authStateVersionRef = React.useRef<number>(0);
-  const activeLoginVersionRef = React.useRef<number>(0);
-  const scheduledAuthTimersRef = React.useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
-  const loginInFlightRef = React.useRef<boolean>(false);
-  const otpRecoveryInFlightRef = React.useRef<boolean>(false);
-  const preserveAuthErrorRef = React.useRef<boolean>(false);
   const [availableProfiles] = useState<Profile[]>([]);
-
-  useEffect(() => {
-    isPasswordRecoveryRef.current = isPasswordRecovery;
-  }, [isPasswordRecovery]);
 
   useEffect(() => {
     currentUserRef.current = currentUser;
@@ -838,16 +869,7 @@ const refreshAllData = useCallback(async () => {
 }, []);
 
 
-  const clearAuthError = useCallback(() => {
-    preserveAuthErrorRef.current = false;
-    setAuthError(null);
-  }, []);
-
-  const clearAuthenticatedAppState = useCallback(() => {
-    currentUserRef.current = null;
-    setSession(null);
-    setCurrentUser(null);
-    setProfileVerificationState('idle');
+  const clearDomainData = useCallback(() => {
     setSelectedProjectId(null);
     setSelectedEnquiryId(null);
     activeTabRef.current = 'dashboard';
@@ -871,465 +893,160 @@ const refreshAllData = useCallback(async () => {
     setDeliverableCatalogue([]);
   }, []);
 
-  const scheduleDeferredAuthTask = useCallback((task: () => Promise<void> | void) => {
-    const timerId = setTimeout(() => {
-      scheduledAuthTimersRef.current.delete(timerId);
-      if (!isMountedRef.current) return;
-      void Promise.resolve(task()).catch(err => {
-        console.warn('Deferred auth verification error:', err);
-      });
-    }, 0);
-    scheduledAuthTimersRef.current.add(timerId);
+  const authCoordinatorRef = React.useRef<ReturnType<
+    typeof createAuthOnboardingCoordinator
+  > | null>(null);
+
+  if (!authCoordinatorRef.current) {
+    authCoordinatorRef.current = createAuthOnboardingCoordinator({
+      initialIsPasswordRecovery: isPasswordRecovery,
+      getSession: () => getSession(),
+      getAuthoritativeAuthUser: () => getAuthoritativeAuthUser(),
+      refreshAuthSession: () => refreshAuthSession(),
+      getUserProfile: (userId: string) => getUserProfile(userId),
+      signInWithEmail: (email: string, password: string) =>
+        signInWithEmail(email, password),
+      signOut: () => signOut(),
+      resetPasswordForEmail: (email: string) => resetPasswordForEmail(email),
+      verifyRecoveryOtp: (email: string, token: string) =>
+        verifyRecoveryOtp(email, token),
+      updateUserPassword: (newPassword: string) => updateUserPassword(newPassword),
+      completeInvitePasswordSetup: (newPassword: string) =>
+        completeInvitePasswordSetup(newPassword),
+      canAccessTab: (tab: string, role: UserRole) => canAccessTab(tab, role),
+      getDefaultLandingTab: (role?: UserRole | string | null) =>
+        getDefaultLandingTab(role),
+      getActiveTab: () => activeTabRef.current,
+      setActiveTab: (nextTab: string) => {
+        activeTabRef.current = nextTab;
+        setActiveTabState(nextTab);
+      },
+      getLocation: () =>
+        typeof window !== 'undefined'
+          ? {
+              pathname: window.location.pathname,
+              search: window.location.search,
+              hash: window.location.hash,
+            }
+          : undefined,
+      replaceUrl: (cleanedPath: string) => {
+        if (typeof window !== 'undefined') {
+          window.history.replaceState({}, document.title, cleanedPath);
+        }
+      },
+      onSessionChange: nextSession => setSession(nextSession),
+      onCurrentUserChange: nextUser => {
+        currentUserRef.current = nextUser;
+        setCurrentUser(nextUser);
+      },
+      onAuthLoadingChange: nextLoading => setAuthLoading(nextLoading),
+      onAuthErrorChange: nextError => setAuthError(nextError),
+      onProfileVerificationStateChange: nextState =>
+        setProfileVerificationState(nextState),
+      onPasswordRecoveryChange: nextRecovery => setIsPasswordRecovery(nextRecovery),
+      onInvitePasswordSetupRequiredChange: nextRequired =>
+        setIsInvitePasswordSetupRequired(nextRequired),
+      onInviteSyncPendingChange: nextPending => setIsInviteSyncPending(nextPending),
+      onClearDomainData: clearDomainData,
+    });
+  }
+
+  const clearAuthError = useCallback(() => {
+    authCoordinatorRef.current?.clearAuthError();
   }, []);
 
-  const verifyAndApplySessionProfile = useCallback(
-    async (
-      targetSession: Session,
-      options?: {
-        redirectOnSuccess?: boolean;
-        bypassRecoveryCheck?: boolean;
-        precomputedLookup?: ProfileLookupResult;
-        expectedVersion?: number;
-      }
-    ): Promise<{ success: boolean; error?: string }> => {
-      const opVersion =
-        options?.expectedVersion !== undefined
-          ? options.expectedVersion
-          : ++authStateVersionRef.current;
-
-      const isStale = () =>
-        !isMountedRef.current || authStateVersionRef.current !== opVersion;
-
-      if (isStale()) {
-        return { success: false };
-      }
-
-      if (isPasswordRecoveryRef.current && !options?.bypassRecoveryCheck) {
-        setSession(targetSession);
-        currentUserRef.current = null;
-        setCurrentUser(null);
-        setProfileVerificationState('idle');
-        setAuthError(null);
-        return { success: true };
-      }
-
-      const lookup =
-        options?.precomputedLookup ?? (await getUserProfile(targetSession.user.id));
-
-      if (isStale()) {
-        return { success: false };
-      }
-
-      if (lookup.status === 'ok' && lookup.profile) {
-        preserveAuthErrorRef.current = false;
-        setSession(targetSession);
-        currentUserRef.current = lookup.profile;
-        setCurrentUser(lookup.profile);
-        setProfileVerificationState('verified');
-        setAuthError(null);
-
-        const defaultTab = getDefaultLandingTab(lookup.profile.role);
-        if (options?.redirectOnSuccess) {
-          setActiveTab(defaultTab);
-        } else if (!canAccessTab(activeTabRef.current, lookup.profile.role)) {
-          setActiveTab(defaultTab);
-        }
-
-        return { success: true };
-      }
-
-      if (lookup.status === 'temporary_error') {
-        const msg =
-          lookup.error?.message ||
-          'Temporary database or network error while verifying your studio profile. Please retry.';
-        preserveAuthErrorRef.current = false;
-        setSession(targetSession);
-        currentUserRef.current = null;
-        setCurrentUser(null);
-        setProfileVerificationState('temporary_error');
-        setAuthError(msg);
-        return { success: false, error: msg };
-      }
-
-      // Confirmed inactive account ('inactive'), missing profile ('not_found'),
-      // or unsupported role ('unsupported_role', including legacy 'team')
-      const denialMessage =
-        lookup.status === 'inactive'
-          ? 'Your account has been deactivated. Please contact an administrator.'
-          : lookup.status === 'unsupported_role'
-            ? 'Access denied: Your account role is not supported for TWBHub access. Please contact your administrator.'
-            : 'Access denied: No studio profile was found for this account. Please contact your administrator.';
-
-      preserveAuthErrorRef.current = true;
-      isPasswordRecoveryRef.current = false;
-      setIsPasswordRecovery(false);
-      clearAuthenticatedAppState();
-      setAuthError(denialMessage);
-
-      try {
-        await signOut();
-      } catch (err) {
-        console.warn('Sign out after failed profile verification:', err);
-      }
-
-      if (isStale()) {
-        return { success: false, error: denialMessage };
-      }
-
-      setAuthError(denialMessage);
-      return { success: false, error: denialMessage };
-    },
-    [clearAuthenticatedAppState, setActiveTab]
-  );
-
-  const verifyAndApplySessionProfileRef = React.useRef(verifyAndApplySessionProfile);
-  useEffect(() => {
-    verifyAndApplySessionProfileRef.current = verifyAndApplySessionProfile;
-  }, [verifyAndApplySessionProfile]);
-
-  // Refresh profile from Supabase profiles table
   const refreshUserProfile = useCallback(async (): Promise<Profile | null> => {
-    const opVersion = ++authStateVersionRef.current;
-    const activeSession = session || (await getSession());
-    if (!isMountedRef.current || authStateVersionRef.current !== opVersion) {
-      return null;
-    }
-    if (!activeSession?.user) return null;
-    const result = await verifyAndApplySessionProfile(activeSession, {
-      expectedVersion: opVersion,
-    });
-    if (
-      result.success &&
-      isMountedRef.current &&
-      authStateVersionRef.current === opVersion
-    ) {
-      return currentUserRef.current;
-    }
-    return null;
-  }, [session, verifyAndApplySessionProfile]);
+    if (!authCoordinatorRef.current) return null;
+    return authCoordinatorRef.current.refreshUserProfile();
+  }, []);
 
   const retryProfileVerification = useCallback(async (): Promise<{
     success: boolean;
     error?: string;
   }> => {
-    const opVersion = ++authStateVersionRef.current;
-    const activeSession = session || (await getSession());
-    if (!isMountedRef.current || authStateVersionRef.current !== opVersion) {
-      return { success: false };
-    }
-    if (!activeSession?.user) {
-      const msg = 'Your session is no longer active. Please sign in again.';
-      clearAuthenticatedAppState();
-      setAuthError(msg);
-      return { success: false, error: msg };
-    }
-    return verifyAndApplySessionProfile(activeSession, {
-      redirectOnSuccess: true,
-      expectedVersion: opVersion,
-    });
-  }, [session, clearAuthenticatedAppState, verifyAndApplySessionProfile]);
+    if (!authCoordinatorRef.current) return { success: false };
+    return authCoordinatorRef.current.retryProfileVerification();
+  }, []);
 
-  // Auth Operations: Login
   const login = async (
     email: string,
     password: string
   ): Promise<{ success: boolean; error?: string }> => {
-    const loginVersion = ++authStateVersionRef.current;
-    activeLoginVersionRef.current = loginVersion;
-    loginInFlightRef.current = true;
-    preserveAuthErrorRef.current = false;
-    setAuthError(null);
-    setIsPasswordRecovery(false);
-    isPasswordRecoveryRef.current = false;
-
-    try {
-      const result = await signInWithEmail(email, password);
-      if (!isMountedRef.current || authStateVersionRef.current !== loginVersion) {
-        return { success: false };
-      }
-
-      if (result.error) {
-        setAuthError(result.error.message);
-        return { success: false, error: result.error.message };
-      }
-
-      if (result.session && result.user) {
-        const verified = await verifyAndApplySessionProfile(result.session, {
-          redirectOnSuccess: true,
-          expectedVersion: loginVersion,
-        });
-        return verified;
-      }
-
-      const fallbackMsg = 'No session established. Please verify your credentials.';
-      setAuthError(fallbackMsg);
-      return { success: false, error: fallbackMsg };
-    } catch (err: any) {
-      if (!isMountedRef.current || authStateVersionRef.current !== loginVersion) {
-        return { success: false };
-      }
-      const msg = err?.message || 'Login attempt failed.';
-      setAuthError(msg);
-      return { success: false, error: msg };
-    } finally {
-      if (activeLoginVersionRef.current === loginVersion) {
-        loginInFlightRef.current = false;
-      }
+    if (!authCoordinatorRef.current) {
+      return { success: false, error: 'Authentication service is unavailable.' };
     }
+    return authCoordinatorRef.current.login(email, password);
   };
 
-  // Auth Operations: Password Recovery Request (Email OTP)
   const requestPasswordReset = async (
     email: string
   ): Promise<{ success: boolean; error?: string }> => {
-    const { error } = await resetPasswordForEmail(email);
-    if (error) {
-      return { success: false, error: error.message };
+    if (!authCoordinatorRef.current) {
+      return { success: false, error: 'Authentication service is unavailable.' };
     }
-    return { success: true };
+    return authCoordinatorRef.current.requestPasswordReset(email);
   };
 
-  // Auth Operations: Verify Recovery OTP and Establish Recovery Session (without changing password)
   const verifyPasswordRecoveryOtp = async (
     email: string,
     token: string
   ): Promise<{ success: boolean; error?: string }> => {
-    if (otpRecoveryInFlightRef.current) {
-      return { success: false, error: 'Verification is already in progress. Please wait.' };
+    if (!authCoordinatorRef.current) {
+      return { success: false, error: 'Authentication service is unavailable.' };
     }
-
-    const otpVersion = ++authStateVersionRef.current;
-    otpRecoveryInFlightRef.current = true;
-    preserveAuthErrorRef.current = false;
-    setAuthError(null);
-
-    try {
-      const result = await verifyRecoveryOtp(email, token);
-      if (!isMountedRef.current || authStateVersionRef.current !== otpVersion) {
-        return { success: false };
-      }
-      if (result.error || !result.session) {
-        return {
-          success: false,
-          error: result.error?.message || 'Failed to verify recovery code. Please try again.',
-        };
-      }
-
-      isPasswordRecoveryRef.current = true;
-      currentUserRef.current = null;
-      setIsPasswordRecovery(true);
-      setSession(result.session);
-      setCurrentUser(null);
-      setProfileVerificationState('idle');
-      setAuthError(null);
-      return { success: true };
-    } catch (err: any) {
-      return {
-        success: false,
-        error: err?.message || 'Recovery code verification failed.',
-      };
-    } finally {
-      otpRecoveryInFlightRef.current = false;
-    }
+    return authCoordinatorRef.current.verifyPasswordRecoveryOtp(email, token);
   };
 
-  // Auth Operations: Complete Password Recovery (Set New Password)
   const completePasswordRecovery = async (
     newPassword: string
   ): Promise<{ success: boolean; error?: string }> => {
-    const recoveryVersion = ++authStateVersionRef.current;
-    const { error } = await updateUserPassword(newPassword);
-    if (!isMountedRef.current || authStateVersionRef.current !== recoveryVersion) {
-      return { success: false };
+    if (!authCoordinatorRef.current) {
+      return { success: false, error: 'Authentication service is unavailable.' };
     }
-    if (error) {
-      return { success: false, error: error.message };
-    }
-
-    isPasswordRecoveryRef.current = false;
-    setIsPasswordRecovery(false);
-
-    if (typeof window !== 'undefined' && (window.location.hash || window.location.search)) {
-      window.history.replaceState({}, document.title, window.location.pathname);
-    }
-
-    const activeSession = (await getSession()) || session;
-    if (!isMountedRef.current || authStateVersionRef.current !== recoveryVersion) {
-      return { success: false };
-    }
-    if (!activeSession?.user) {
-      const msg = 'Password updated. Please sign in with your new password.';
-      clearAuthenticatedAppState();
-      setAuthError(null);
-      return { success: true, error: msg };
-    }
-
-    return verifyAndApplySessionProfile(activeSession, {
-      redirectOnSuccess: true,
-      bypassRecoveryCheck: true,
-      expectedVersion: recoveryVersion,
-    });
+    return authCoordinatorRef.current.completePasswordRecovery(newPassword);
   };
 
-  // Auth Operations: Logout (also safely clears any active recovery session without changing password)
-  const logout = async (): Promise<void> => {
-    // Synchronously invalidate all in-flight auth checks and clear authenticated state first
-    authStateVersionRef.current += 1;
-    preserveAuthErrorRef.current = false;
-    otpRecoveryInFlightRef.current = false;
-    loginInFlightRef.current = false;
-    isPasswordRecoveryRef.current = false;
-    setIsPasswordRecovery(false);
-    clearAuthenticatedAppState();
-    setAuthError(null);
-    setAuthLoading(false);
-
-    try {
-      await signOut();
-    } catch (err) {
-      console.warn('Sign out warning:', err);
+  const completeEditorInvitePasswordSetup = async (
+    newPassword: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    if (!authCoordinatorRef.current) {
+      return { success: false, error: 'Authentication service is unavailable.' };
     }
+    return authCoordinatorRef.current.completeEditorInvitePasswordSetup(newPassword);
+  };
+
+  const retryEditorInviteSessionSync = async (): Promise<{
+    success: boolean;
+    error?: string;
+  }> => {
+    if (!authCoordinatorRef.current) {
+      return { success: false, error: 'Authentication service is unavailable.' };
+    }
+    return authCoordinatorRef.current.retryEditorInviteSessionSync();
+  };
+
+  const logout = async (): Promise<void> => {
+    if (!authCoordinatorRef.current) return;
+    await authCoordinatorRef.current.logout();
   };
 
   // Persistent session listener and initial check
   useEffect(() => {
-    isMountedRef.current = true;
+    const coordinator = authCoordinatorRef.current;
+    if (!coordinator) return;
 
-    const restoreSession = async () => {
-      const restoreVersion = ++authStateVersionRef.current;
-      try {
-        setAuthLoading(true);
-        const existingSession = await getSession();
-        if (!isMountedRef.current || authStateVersionRef.current !== restoreVersion) {
-          return;
-        }
-        if (existingSession?.user) {
-          await verifyAndApplySessionProfileRef.current(existingSession, {
-            expectedVersion: restoreVersion,
-          });
-        }
-      } catch (err) {
-        console.warn('Session restoration failed:', err);
-      } finally {
-        if (isMountedRef.current && authStateVersionRef.current === restoreVersion) {
-          setAuthLoading(false);
-        }
-      }
-    };
+    coordinator.activate();
+    coordinator.restoreSession();
 
-    restoreSession();
-
-    // Synchronous Auth state listener — never directly awaits Supabase operations inside the callback
     const { unsubscribe } = onAuthStateChange((event, changedSession) => {
-      if (!isMountedRef.current) return;
-
-      if (event === 'PASSWORD_RECOVERY') {
-        authStateVersionRef.current += 1;
-        preserveAuthErrorRef.current = false;
-        isPasswordRecoveryRef.current = true;
-        currentUserRef.current = null;
-        setIsPasswordRecovery(true);
-        setSession(changedSession);
-        setCurrentUser(null);
-        setProfileVerificationState('idle');
-        setAuthError(null);
-        setAuthLoading(false);
-        return;
-      }
-
-      if (event === 'SIGNED_OUT') {
-        authStateVersionRef.current += 1;
-        loginInFlightRef.current = false;
-        otpRecoveryInFlightRef.current = false;
-        isPasswordRecoveryRef.current = false;
-        setIsPasswordRecovery(false);
-        clearAuthenticatedAppState();
-        setAuthLoading(false);
-        if (!preserveAuthErrorRef.current) {
-          setAuthError(null);
-        }
-        return;
-      }
-
-      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED' || event === 'USER_UPDATED') {
-        if (!changedSession?.user) return;
-
-        if (otpRecoveryInFlightRef.current || isPasswordRecoveryRef.current) {
-          isPasswordRecoveryRef.current = true;
-          currentUserRef.current = null;
-          setIsPasswordRecovery(true);
-          setSession(changedSession);
-          setCurrentUser(null);
-          setProfileVerificationState('idle');
-          setAuthLoading(false);
-          return;
-        }
-
-        if (event === 'SIGNED_IN' && loginInFlightRef.current) {
-          return;
-        }
-
-        const isActiveUserTokenRefresh =
-          event === 'TOKEN_REFRESHED' &&
-          Boolean(
-            currentUserRef.current &&
-              currentUserRef.current.id === changedSession.user.id
-          );
-
-        if (isActiveUserTokenRefresh) {
-          setSession(changedSession);
-        }
-
-        const eventVersion = ++authStateVersionRef.current;
-
-        scheduleDeferredAuthTask(async () => {
-          if (!isMountedRef.current || authStateVersionRef.current !== eventVersion) {
-            return;
-          }
-
-          try {
-            if (isActiveUserTokenRefresh) {
-              const refreshLookup = await getUserProfile(changedSession.user.id);
-              if (!isMountedRef.current || authStateVersionRef.current !== eventVersion) {
-                return;
-              }
-
-              if (refreshLookup.status === 'ok' && refreshLookup.profile) {
-                currentUserRef.current = refreshLookup.profile;
-                setCurrentUser(refreshLookup.profile);
-              } else if (
-                refreshLookup.status === 'inactive' ||
-                refreshLookup.status === 'not_found' ||
-                refreshLookup.status === 'unsupported_role'
-              ) {
-                await verifyAndApplySessionProfileRef.current(changedSession, {
-                  precomputedLookup: refreshLookup,
-                  expectedVersion: eventVersion,
-                });
-              }
-              return;
-            }
-
-            await verifyAndApplySessionProfileRef.current(changedSession, {
-              expectedVersion: eventVersion,
-            });
-          } finally {
-            if (isMountedRef.current && authStateVersionRef.current === eventVersion) {
-              setAuthLoading(false);
-            }
-          }
-        });
-      }
+      coordinator.handleAuthStateChange(event, changedSession);
     });
 
     return () => {
-      isMountedRef.current = false;
-      authStateVersionRef.current += 1;
-      scheduledAuthTimersRef.current.forEach(timerId => clearTimeout(timerId));
-      scheduledAuthTimersRef.current.clear();
+      coordinator.dispose();
       unsubscribe();
     };
-  }, [clearAuthenticatedAppState, scheduleDeferredAuthTask]);
+  }, []);
 
   useEffect(() => {
     checkSupabase();
@@ -1369,7 +1086,8 @@ const refreshAllData = useCallback(async () => {
 
   // Authoritative Editor identity resolution:
   // auth.uid() -> profiles.id -> team_members.profile_id -> team_members.id
-  // Fails closed (null) if unverified, non-Editor, unlinked, inactive, or ambiguous.
+  // Fails closed (null) if unverified, non-Editor, unlinked, inactive profile, or ambiguous.
+  // Team Member directory activity is independent of portal login activity.
   const linkedEditorTeamMember = useMemo<TeamMember | null>(() => {
     return resolveLinkedEditorTeamMember({
       currentUser,
@@ -1469,6 +1187,7 @@ const matchBrand = (companyId: string) => {
     deliverables,
     deliverableCatalogue,
     enquiries,
+    teamMembers,
     linkedEditorTeamMember,
     linkedEditorTeamMemberId,
     api: apiService,
@@ -1690,9 +1409,13 @@ const deleteExpense = async (id: string) => {
         profileVerificationState,
         retryProfileVerification,
         isPasswordRecovery,
+        isInvitePasswordSetupRequired,
+        isInviteSyncPending,
         requestPasswordReset,
         verifyPasswordRecoveryOtp,
         completePasswordRecovery,
+        completeEditorInvitePasswordSetup,
+        retryEditorInviteSessionSync,
         login,
         logout,
         refreshUserProfile,

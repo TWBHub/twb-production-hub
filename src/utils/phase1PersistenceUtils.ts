@@ -27,6 +27,7 @@ import {
   resolveEffectiveLinkedEditorId,
   validateDeliverableUpdateFields,
 } from './deliverablePermissions';
+import { validateDeliverableEditorAssignment } from './teamMemberFilters';
 
 export const PHASE1_STORAGE_PREFIX = 'twbhub_';
 
@@ -455,6 +456,10 @@ export async function createDeliverableWithSupabase(params: {
   initialFallback?: Deliverable[];
   nowIso?: string;
   generateId?: () => string;
+  resolveTeamMemberById?: (
+    id: string
+  ) => Promise<(Partial<TeamMember> & { active?: unknown }) | null>;
+  teamMembers?: readonly (TeamMember & { active?: unknown })[];
 }): Promise<Deliverable> {
   const {
     deliverable,
@@ -465,7 +470,31 @@ export async function createDeliverableWithSupabase(params: {
     initialFallback = [],
     nowIso = new Date().toISOString(),
     generateId = () => crypto.randomUUID(),
+    resolveTeamMemberById,
+    teamMembers,
   } = params;
+
+  const requestedEditorId =
+    deliverable.assigned_editor_id && deliverable.assigned_editor_id.trim()
+      ? deliverable.assigned_editor_id.trim()
+      : null;
+
+  if (requestedEditorId && (resolveTeamMemberById || teamMembers)) {
+    const targetMember = resolveTeamMemberById
+      ? await resolveTeamMemberById(requestedEditorId)
+      : teamMembers?.find(member => member.id === requestedEditorId) ?? null;
+    const assignmentCheck = validateDeliverableEditorAssignment({
+      targetEditorId: requestedEditorId,
+      previousEditorId: null,
+      targetMember,
+    });
+    if (!assignmentCheck.valid) {
+      throw new Error(
+        assignmentCheck.reason ||
+          'Selected Team Member is not an active Editor and cannot be assigned to a deliverable.'
+      );
+    }
+  }
 
   const resolvedStatus = resolveDeliverableStatusOnCreate(
     deliverable.status,
@@ -603,19 +632,7 @@ export async function createDeliverableWithSupabase(params: {
     error = retry.error;
   }
 
-  // Check 4: Foreign key on assigned_editor_id
-  if (
-    error &&
-    (error.message?.includes('assigned_editor_id_fkey') ||
-      error.message?.toLowerCase().includes('assigned_editor_id'))
-  ) {
-    insertPayload.assigned_editor_id = null;
-    const retry = await adapter.insertAndReturn(insertPayload);
-    data = retry.data;
-    error = retry.error;
-  }
-
-  // Never downgrade status to NULL on constraint/status errors — fail loudly instead
+  // Never silently downgrade status or assigned_editor_id on constraint/trigger errors — fail loudly instead
   if (error) {
     throw new Error(`Could not create deliverable in Supabase: ${error.message}`);
   }
@@ -650,6 +667,10 @@ export async function updateDeliverableWithSupabase(params: {
   storage?: Phase1StorageAdapter | null;
   initialFallback?: Deliverable[];
   nowIso?: string;
+  resolveTeamMemberById?: (
+    id: string
+  ) => Promise<(Partial<TeamMember> & { active?: unknown }) | null>;
+  teamMembers?: readonly (TeamMember & { active?: unknown })[];
 }): Promise<Deliverable> {
   const {
     deliverable,
@@ -659,6 +680,8 @@ export async function updateDeliverableWithSupabase(params: {
     storage = getDefaultPhase1Storage(),
     initialFallback = [],
     nowIso = new Date().toISOString(),
+    resolveTeamMemberById,
+    teamMembers,
   } = params;
 
   const cleanNotesInput = (rawNotes?: string | null): string | undefined => {
@@ -671,9 +694,40 @@ export async function updateDeliverableWithSupabase(params: {
     return trimmed;
   };
 
+  const validateReassignmentIfChanged = async (previousEditorId?: string | null) => {
+    const requestedEditorId =
+      deliverable.assigned_editor_id && deliverable.assigned_editor_id.trim()
+        ? deliverable.assigned_editor_id.trim()
+        : null;
+    const cleanPreviousId =
+      previousEditorId && previousEditorId.trim() ? previousEditorId.trim() : null;
+
+    if (!requestedEditorId || requestedEditorId === cleanPreviousId) {
+      return;
+    }
+    if (!resolveTeamMemberById && !teamMembers) {
+      return;
+    }
+    const targetMember = resolveTeamMemberById
+      ? await resolveTeamMemberById(requestedEditorId)
+      : teamMembers?.find(member => member.id === requestedEditorId) ?? null;
+    const assignmentCheck = validateDeliverableEditorAssignment({
+      targetEditorId: requestedEditorId,
+      previousEditorId: cleanPreviousId,
+      targetMember,
+    });
+    if (!assignmentCheck.valid) {
+      throw new Error(
+        assignmentCheck.reason ||
+          'Selected Team Member is not an active Editor and cannot be assigned to this deliverable.'
+      );
+    }
+  };
+
   if (!adapter) {
     const current = readUnconfiguredOrInitial<Deliverable>(storage, 'deliverables', initialFallback);
     const existing = current.find(d => d.id === deliverable.id);
+    await validateReassignmentIfChanged(existing?.assigned_editor_id ?? null);
     const milestones = computeMilestonesOnUpdate(existing, deliverable, nowIso);
     const userNotes =
       deliverable.notes !== undefined ? cleanNotesInput(deliverable.notes) : existing?.notes;
@@ -711,6 +765,9 @@ export async function updateDeliverableWithSupabase(params: {
   }
 
   const existing = mapRow(existingRow);
+
+  // Enforce active Editor eligibility if assigned_editor_id changed to a non-empty editor
+  await validateReassignmentIfChanged(existing.assigned_editor_id);
 
   // 2. Compute milestone timestamps against the authoritative Supabase baseline
   const milestones = computeMilestonesOnUpdate(existing, deliverable, nowIso);

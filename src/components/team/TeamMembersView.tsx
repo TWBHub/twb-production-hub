@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Plus,
   Search,
@@ -10,9 +10,40 @@ import {
   Phone,
   Users,
   X,
+  AlertTriangle,
+  ShieldCheck,
+  ShieldOff,
+  Clock,
+  UserPlus,
+  Send,
+  CheckCircle2,
+  RefreshCw,
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
-import { TeamMember, TeamMemberCategory } from '../../types';
+import {
+  EditorAccountStatusState,
+  EditorAccountStatusSummary,
+  TeamMember,
+  TeamMemberCategory,
+} from '../../types';
+import { isDeliverableEditor } from '../../utils/teamMemberFilters';
+import { getSupabaseClient } from '../../lib/supabase';
+import {
+  getEditorAccountStatus,
+  getEditorAccountStatuses,
+  inviteEditor,
+  resendEditorInvite,
+  setEditorAccountActive,
+} from '../../services/editorAccounts';
+import {
+  buildLoginToggleRequest,
+  canManageEditorAccounts,
+  EditorAccountFeedback,
+  formatEditorAccountActionError,
+  getEditorPortalAction,
+  getInvitePrerequisiteIssue,
+  isDirectoryMemberActive,
+} from '../../utils/editorAccountUi';
 
 type MemberForm = {
   name: string;
@@ -45,9 +76,47 @@ export const TeamMembersView: React.FC = () => {
   return <TeamMembersViewContent />;
 };
 
+const PORTAL_STATUS_META: Record<
+  EditorAccountStatusState,
+  { label: string; className: string }
+> = {
+  'Not Invited': {
+    label: 'Portal: Not Invited',
+    className: 'border-slate-200 bg-slate-50 text-slate-600',
+  },
+  'Invitation Pending': {
+    label: 'Portal: Invitation Pending',
+    className: 'border-amber-200 bg-amber-50 text-amber-800',
+  },
+  'Login Active': {
+    label: 'Portal: Login Active',
+    className: 'border-sky-200 bg-sky-50 text-sky-800',
+  },
+  'Login Disabled': {
+    label: 'Portal: Login Disabled',
+    className: 'border-rose-200 bg-rose-50 text-rose-700',
+  },
+};
+
+function renderPortalStatusIcon(status: EditorAccountStatusState) {
+  switch (status) {
+    case 'Login Active':
+      return <ShieldCheck size={12} />;
+    case 'Login Disabled':
+      return <ShieldOff size={12} />;
+    case 'Invitation Pending':
+      return <Clock size={12} />;
+    case 'Not Invited':
+    default:
+      return <UserPlus size={12} />;
+  }
+}
+
 const TeamMembersViewContent: React.FC = () => {
   const {
     teamMembers,
+    currentUser,
+    supabaseStatus,
     createTeamMember,
     updateTeamMember,
     deleteTeamMember,
@@ -65,6 +134,86 @@ const TeamMembersViewContent: React.FC = () => {
   const [form, setForm] = useState<MemberForm>(EMPTY_FORM);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  const [accountStatusByMemberId, setAccountStatusByMemberId] = useState<
+    Record<string, EditorAccountStatusSummary>
+  >({});
+  const [loadingAccountStatuses, setLoadingAccountStatuses] = useState(false);
+  const [accountStatusError, setAccountStatusError] = useState<string | null>(
+    null
+  );
+  const [pendingMemberActionId, setPendingMemberActionId] = useState<
+    string | null
+  >(null);
+  const [accountFeedback, setAccountFeedback] =
+    useState<EditorAccountFeedback | null>(null);
+  const [resendUnsupportedByMemberId, setResendUnsupportedByMemberId] =
+    useState<Record<string, boolean>>({});
+
+  const [inviteTarget, setInviteTarget] = useState<TeamMember | null>(null);
+  const [inviteSubmitting, setInviteSubmitting] = useState(false);
+  const [inviteError, setInviteError] = useState<string | null>(null);
+
+  const [loginToggleTarget, setLoginToggleTarget] = useState<{
+    member: TeamMember;
+    nextLoginActive: boolean;
+  } | null>(null);
+  const [loginToggleSubmitting, setLoginToggleSubmitting] = useState(false);
+  const [loginToggleError, setLoginToggleError] = useState<string | null>(null);
+
+  const canManageAccounts = canManageEditorAccounts(currentUser?.role);
+
+  const editorMemberIds = useMemo(() => {
+    return teamMembers
+      .filter(member => isDeliverableEditor(member))
+      .map(member => member.id)
+      .sort();
+  }, [teamMembers]);
+
+  const editorMemberIdsKey = editorMemberIds.join(',');
+
+  useEffect(() => {
+    const client = getSupabaseClient();
+    if (!client || !currentUser || editorMemberIds.length === 0) {
+      setAccountStatusByMemberId({});
+      setLoadingAccountStatuses(false);
+      setAccountStatusError(null);
+      return;
+    }
+
+    let cancelled = false;
+    setLoadingAccountStatuses(true);
+    setAccountStatusError(null);
+
+    getEditorAccountStatuses(editorMemberIds)
+      .then(accounts => {
+        if (cancelled) return;
+        const nextMap: Record<string, EditorAccountStatusSummary> = {};
+        for (const item of accounts) {
+          if (item?.team_member_id) {
+            nextMap[item.team_member_id] = item;
+          }
+        }
+        setAccountStatusByMemberId(nextMap);
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        const msg =
+          err instanceof Error && err.message
+            ? err.message
+            : 'Could not load Editor portal account statuses.';
+        setAccountStatusError(msg);
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoadingAccountStatuses(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [editorMemberIdsKey, currentUser?.id, supabaseStatus.connected]);
 
   const filteredMembers = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -233,6 +382,222 @@ const TeamMembersViewContent: React.FC = () => {
     }
   };
 
+  const refreshSingleAccountStatus = async (
+    teamMemberId: string,
+    fallbackSummary?: Partial<EditorAccountStatusSummary>
+  ) => {
+    try {
+      const latest = await getEditorAccountStatus(teamMemberId);
+      const { success: _success, action: _action, ...summary } = latest;
+      setAccountStatusByMemberId(prev => ({
+        ...prev,
+        [teamMemberId]: summary,
+      }));
+      if (summary.account_status !== 'Invitation Pending') {
+        setResendUnsupportedByMemberId(prev => {
+          if (!prev[teamMemberId]) return prev;
+          const next = { ...prev };
+          delete next[teamMemberId];
+          return next;
+        });
+      }
+    } catch {
+      if (fallbackSummary?.account_status) {
+        setAccountStatusByMemberId(prev => ({
+          ...prev,
+          [teamMemberId]: {
+            ...(prev[teamMemberId] ?? {
+              team_member_id: teamMemberId,
+              profile_id: null,
+              account_status: fallbackSummary.account_status!,
+              team_member_active: true,
+              team_member_directory_active: true,
+              team_member_status: 'Active',
+              is_editor_category: true,
+              profile_role: 'editor',
+              profile_is_active: true,
+              auth_banned: false,
+              email_confirmed: false,
+              password_setup_required: true,
+              invited_at: null,
+              last_sign_in_at: null,
+              integrity_warning: null,
+            }),
+            ...fallbackSummary,
+            team_member_id: teamMemberId,
+          },
+        }));
+      }
+    }
+  };
+
+  const openInviteModal = (member: TeamMember) => {
+    if (!canManageAccounts) return;
+    setInviteTarget(member);
+    setInviteError(null);
+  };
+
+  const closeInviteModal = () => {
+    if (inviteSubmitting) return;
+    setInviteTarget(null);
+    setInviteError(null);
+  };
+
+  const handleConfirmInvite = async () => {
+    if (!canManageAccounts || !inviteTarget || inviteSubmitting) return;
+
+    const prerequisiteIssue = getInvitePrerequisiteIssue(inviteTarget);
+    if (prerequisiteIssue) {
+      setInviteError(prerequisiteIssue);
+      return;
+    }
+
+    const targetMember = inviteTarget;
+    setInviteSubmitting(true);
+    setPendingMemberActionId(targetMember.id);
+    setInviteError(null);
+
+    try {
+      const response = await inviteEditor({
+        teamMemberId: targetMember.id,
+        email: targetMember.email.trim(),
+      });
+
+      await refreshSingleAccountStatus(targetMember.id, {
+        profile_id: response.profile_id,
+        account_status: response.account_status,
+      });
+
+      setAccountFeedback({
+        tone: 'success',
+        title: 'Editor invitation sent',
+        message:
+          response.message ||
+          `Invitation sent to ${targetMember.name} (${targetMember.email.trim()}).`,
+        memberId: targetMember.id,
+      });
+      setInviteTarget(null);
+    } catch (err: unknown) {
+      const formatted = formatEditorAccountActionError(
+        err,
+        'Could not send the Editor portal invitation.'
+      );
+      setInviteError(formatted.message);
+    } finally {
+      setInviteSubmitting(false);
+      setPendingMemberActionId(prev =>
+        prev === targetMember.id ? null : prev
+      );
+    }
+  };
+
+  const handleResendInvite = async (member: TeamMember) => {
+    if (!canManageAccounts || pendingMemberActionId === member.id) return;
+
+    setPendingMemberActionId(member.id);
+    setAccountFeedback(null);
+
+    try {
+      const response = await resendEditorInvite(member.id);
+      if (response.success) {
+        await refreshSingleAccountStatus(member.id, {
+          account_status: response.account_status ?? 'Invitation Pending',
+          profile_id: response.profile_id ?? null,
+        });
+        setAccountFeedback({
+          tone: 'success',
+          title: 'Invitation re-sent',
+          message: `Invitation email re-sent to ${member.name}.`,
+          memberId: member.id,
+        });
+        return;
+      }
+
+      setAccountFeedback({
+        tone: 'warning',
+        title: 'Automatic resend is unavailable',
+        message:
+          response.error ||
+          'Automatic invitation resend is currently unavailable without custom SMTP.',
+        memberId: member.id,
+        isResendUnsupported: response.code === 'INVITE_RESEND_UNSUPPORTED',
+      });
+    } catch (err: unknown) {
+      const formatted = formatEditorAccountActionError(
+        err,
+        'Could not resend Editor invitation.'
+      );
+      if (formatted.isResendUnsupported) {
+        setResendUnsupportedByMemberId(prev => ({
+          ...prev,
+          [member.id]: true,
+        }));
+      }
+      setAccountFeedback({
+        ...formatted,
+        memberId: member.id,
+      });
+      await refreshSingleAccountStatus(member.id);
+    } finally {
+      setPendingMemberActionId(prev => (prev === member.id ? null : prev));
+    }
+  };
+
+  const openLoginToggleModal = (
+    member: TeamMember,
+    nextLoginActive: boolean
+  ) => {
+    if (!canManageAccounts) return;
+    setLoginToggleTarget({ member, nextLoginActive });
+    setLoginToggleError(null);
+  };
+
+  const closeLoginToggleModal = () => {
+    if (loginToggleSubmitting) return;
+    setLoginToggleTarget(null);
+    setLoginToggleError(null);
+  };
+
+  const handleConfirmLoginToggle = async () => {
+    if (!canManageAccounts || !loginToggleTarget || loginToggleSubmitting) {
+      return;
+    }
+
+    const { member, nextLoginActive } = loginToggleTarget;
+    setLoginToggleSubmitting(true);
+    setPendingMemberActionId(member.id);
+    setLoginToggleError(null);
+
+    try {
+      const response = await setEditorAccountActive(
+        buildLoginToggleRequest(member.id, nextLoginActive)
+      );
+      const { success: _success, action: _action, ...summary } = response;
+      await refreshSingleAccountStatus(member.id, summary);
+
+      setAccountFeedback({
+        tone: 'success',
+        title: nextLoginActive
+          ? 'Portal login enabled'
+          : 'Portal login disabled',
+        message: nextLoginActive
+          ? `${member.name} can now sign in to the Editor portal. Directory availability was not changed.`
+          : `Portal login has been disabled for ${member.name}. Their Team Member directory availability was not changed.`,
+        memberId: member.id,
+      });
+      setLoginToggleTarget(null);
+    } catch (err: unknown) {
+      const formatted = formatEditorAccountActionError(
+        err,
+        `Could not ${nextLoginActive ? 'enable' : 'disable'} portal login.`
+      );
+      setLoginToggleError(formatted.message);
+    } finally {
+      setLoginToggleSubmitting(false);
+      setPendingMemberActionId(prev => (prev === member.id ? null : prev));
+    }
+  };
+
   const activeCount = teamMembers.filter(
     member => member.is_active !== false && member.status !== 'Inactive'
   ).length;
@@ -379,6 +744,63 @@ const TeamMembersViewContent: React.FC = () => {
         </div>
       </div>
 
+      {/* Portal Account Status Notice (non-blocking) */}
+      {accountStatusError && editorMemberIds.length > 0 && (
+        <div className="flex items-start gap-2.5 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+          <AlertTriangle size={16} className="mt-0.5 shrink-0 text-amber-600" />
+          <div>
+            <p className="font-medium">
+              Editor portal login statuses could not be loaded right now.
+            </p>
+            <p className="mt-0.5 text-amber-800">{accountStatusError}</p>
+          </div>
+        </div>
+      )}
+
+      {/* Portal Account Action Feedback */}
+      {accountFeedback && (
+        <div
+          className={`flex items-start justify-between gap-3 rounded-xl border px-4 py-3 text-xs ${
+            accountFeedback.tone === 'success'
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-900'
+              : accountFeedback.tone === 'warning'
+                ? 'border-amber-200 bg-amber-50 text-amber-900'
+                : 'border-rose-200 bg-rose-50 text-rose-900'
+          }`}
+        >
+          <div className="flex items-start gap-2.5">
+            {accountFeedback.tone === 'success' ? (
+              <CheckCircle2
+                size={16}
+                className="mt-0.5 shrink-0 text-emerald-600"
+              />
+            ) : (
+              <AlertTriangle
+                size={16}
+                className={`mt-0.5 shrink-0 ${
+                  accountFeedback.tone === 'warning'
+                    ? 'text-amber-600'
+                    : 'text-rose-600'
+                }`}
+              />
+            )}
+            <div>
+              <p className="font-semibold">{accountFeedback.title}</p>
+              <p className="mt-0.5">{accountFeedback.message}</p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setAccountFeedback(null)}
+            className="rounded-md p-1 opacity-70 hover:bg-black/5 hover:opacity-100"
+            aria-label="Dismiss feedback"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
       {/* Members */}
       <div className="overflow-hidden rounded-xl border border-slate-200 bg-white">
         {filteredMembers.length === 0 ? (
@@ -397,9 +819,21 @@ const TeamMembersViewContent: React.FC = () => {
           <div className="divide-y divide-slate-100">
             {filteredMembers.map(member => {
               const categories = member.categories || [];
+              const isEditorMember = isDeliverableEditor(member);
+              const portalStatus = isEditorMember
+                ? accountStatusByMemberId[member.id]
+                : undefined;
 
-              const isActive =
-                member.is_active !== false && member.status !== 'Inactive';
+              const isActive = isDirectoryMemberActive(member);
+              const portalAction = isEditorMember
+                ? getEditorPortalAction(
+                    portalStatus?.account_status,
+                    canManageAccounts
+                  )
+                : null;
+              const isPortalActionBusy = pendingMemberActionId === member.id;
+              const isResendUnsupported =
+                resendUnsupportedByMemberId[member.id] === true;
 
               return (
                 <div
@@ -413,14 +847,41 @@ const TeamMembersViewContent: React.FC = () => {
                       </h3>
 
                       <span
-                        className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                        className={`rounded-md border px-2 py-0.5 text-xs font-medium ${
                           isActive
-                            ? 'bg-emerald-50 text-emerald-700'
-                            : 'bg-slate-100 text-slate-500'
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+                            : 'border-slate-200 bg-slate-100 text-slate-600'
                         }`}
+                        title="Team Member directory availability status (independent of portal login)"
                       >
-                        {isActive ? 'Active' : 'Inactive'}
+                        Directory: {isActive ? 'Active' : 'Inactive'}
                       </span>
+
+                      {isEditorMember && (
+                        portalStatus ? (
+                          <span
+                            className={`inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs font-medium ${
+                              PORTAL_STATUS_META[portalStatus.account_status]
+                                .className
+                            }`}
+                            title="Editor portal login status (managed independently from directory activity)"
+                          >
+                            {renderPortalStatusIcon(portalStatus.account_status)}
+                            {
+                              PORTAL_STATUS_META[portalStatus.account_status]
+                                .label
+                            }
+                          </span>
+                        ) : loadingAccountStatuses ? (
+                          <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-500">
+                            Portal: Checking...
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-500">
+                            Portal: Status Unavailable
+                          </span>
+                        )
+                      )}
                     </div>
 
                     <div className="mt-2 flex flex-col gap-1 text-sm text-slate-500 sm:flex-row sm:flex-wrap sm:gap-x-5">
@@ -452,9 +913,113 @@ const TeamMembersViewContent: React.FC = () => {
                         </span>
                       )}
                     </div>
+
+                    {isEditorMember &&
+                      portalStatus?.account_status === 'Invitation Pending' &&
+                      isResendUnsupported && (
+                        <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                          <AlertTriangle
+                            size={14}
+                            className="mt-0.5 shrink-0 text-amber-600"
+                          />
+                          <span>
+                            Automatic invitation resend is unavailable without
+                            custom SMTP. The pending invitation remains intact
+                            (no account was deleted or recreated); ask the
+                            Editor to check their original invite email or spam
+                            folder.
+                          </span>
+                        </div>
+                      )}
+
+                    {isEditorMember && portalStatus?.integrity_warning && (
+                      <div className="mt-3 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                        <AlertTriangle
+                          size={14}
+                          className="mt-0.5 shrink-0 text-amber-600"
+                        />
+                        <span>{portalStatus.integrity_warning}</span>
+                      </div>
+                    )}
                   </div>
 
-                  <div className="flex shrink-0 items-center gap-2">
+                  <div className="flex flex-wrap shrink-0 items-center gap-2">
+                    {isEditorMember && canManageAccounts && portalAction && (
+                      <>
+                        {portalAction === 'invite' && (
+                          <button
+                            type="button"
+                            onClick={() => openInviteModal(member)}
+                            disabled={isPortalActionBusy}
+                            className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <Send size={14} />
+                            {isPortalActionBusy
+                              ? 'Inviting...'
+                              : 'Invite to TWB Hub'}
+                          </button>
+                        )}
+
+                        {portalAction === 'resend' && (
+                          <button
+                            type="button"
+                            onClick={() => handleResendInvite(member)}
+                            disabled={
+                              isPortalActionBusy || isResendUnsupported
+                            }
+                            title={
+                              isResendUnsupported
+                                ? 'Automatic resend requires custom SMTP'
+                                : 'Check or resend pending Editor portal invitation'
+                            }
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm font-medium text-amber-900 transition hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-60"
+                          >
+                            <RefreshCw
+                              size={14}
+                              className={
+                                isPortalActionBusy ? 'animate-spin' : ''
+                              }
+                            />
+                            {isPortalActionBusy
+                              ? 'Checking...'
+                              : isResendUnsupported
+                                ? 'Resend Unavailable'
+                                : 'Resend Invitation'}
+                          </button>
+                        )}
+
+                        {portalAction === 'disable_login' && (
+                          <button
+                            type="button"
+                            onClick={() => openLoginToggleModal(member, false)}
+                            disabled={isPortalActionBusy}
+                            title="Disable Editor portal sign-in without changing Team Member directory status"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-sm font-medium text-rose-700 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <ShieldOff size={14} />
+                            {isPortalActionBusy
+                              ? 'Updating...'
+                              : 'Disable Portal Login'}
+                          </button>
+                        )}
+
+                        {portalAction === 'enable_login' && (
+                          <button
+                            type="button"
+                            onClick={() => openLoginToggleModal(member, true)}
+                            disabled={isPortalActionBusy}
+                            title="Enable Editor portal sign-in without changing Team Member directory status"
+                            className="inline-flex items-center gap-1.5 rounded-lg border border-sky-200 bg-sky-50 px-3 py-2 text-sm font-medium text-sky-800 transition hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <ShieldCheck size={14} />
+                            {isPortalActionBusy
+                              ? 'Updating...'
+                              : 'Enable Portal Login'}
+                          </button>
+                        )}
+                      </>
+                    )}
+
                     <button
                       onClick={() => openEditModal(member)}
                       className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
@@ -465,6 +1030,7 @@ const TeamMembersViewContent: React.FC = () => {
 
                     <button
                       onClick={() => handleToggleStatus(member)}
+                      title="Toggle Team Member directory availability (independent of portal login)"
                       className="inline-flex items-center gap-1.5 rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-700 hover:bg-slate-50"
                     >
                       {isActive ? (
@@ -662,6 +1228,208 @@ const TeamMembersViewContent: React.FC = () => {
                   : editingMember
                     ? 'Save Changes'
                     : 'Add Member'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* Invite Editor Confirmation Modal */}
+      {inviteTarget && canManageAccounts && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+              <div>
+                <h2 className="font-semibold text-slate-900">
+                  Invite to TWB Hub
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Send an Editor portal invitation linked to this Team Member.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={closeInviteModal}
+                disabled={inviteSubmitting}
+                className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600 disabled:opacity-50"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-4 p-5">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs font-medium text-slate-500">
+                    Team Member
+                  </span>
+                  <span className="font-semibold text-slate-900">
+                    {inviteTarget.name}
+                  </span>
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-3">
+                  <span className="text-xs font-medium text-slate-500">
+                    Invitation Email
+                  </span>
+                  <span className="truncate font-medium text-slate-800">
+                    {inviteTarget.email?.trim() || 'Not provided'}
+                  </span>
+                </div>
+              </div>
+
+              <p className="text-xs leading-relaxed text-slate-600">
+                This will email an invitation link so{' '}
+                <span className="font-medium text-slate-800">
+                  {inviteTarget.name}
+                </span>{' '}
+                can confirm their address, set a password, and access their
+                assigned deliverables in TWB Hub.
+              </p>
+
+              {(() => {
+                const prerequisiteIssue =
+                  getInvitePrerequisiteIssue(inviteTarget);
+                if (!prerequisiteIssue) return null;
+                return (
+                  <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2.5 text-xs text-amber-900">
+                    <AlertTriangle
+                      size={15}
+                      className="mt-0.5 shrink-0 text-amber-600"
+                    />
+                    <span>{prerequisiteIssue}</span>
+                  </div>
+                );
+              })()}
+
+              {inviteError && (
+                <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs text-rose-800">
+                  {inviteError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4">
+              <button
+                type="button"
+                onClick={closeInviteModal}
+                disabled={inviteSubmitting}
+                className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                onClick={handleConfirmInvite}
+                disabled={
+                  inviteSubmitting ||
+                  Boolean(getInvitePrerequisiteIssue(inviteTarget))
+                }
+                className="inline-flex items-center gap-1.5 rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-medium text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <Send size={14} />
+                {inviteSubmitting ? 'Sending Invitation...' : 'Send Invitation'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Enable / Disable Portal Login Confirmation Modal */}
+      {loginToggleTarget && canManageAccounts && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-100 px-5 py-4">
+              <div>
+                <h2 className="font-semibold text-slate-900">
+                  {loginToggleTarget.nextLoginActive
+                    ? 'Enable Portal Login'
+                    : 'Disable Portal Login'}
+                </h2>
+                <p className="mt-0.5 text-xs text-slate-500">
+                  Changes Editor portal sign-in access independently from
+                  directory status.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                onClick={closeLoginToggleModal}
+                disabled={loginToggleSubmitting}
+                className="rounded-lg p-2 text-slate-400 hover:bg-slate-100 hover:text-slate-600 disabled:opacity-50"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="space-y-4 p-5">
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="text-xs font-medium text-slate-500">
+                    Editor
+                  </span>
+                  <span className="font-semibold text-slate-900">
+                    {loginToggleTarget.member.name}
+                  </span>
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-3">
+                  <span className="text-xs font-medium text-slate-500">
+                    Email
+                  </span>
+                  <span className="truncate font-medium text-slate-800">
+                    {loginToggleTarget.member.email || 'Not provided'}
+                  </span>
+                </div>
+              </div>
+
+              <p className="text-xs leading-relaxed text-slate-600">
+                {loginToggleTarget.nextLoginActive
+                  ? `Re-enabling portal login allows ${loginToggleTarget.member.name} to sign in to TWB Hub again. Their Team Member directory Active/Inactive setting will remain unchanged.`
+                  : `Disabling portal login immediately blocks ${loginToggleTarget.member.name} from signing in to TWB Hub without deleting their account or altering their Team Member directory status.`}
+              </p>
+
+              {loginToggleError && (
+                <div className="rounded-lg border border-rose-200 bg-rose-50 px-3 py-2.5 text-xs text-rose-800">
+                  {loginToggleError}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 border-t border-slate-100 px-5 py-4">
+              <button
+                type="button"
+                onClick={closeLoginToggleModal}
+                disabled={loginToggleSubmitting}
+                className="rounded-lg border border-slate-200 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                onClick={handleConfirmLoginToggle}
+                disabled={loginToggleSubmitting}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-4 py-2.5 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50 ${
+                  loginToggleTarget.nextLoginActive
+                    ? 'bg-slate-900 hover:bg-slate-800'
+                    : 'bg-rose-600 hover:bg-rose-700'
+                }`}
+              >
+                {loginToggleTarget.nextLoginActive ? (
+                  <>
+                    <ShieldCheck size={14} />
+                    {loginToggleSubmitting
+                      ? 'Enabling...'
+                      : 'Confirm Enable Login'}
+                  </>
+                ) : (
+                  <>
+                    <ShieldOff size={14} />
+                    {loginToggleSubmitting
+                      ? 'Disabling...'
+                      : 'Confirm Disable Login'}
+                  </>
+                )}
               </button>
             </div>
           </div>

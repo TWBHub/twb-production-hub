@@ -82,9 +82,20 @@ const isUserProfileActive = (profile?: Profile | null): boolean => {
   return true;
 };
 
+const hasDeliverableEditorCategory = (member?: TeamMember | null): boolean => {
+  if (!member) return false;
+  if (Array.isArray(member.categories)) {
+    return member.categories.some(
+      cat => typeof cat === 'string' && cat.trim().toLowerCase() === 'editor'
+    );
+  }
+  return typeof member.role === 'string' && member.role.trim().toLowerCase() === 'editor';
+};
+
 /**
- * Checks whether a TeamMember record is active and eligible for Editor ownership checks.
- * Mirrors AppContext `isActiveTeamMemberRecord` with non-empty `id`.
+ * Checks whether a TeamMember directory record is marked Active.
+ * Used for directory/new-assignment eligibility, NOT for blocking an existing
+ * portal-active Editor from their assigned deliverables.
  */
 export function isActiveDeliverableTeamMember(member?: TeamMember | null): boolean {
   if (!member || typeof member.id !== 'string' || !member.id.trim()) {
@@ -104,8 +115,10 @@ export function isActiveDeliverableTeamMember(member?: TeamMember | null): boole
 
 /**
  * Resolves the authoritative linked TeamMember record for an Editor profile.
- * Strictly uses `team_members.profile_id === currentUser.id` with a unique active match.
- * Never falls back to email or display-name matching.
+ * Strictly uses `team_members.profile_id === currentUser.id` with a unique Editor-category match.
+ * Team Member directory activity (`active`/`is_active`/`status`) is independent of portal login
+ * activity (`profiles.is_active`), so an inactive Team Member with an active Editor profile retains
+ * access to existing assigned deliverables. Never falls back to email or display-name matching.
  */
 export function resolveLinkedEditorTeamMember(params: {
   currentUser: Profile | null | undefined;
@@ -130,9 +143,11 @@ export function resolveLinkedEditorTeamMember(params: {
   const userId = currentUser.id.trim();
   const matches = teamMembers.filter(
     member =>
+      typeof member.id === 'string' &&
+      member.id.trim().length > 0 &&
       typeof member.profile_id === 'string' &&
       member.profile_id.trim() === userId &&
-      isActiveDeliverableTeamMember(member)
+      hasDeliverableEditorCategory(member)
   );
 
   if (matches.length !== 1) {
@@ -143,9 +158,9 @@ export function resolveLinkedEditorTeamMember(params: {
 }
 
 /**
- * Resolves the effective active linked TeamMember ID when both `linkedEditorTeamMember`
- * and/or `linkedEditorTeamMemberId` are supplied. Fails closed on missing, inactive,
- * or conflicting identities.
+ * Resolves the effective linked TeamMember ID when `linkedEditorTeamMember`
+ * and/or `linkedEditorTeamMemberId` are supplied. Fails closed on missing,
+ * non-Editor-category, or conflicting identities (directory activity is independent).
  */
 export function resolveEffectiveLinkedEditorId(params: {
   linkedEditorTeamMemberId?: string | null;
@@ -156,7 +171,12 @@ export function resolveEffectiveLinkedEditorId(params: {
     typeof linkedEditorTeamMemberId === 'string' ? linkedEditorTeamMemberId.trim() : '';
 
   if (linkedEditorTeamMember !== undefined) {
-    if (!linkedEditorTeamMember || !isActiveDeliverableTeamMember(linkedEditorTeamMember)) {
+    if (
+      !linkedEditorTeamMember ||
+      typeof linkedEditorTeamMember.id !== 'string' ||
+      !linkedEditorTeamMember.id.trim() ||
+      !hasDeliverableEditorCategory(linkedEditorTeamMember)
+    ) {
       return null;
     }
     const memberId = linkedEditorTeamMember.id.trim();

@@ -2025,8 +2025,32 @@ export const apiService = {
   },
   
   // TEAM & CONFLICT DETECTION
-  
+
   async getTeamMembers(): Promise<TeamMember[]> {
+    const mapTeamMemberRow = (row: Record<string, any>): TeamMember => {
+      const statusNorm =
+        typeof row.status === 'string' ? row.status.trim().toLowerCase() : '';
+      const resolvedActive =
+        typeof row.active === 'boolean'
+          ? row.active && statusNorm !== 'inactive'
+          : typeof row.is_active === 'boolean'
+            ? row.is_active && statusNorm !== 'inactive'
+            : statusNorm !== 'inactive';
+      const resolvedStatus =
+        typeof row.status === 'string' && row.status.trim()
+          ? row.status
+          : resolvedActive
+            ? 'Active'
+            : 'Inactive';
+
+      return {
+        ...(row as TeamMember),
+        active: resolvedActive,
+        is_active: resolvedActive,
+        status: resolvedStatus,
+      } as TeamMember;
+    };
+
     const supabase = getSupabaseClient();
 
     if (supabase) {
@@ -2040,7 +2064,7 @@ export const apiService = {
         throw new Error(`Could not load team members: ${error.message}`);
       }
 
-      const members = (data || []) as TeamMember[];
+      const members = (data || []).map(row => mapTeamMemberRow(row));
 
       // Supabase is the source of truth.
       // Cache only after a successful read.
@@ -2050,12 +2074,31 @@ export const apiService = {
     }
 
     // Local fallback only when Supabase is not configured.
-    return getStoredOrInitial('team_members', INITIAL_TEAM_MEMBERS);
+    return getStoredOrInitial('team_members', INITIAL_TEAM_MEMBERS).map(row =>
+      mapTeamMemberRow(row)
+    );
   },
 
   async createTeamMember(
     member: Omit<TeamMember, 'id'>
   ): Promise<TeamMember> {
+    const statusLower =
+      typeof member.status === 'string' ? member.status.trim().toLowerCase() : '';
+    const resolvedActive =
+      statusLower === 'inactive'
+        ? false
+        : typeof member.is_active === 'boolean'
+          ? member.is_active
+          : typeof (member as TeamMember & { active?: unknown }).active === 'boolean'
+            ? Boolean((member as TeamMember & { active?: boolean }).active)
+            : true;
+    const resolvedStatus =
+      typeof member.status === 'string' && member.status.trim()
+        ? member.status
+        : resolvedActive
+          ? 'Active'
+          : 'Inactive';
+
     const supabase = getSupabaseClient();
 
     if (supabase) {
@@ -2067,14 +2110,14 @@ export const apiService = {
           email: member.email || null,
           phone: member.phone || null,
           role: member.role || 'other',
-          active: member.is_active ?? true,
+          active: resolvedActive,
           notes: member.notes || null,
           role_title: member.role_title || null,
           day_rate: member.day_rate ?? member.daily_rate ?? null,
           gear_inventory: member.gear_inventory || [],
-         status: member.status || 'Active',
-blocked_dates: member.blocked_dates || [],
-categories: member.categories || [],
+          status: resolvedStatus,
+          blocked_dates: member.blocked_dates || [],
+          categories: member.categories || [],
         })
         .select()
         .single();
@@ -2084,7 +2127,18 @@ categories: member.categories || [],
         throw new Error(`Could not create team member: ${error.message}`);
       }
 
-      const newMember = data as TeamMember;
+      const newMember = {
+        ...(data as TeamMember),
+        active:
+          typeof (data as any)?.active === 'boolean'
+            ? (data as any).active && (data as any)?.status !== 'Inactive'
+            : resolvedActive,
+        is_active:
+          typeof (data as any)?.active === 'boolean'
+            ? (data as any).active && (data as any)?.status !== 'Inactive'
+            : resolvedActive,
+        status: (data as any)?.status || resolvedStatus,
+      } as TeamMember;
 
       // Update cache only after Supabase succeeds.
       const current = await this.getTeamMembers();
@@ -2099,6 +2153,8 @@ categories: member.categories || [],
     // Local fallback only when Supabase is not configured.
     const newMember: TeamMember = {
       ...member,
+      is_active: resolvedActive,
+      status: resolvedStatus,
       id: 'team-' + Date.now(),
     };
 
@@ -2109,26 +2165,44 @@ categories: member.categories || [],
   },
 
   async updateTeamMember(member: TeamMember): Promise<TeamMember> {
+    const statusLower =
+      typeof member.status === 'string' ? member.status.trim().toLowerCase() : '';
+    const resolvedActive =
+      statusLower === 'inactive'
+        ? false
+        : typeof member.is_active === 'boolean'
+          ? member.is_active
+          : typeof (member as TeamMember & { active?: unknown }).active === 'boolean'
+            ? Boolean((member as TeamMember & { active?: boolean }).active)
+            : true;
+    const resolvedStatus =
+      typeof member.status === 'string' && member.status.trim()
+        ? member.status
+        : resolvedActive
+          ? 'Active'
+          : 'Inactive';
+
     const supabase = getSupabaseClient();
 
     if (supabase) {
+      // Never send profile_id in ordinary directory updates so existing account links
+      // are preserved and the database trigger protecting team_members.profile_id is respected.
       const { data, error } = await supabase
         .from('team_members')
         .update({
-          profile_id: member.profile_id || null,
           name: member.name,
           email: member.email || null,
           phone: member.phone || null,
           role: member.role || 'other',
-          active: member.is_active ?? true,
+          active: resolvedActive,
           notes: member.notes || null,
           role_title: member.role_title || null,
           day_rate: member.day_rate ?? member.daily_rate ?? null,
           gear_inventory: member.gear_inventory || [],
-          status: member.status || 'Active',
-blocked_dates: member.blocked_dates || [],
-categories: member.categories || [],
-updated_at: new Date().toISOString(),
+          status: resolvedStatus,
+          blocked_dates: member.blocked_dates || [],
+          categories: member.categories || [],
+          updated_at: new Date().toISOString(),
         })
         .eq('id', member.id)
         .select()
@@ -2139,7 +2213,17 @@ updated_at: new Date().toISOString(),
         throw new Error(`Could not update team member: ${error.message}`);
       }
 
-      const updatedMember = data as TeamMember;
+      const row = data as Record<string, any>;
+      const mappedActive =
+        typeof row.active === 'boolean'
+          ? row.active && row.status !== 'Inactive'
+          : resolvedActive;
+      const updatedMember = {
+        ...(row as TeamMember),
+        active: mappedActive,
+        is_active: mappedActive,
+        status: row.status || resolvedStatus,
+      } as TeamMember;
 
       // Refresh cache from Supabase after successful update.
       const current = await this.getTeamMembers();
@@ -2155,9 +2239,15 @@ updated_at: new Date().toISOString(),
 
     // Local fallback only when Supabase is not configured.
     const current = await this.getTeamMembers();
+    const existing = current.find(m => m.id === member.id);
+    const { profile_id: _ignoredProfileId, ...safeDirectoryFields } = member;
     const updatedMember = {
-      ...current.find(m => m.id === member.id),
-      ...member,
+      ...existing,
+      ...safeDirectoryFields,
+      profile_id: existing?.profile_id ?? member.profile_id,
+      active: resolvedActive,
+      is_active: resolvedActive,
+      status: resolvedStatus,
     } as TeamMember;
 
     saveToStorage(
@@ -2764,6 +2854,21 @@ async assignTeamMember(
               await supabase.from('deliverables').insert(payload).select(),
           }
         : null,
+      resolveTeamMemberById: async (id: string) => {
+        if (supabase) {
+          const { data, error } = await supabase
+            .from('team_members')
+            .select('id, name, active, status, categories')
+            .eq('id', id)
+            .maybeSingle();
+          if (error) {
+            throw new Error(`Could not verify assigned editor eligibility: ${error.message}`);
+          }
+          return (data as (Partial<TeamMember> & { active?: unknown }) | null) ?? null;
+        }
+        const members = await this.getTeamMembers();
+        return members.find(m => m.id === id) ?? null;
+      },
       mapRow: mapSupabaseDeliverableToModel,
       toCompanyUuid,
       storage: getDefaultPhase1Storage(),
@@ -2783,6 +2888,21 @@ async assignTeamMember(
               await supabase.from('deliverables').update(payload).eq('id', id).select(),
           }
         : null,
+      resolveTeamMemberById: async (id: string) => {
+        if (supabase) {
+          const { data, error } = await supabase
+            .from('team_members')
+            .select('id, name, active, status, categories')
+            .eq('id', id)
+            .maybeSingle();
+          if (error) {
+            throw new Error(`Could not verify assigned editor eligibility: ${error.message}`);
+          }
+          return (data as (Partial<TeamMember> & { active?: unknown }) | null) ?? null;
+        }
+        const members = await this.getTeamMembers();
+        return members.find(m => m.id === id) ?? null;
+      },
       mapRow: mapSupabaseDeliverableToModel,
       toCompanyUuid,
       storage: getDefaultPhase1Storage(),
