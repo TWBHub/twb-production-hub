@@ -22,12 +22,16 @@ import {
 } from 'lucide-react';
 import { useApp } from '../../context/AppContext';
 import {
-  Deliverable,
   DeliverableStatus,
   Project,
 } from '../../types';
 import { formatDisplayDate, formatTurnaroundDays } from '../../utils/dateUtils';
-import { isDeliverableEditor } from '../../utils/teamMemberFilters';
+import {
+  buildEditorWorkloadMap,
+  computeWorkloadSummaryMetrics,
+  filterWorkloadDeliverablesForRole,
+  resolveVisibleWorkloadEditors,
+} from '../../utils/editorsWorkloadVisibility';
 import { ModuleErrorBanner } from '../common/ModuleErrorBanner';
 
 const getStatusBadge = (status?: DeliverableStatus | '') => {
@@ -66,17 +70,6 @@ const getPriorityBadge = (priority?: string) => {
   }
 };
 
-interface UnifiedEditorInfo {
-  id: string;
-  name: string;
-  email: string;
-  phone: string;
-  specialization: string;
-  is_active: boolean;
-  effectiveCapacity: number;
-  notes?: string;
-}
-
 type OrderingOption =
   | 'name_asc'
   | 'name_desc'
@@ -98,6 +91,9 @@ export const EditorsWorkloadView: React.FC = () => {
     refreshAllData,
     moduleErrors,
     isRefreshingData,
+    isEditorOnly,
+    linkedEditorTeamMember,
+    linkedEditorTeamMemberId,
   } = useApp();
 
   const canOpenProjects = canAccessSection('projects');
@@ -125,68 +121,30 @@ export const EditorsWorkloadView: React.FC = () => {
     }));
   };
 
-  // Compile real editors from teamMembers and clean editors list.
-  // Suppress dummy/fictional records in live mode.
-  const unifiedEditors: UnifiedEditorInfo[] = useMemo(() => {
-    const map = new Map<string, UnifiedEditorInfo>();
-
-    // 1. From teamMembers with category 'Editor' or role/title containing 'Editor'
-    if (Array.isArray(teamMembers)) {
-      teamMembers.forEach(tm => {
-        const isEditorCategory = isDeliverableEditor(tm);
-        const isEditorTitle =
-          (!tm.categories || tm.categories.length === 0) &&
-          ((tm.role_title && tm.role_title.toLowerCase().includes('editor')) ||
-            tm.role === 'Editor');
-
-        if (isEditorCategory || isEditorTitle) {
-          const matchingEd = editors.find(e => e.id === tm.id || e.email === tm.email);
-          const effectiveCap =
-            matchingEd?.max_active_deliverables ||
-            matchingEd?.max_concurrent_projects ||
-            4;
-
-          map.set(tm.id, {
-            id: tm.id,
-            name: tm.name,
-            email: tm.email || '',
-            phone: tm.phone || '',
-            specialization: tm.role_title || matchingEd?.specialization || 'Post-Production Editor',
-            is_active: tm.status !== 'Inactive' && tm.is_active !== false,
-            effectiveCapacity: effectiveCap,
-            notes: tm.notes || matchingEd?.notes || '',
-          });
-        }
-      });
-    }
-
-    // 2. From editors in AppContext (only include if matched to a real team member or non-placeholder)
-    if (Array.isArray(editors)) {
-      editors.forEach(ed => {
-        const isFictional = ed.email?.endsWith('.internal') || ed.phone?.includes('555-01');
-        const matchingTm = teamMembers.find(m => m.id === ed.id || m.email === ed.email);
-
-        // In connected studio, do not inject fictional demo editors
-        if (!isFictional || matchingTm) {
-          if (!map.has(ed.id)) {
-            const effectiveCap = ed.max_active_deliverables || ed.max_concurrent_projects || 4;
-            map.set(ed.id, {
-              id: ed.id,
-              name: ed.name,
-              email: ed.email || matchingTm?.email || '',
-              phone: ed.phone || matchingTm?.phone || '',
-              specialization: ed.specialization || matchingTm?.role_title || 'Post-Production Editor',
-              is_active: ed.is_active !== false,
-              effectiveCapacity: effectiveCap,
-              notes: ed.notes || '',
-            });
-          }
-        }
-      });
-    }
-
-    return Array.from(map.values());
-  }, [teamMembers, editors]);
+  // Compile visible editors by role:
+  // - Admin / Manager: all genuine editors from teamMembers and editors.
+  // - Editor: strictly their own linked Team Member record (exact ID match only).
+  const {
+    editors: visibleEditors,
+    linkedEditorId,
+    hasLinkedEditorProfile,
+  } = useMemo(
+    () =>
+      resolveVisibleWorkloadEditors({
+        isEditorOnly,
+        teamMembers,
+        editors,
+        linkedEditorTeamMember,
+        linkedEditorTeamMemberId,
+      }),
+    [
+      isEditorOnly,
+      teamMembers,
+      editors,
+      linkedEditorTeamMember,
+      linkedEditorTeamMemberId,
+    ]
+  );
 
   // Project map for quick lookup
   const projectMap = useMemo(() => {
@@ -198,7 +156,7 @@ export const EditorsWorkloadView: React.FC = () => {
   }, [projects]);
 
   // Canonical Brand-filtered deliverables
-  const scopedDeliverables = useMemo(() => {
+  const brandScopedDeliverables = useMemo(() => {
     if (!Array.isArray(deliverables)) return [];
     return deliverables.filter(del => {
       if (brandFilter === 'all') return true;
@@ -209,88 +167,48 @@ export const EditorsWorkloadView: React.FC = () => {
     });
   }, [deliverables, brandFilter, projectMap]);
 
-  // Workload calculations per editor
-  const editorWorkloadMap = useMemo(() => {
-    const result = new Map<
-      string,
-      {
-        activeDeliverables: Deliverable[];
-        completedDeliverables: Deliverable[];
-        totalActiveCount: number;
-        utilizationPercent: number;
-        earliestActiveAssignmentDate: string | null;
-        latestActiveAssignmentDate: string | null;
-      }
-    >();
+  // Role-scoped deliverables (Admin / Manager: all brand deliverables; Editor: own assigned only)
+  const roleScopedDeliverables = useMemo(
+    () =>
+      filterWorkloadDeliverablesForRole({
+        isEditorOnly,
+        brandScopedDeliverables,
+        linkedEditorId,
+      }),
+    [isEditorOnly, brandScopedDeliverables, linkedEditorId]
+  );
 
-    unifiedEditors.forEach(ed => {
-      const assigned = scopedDeliverables.filter(d => d.assigned_editor_id === ed.id);
-      const active = assigned.filter(d => d.status !== 'Delivered');
-      const completed = assigned.filter(d => d.status === 'Delivered');
-      const cap = Math.max(1, ed.effectiveCapacity);
-      const percent = Math.round((active.length / cap) * 100);
+  // Workload calculations per visible editor
+  const editorWorkloadMap = useMemo(
+    () => buildEditorWorkloadMap(visibleEditors, roleScopedDeliverables),
+    [visibleEditors, roleScopedDeliverables]
+  );
 
-      // Find earliest and latest assignment dates among active deliverables
-      let earliest: string | null = null;
-      let latest: string | null = null;
-      active.forEach(d => {
-        const dateVal = d.assigned_at || d.last_updated;
-        if (dateVal) {
-          if (!earliest || dateVal < earliest) earliest = dateVal;
-          if (!latest || dateVal > latest) latest = dateVal;
-        }
-      });
+  // 4 Core Summary Metrics (team-wide for Admin/Manager; strictly own deliverables for Editor)
+  const metrics = useMemo(
+    () =>
+      computeWorkloadSummaryMetrics({
+        isEditorOnly,
+        visibleEditors,
+        roleScopedDeliverables,
+        editorWorkloadMap,
+      }),
+    [isEditorOnly, visibleEditors, roleScopedDeliverables, editorWorkloadMap]
+  );
 
-      result.set(ed.id, {
-        activeDeliverables: active,
-        completedDeliverables: completed,
-        totalActiveCount: active.length,
-        utilizationPercent: percent,
-        earliestActiveAssignmentDate: earliest,
-        latestActiveAssignmentDate: latest,
-      });
-    });
-
-    return result;
-  }, [unifiedEditors, scopedDeliverables]);
-
-  // Unassigned deliverables count
-  const unassignedDeliverables = useMemo(() => {
-    return scopedDeliverables.filter(
-      d => (!d.assigned_editor_id || d.assigned_editor_id.trim() === '') && d.status !== 'Delivered'
-    );
-  }, [scopedDeliverables]);
-
-  // 4 Core Summary Metrics
-  const metrics = useMemo(() => {
-    const activeEditors = unifiedEditors.filter(e => e.is_active);
-    const totalActiveDels = scopedDeliverables.filter(d => d.status !== 'Delivered');
-    const totalCompletedDels = scopedDeliverables.filter(d => d.status === 'Delivered');
-
-    // Count editors at or exceeding 100% capacity
-    const atOrOverCapacityCount = unifiedEditors.filter(ed => {
-      const stats = editorWorkloadMap.get(ed.id);
-      const activeCnt = stats?.totalActiveCount || 0;
-      return activeCnt >= ed.effectiveCapacity;
-    }).length;
-
-    return {
-      activeEditorsCount: activeEditors.length,
-      totalEditorsCount: unifiedEditors.length,
-      totalActiveDeliverables: totalActiveDels.length,
-      totalCompletedDeliverables: totalCompletedDels.length,
-      atOrOverCapacityCount,
-      unassignedCount: unassignedDeliverables.length,
-    };
-  }, [unifiedEditors, scopedDeliverables, editorWorkloadMap, unassignedDeliverables]);
+  const ownEditor = isEditorOnly ? visibleEditors[0] ?? null : null;
+  const ownWorkloadStats = ownEditor ? editorWorkloadMap.get(ownEditor.id) : undefined;
+  const ownActiveCount = ownWorkloadStats?.totalActiveCount ?? 0;
+  const ownCapacity = ownEditor ? Math.max(1, ownEditor.effectiveCapacity) : 0;
+  const ownUtilizationPercent = ownWorkloadStats?.utilizationPercent ?? 0;
+  const ownRemainingSlots = ownEditor ? Math.max(0, ownCapacity - ownActiveCount) : 0;
 
   // Filtered and Sorted Editors
   const filteredEditors = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
 
-    const filtered = unifiedEditors.filter(ed => {
+    const filtered = visibleEditors.filter(ed => {
       const stats = editorWorkloadMap.get(ed.id);
-      const activeCount = stats?.totalActiveCount || 0;
       const percent = stats?.utilizationPercent || 0;
 
       // 1. Workload filter
@@ -381,7 +299,7 @@ export const EditorsWorkloadView: React.FC = () => {
           return a.name.localeCompare(b.name);
       }
     });
-  }, [unifiedEditors, searchQuery, workloadFilter, ordering, editorWorkloadMap, projectMap]);
+  }, [visibleEditors, searchQuery, workloadFilter, ordering, editorWorkloadMap, projectMap]);
 
   const navigateToProject = (projectId: string) => {
     if (!canAccessSection('projects')) return;
@@ -403,7 +321,9 @@ export const EditorsWorkloadView: React.FC = () => {
                 Editors & Workload
               </h1>
               <p className="text-xs text-slate-500 mt-0.5 font-normal">
-                Post-production bandwidth, editor capacity, and active deliverable assignments across brands.
+                {isEditorOnly
+                  ? 'Your post-production capacity, active deliverable queue, and delivery milestones.'
+                  : 'Post-production bandwidth, editor capacity, and active deliverable assignments across brands.'}
               </p>
             </div>
           </div>
@@ -443,85 +363,182 @@ export const EditorsWorkloadView: React.FC = () => {
       )}
 
       {/* 2. Four Core Summary Metrics */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        {/* Card 1: Total Editors */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
-          <div>
-            <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-              Total Editors
+      {isEditorOnly ? (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {/* Editor Card 1: My Capacity */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+            <div>
+              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                My Capacity
+              </div>
+              <div className="text-2xl font-extrabold text-slate-900 mt-1">
+                {hasLinkedEditorProfile ? `${ownUtilizationPercent}%` : '—'}
+                <span className="text-xs font-normal text-slate-400 ml-1.5">
+                  {hasLinkedEditorProfile
+                    ? `${ownActiveCount} / ${ownCapacity} slots`
+                    : 'Unlinked'}
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                {!hasLinkedEditorProfile
+                  ? 'Profile link required'
+                  : ownUtilizationPercent > 100
+                    ? 'Over capacity'
+                    : ownUtilizationPercent === 100
+                      ? 'At full capacity'
+                      : ownUtilizationPercent >= 75
+                        ? 'Near capacity'
+                        : 'Within capacity limits'}
+              </div>
             </div>
-            <div className="text-2xl font-extrabold text-slate-900 mt-1">
-              {metrics.activeEditorsCount}
-              <span className="text-xs font-normal text-slate-400 ml-1.5">
-                / {metrics.totalEditorsCount} in roster
-              </span>
+            <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+              <UserCheck className="w-5 h-5" />
             </div>
-            <div className="text-[11px] text-slate-500 mt-0.5">Active post-production editors</div>
           </div>
-          <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
-            <Users className="w-5 h-5" />
+
+          {/* Editor Card 2: My Active Deliverables */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+            <div>
+              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                Active Deliverables
+              </div>
+              <div className="text-2xl font-extrabold text-slate-900 mt-1">
+                {metrics.totalActiveDeliverables}
+                <span className="text-xs font-normal text-slate-400 ml-1.5">
+                  in your queue
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">Assigned post-production work</div>
+            </div>
+            <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+              <Clock className="w-5 h-5" />
+            </div>
+          </div>
+
+          {/* Editor Card 3: Remaining Slots */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+            <div>
+              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                Remaining Slots
+              </div>
+              <div className={`text-2xl font-extrabold mt-1 ${hasLinkedEditorProfile && ownRemainingSlots === 0 ? 'text-amber-600' : 'text-slate-900'}`}>
+                {hasLinkedEditorProfile ? ownRemainingSlots : 0}
+                {hasLinkedEditorProfile && (
+                  <span className="text-xs font-normal text-slate-400 ml-1.5">
+                    of {ownCapacity} max active
+                  </span>
+                )}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                {!hasLinkedEditorProfile
+                  ? 'Link required to track capacity'
+                  : ownRemainingSlots === 0
+                    ? 'At or over assigned capacity'
+                    : 'Open assignment capacity'}
+              </div>
+            </div>
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${hasLinkedEditorProfile && ownRemainingSlots === 0 ? 'bg-amber-50 text-amber-600' : 'bg-slate-50 text-slate-600'}`}>
+              <FolderKanban className="w-5 h-5" />
+            </div>
+          </div>
+
+          {/* Editor Card 4: My Delivered Deliverables */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+            <div>
+              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                Delivered Deliverables
+              </div>
+              <div className="text-2xl font-extrabold text-emerald-600 mt-1">
+                {metrics.totalCompletedDeliverables}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">Completed & archived</div>
+            </div>
+            <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+              <CheckCircle2 className="w-5 h-5" />
+            </div>
           </div>
         </div>
-
-        {/* Card 2: Active Deliverables */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
-          <div>
-            <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-              Active Deliverables
+      ) : (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+          {/* Card 1: Total Editors */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+            <div>
+              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                Total Editors
+              </div>
+              <div className="text-2xl font-extrabold text-slate-900 mt-1">
+                {metrics.activeEditorsCount}
+                <span className="text-xs font-normal text-slate-400 ml-1.5">
+                  / {metrics.totalEditorsCount} in roster
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">Active post-production editors</div>
             </div>
-            <div className="text-2xl font-extrabold text-slate-900 mt-1">
-              {metrics.totalActiveDeliverables}
-              <span className="text-xs font-normal text-slate-400 ml-1.5">
-                items in progress
-              </span>
+            <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center">
+              <Users className="w-5 h-5" />
             </div>
-            <div className="text-[11px] text-slate-500 mt-0.5">Post-production queue</div>
           </div>
-          <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
-            <Clock className="w-5 h-5" />
+
+          {/* Card 2: Active Deliverables */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+            <div>
+              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                Active Deliverables
+              </div>
+              <div className="text-2xl font-extrabold text-slate-900 mt-1">
+                {metrics.totalActiveDeliverables}
+                <span className="text-xs font-normal text-slate-400 ml-1.5">
+                  items in progress
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">Post-production queue</div>
+            </div>
+            <div className="w-10 h-10 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center">
+              <Clock className="w-5 h-5" />
+            </div>
+          </div>
+
+          {/* Card 3: At / Over Capacity */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+            <div>
+              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                At / Over Capacity
+              </div>
+              <div className={`text-2xl font-extrabold mt-1 ${metrics.atOrOverCapacityCount > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
+                {metrics.atOrOverCapacityCount}
+                <span className="text-xs font-normal text-slate-400 ml-1.5">
+                  of {metrics.totalEditorsCount} editors
+                </span>
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">
+                {metrics.atOrOverCapacityCount > 0 ? 'Rebalance workload recommended' : 'Capacity within limits'}
+              </div>
+            </div>
+            <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${metrics.atOrOverCapacityCount > 0 ? 'bg-amber-50 text-amber-600' : 'bg-slate-50 text-slate-600'}`}>
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+          </div>
+
+          {/* Card 4: Delivered Deliverables */}
+          <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
+            <div>
+              <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
+                Delivered Deliverables
+              </div>
+              <div className="text-2xl font-extrabold text-emerald-600 mt-1">
+                {metrics.totalCompletedDeliverables}
+              </div>
+              <div className="text-[11px] text-slate-500 mt-0.5">Completed & archived</div>
+            </div>
+            <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
+              <CheckCircle2 className="w-5 h-5" />
+            </div>
           </div>
         </div>
+      )}
 
-        {/* Card 3: At / Over Capacity */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
-          <div>
-            <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-              At / Over Capacity
-            </div>
-            <div className={`text-2xl font-extrabold mt-1 ${metrics.atOrOverCapacityCount > 0 ? 'text-amber-600' : 'text-slate-900'}`}>
-              {metrics.atOrOverCapacityCount}
-              <span className="text-xs font-normal text-slate-400 ml-1.5">
-                of {metrics.totalEditorsCount} editors
-              </span>
-            </div>
-            <div className="text-[11px] text-slate-500 mt-0.5">
-              {metrics.atOrOverCapacityCount > 0 ? 'Rebalance workload recommended' : 'Capacity within limits'}
-            </div>
-          </div>
-          <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${metrics.atOrOverCapacityCount > 0 ? 'bg-amber-50 text-amber-600' : 'bg-slate-50 text-slate-600'}`}>
-            <AlertTriangle className="w-5 h-5" />
-          </div>
-        </div>
-
-        {/* Card 4: Delivered Deliverables */}
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex items-center justify-between">
-          <div>
-            <div className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">
-              Delivered Deliverables
-            </div>
-            <div className="text-2xl font-extrabold text-emerald-600 mt-1">
-              {metrics.totalCompletedDeliverables}
-            </div>
-            <div className="text-[11px] text-slate-500 mt-0.5">Completed & archived</div>
-          </div>
-          <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center">
-            <CheckCircle2 className="w-5 h-5" />
-          </div>
-        </div>
-      </div>
-
-      {/* Unassigned Work Notification (Read-Only Informational Alert) */}
-      {metrics.unassignedCount > 0 && (
+      {/* Unassigned Work Notification (Read-Only Informational Alert — Admin & Manager only) */}
+      {!isEditorOnly && metrics.unassignedCount > 0 && (
         <div className="bg-amber-50/80 border border-amber-200/90 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
           <div className="flex items-center gap-2.5">
             <div className="w-6 h-6 rounded-lg bg-amber-500 text-white flex items-center justify-center shrink-0">
@@ -550,7 +567,11 @@ export const EditorsWorkloadView: React.FC = () => {
             type="text"
             value={searchQuery}
             onChange={e => setSearchQuery(e.target.value)}
-            placeholder="Search editor, specialization, project, or deliverable..."
+            placeholder={
+              isEditorOnly
+                ? 'Search your project, deliverable, priority, or status...'
+                : 'Search editor, specialization, project, or deliverable...'
+            }
             className="w-full pl-9 pr-8 py-2 text-xs rounded-lg border border-slate-200 focus:outline-hidden focus:border-slate-400 transition-colors"
           />
           {searchQuery && (
@@ -576,7 +597,9 @@ export const EditorsWorkloadView: React.FC = () => {
               onChange={e => setWorkloadFilter(e.target.value as any)}
               className="text-xs font-semibold rounded-lg px-2.5 py-1.5 bg-slate-50 border border-slate-200 text-slate-700 focus:outline-hidden cursor-pointer"
             >
-              <option value="all">All Editors ({unifiedEditors.length})</option>
+              <option value="all">
+                {isEditorOnly ? 'All My Workload' : `All Editors (${visibleEditors.length})`}
+              </option>
               <option value="available">Available (&lt; 75%)</option>
               <option value="near_capacity">Near Capacity (75%–99%)</option>
               <option value="at_capacity">At Capacity (100%)</option>
@@ -605,16 +628,28 @@ export const EditorsWorkloadView: React.FC = () => {
       </div>
 
       {/* 4. Editors Workload Grid */}
-      {filteredEditors.length === 0 ? (
+      {isEditorOnly && !hasLinkedEditorProfile ? (
+        <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center shadow-xs">
+          <UserCheck className="w-10 h-10 text-slate-300 mx-auto mb-3" />
+          <h3 className="text-sm font-bold text-slate-800">No Linked Editor Profile Found</h3>
+          <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
+            Your account is not currently linked to an Editor record in the team directory. Please contact an Admin or Manager to link your profile so you can view your assigned workload.
+          </p>
+        </div>
+      ) : filteredEditors.length === 0 ? (
         <div className="bg-white rounded-2xl border border-slate-200 p-12 text-center shadow-xs">
           <Film className="w-10 h-10 text-slate-300 mx-auto mb-3" />
-          <h3 className="text-sm font-bold text-slate-800">No Editors Found</h3>
+          <h3 className="text-sm font-bold text-slate-800">
+            {isEditorOnly ? 'No Matching Workload Found' : 'No Editors Found'}
+          </h3>
           <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
-            {searchQuery || workloadFilter !== 'all'
-              ? 'No editors match the active search or filter criteria. Try clearing filters.'
-              : 'No editors are currently designated in your team roster. To designate editors, visit Team Members and assign the "Editor" category to relevant team members.'}
+            {isEditorOnly
+              ? 'Your current search or capacity filter does not match your assigned workload. Try clearing filters.'
+              : searchQuery || workloadFilter !== 'all'
+                ? 'No editors match the active search or filter criteria. Try clearing filters.'
+                : 'No editors are currently designated in your team roster. To designate editors, visit Team Members and assign the "Editor" category to relevant team members.'}
           </p>
-          {canOpenTeamMembers && (
+          {!isEditorOnly && canOpenTeamMembers && (
             <button
               type="button"
               onClick={() => setActiveTab('team-members')}
